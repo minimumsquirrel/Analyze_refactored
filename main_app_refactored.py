@@ -324,6 +324,8 @@ def init_db():
          "id INTEGER PRIMARY KEY AUTOINCREMENT, file_name TEXT, project_id INTEGER, start_sample INTEGER, end_sample INTEGER, start_time REAL, end_time REAL, sample_rate REAL, image_path TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id)"),
         ("spectrogram_annotations",
          "id INTEGER PRIMARY KEY AUTOINCREMENT, spectrogram_id INTEGER, x0 REAL, y0 REAL, x1 REAL, y1 REAL, label TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(spectrogram_id) REFERENCES spectrograms(id)"),
+        ("marine_call_library",
+         "id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, name TEXT NOT NULL, fmin_hz REAL, fmax_hz REAL, min_duration_s REAL, max_duration_s REAL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id)"),
         ("app_settings",
          "key TEXT PRIMARY KEY, value TEXT")
     ]
@@ -384,6 +386,10 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_spectrogram_annotations_spec "
         "ON spectrogram_annotations(spectrogram_id)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_marine_call_library_scope "
+        "ON marine_call_library(project_id, fmin_hz, fmax_hz)"
     )
 
 
@@ -1129,7 +1135,8 @@ class MainWindow(
             else:
                 pen = pg.mkPen(color=base_color, width=1.5)
             pw.plot(t_plot, y, pen=pen)
-            pw.setLabel('left', 'Amplitude', color='#FFFFFF')
+            axis_color = '#000000' if str(get_setting('ui_theme','dark')).lower() == 'light' else '#FFFFFF'
+            pw.setLabel('left', 'Amplitude', color=axis_color)
         else:
             band_gap = 1.2
             n_sel = len(sel)
@@ -1148,10 +1155,12 @@ class MainWindow(
 
             ax_left = pw.getAxis('left')
             ax_left.setTicks([ticks])
-            pw.setLabel('left', 'Channels', color='#FFFFFF')
+            axis_color = '#000000' if str(get_setting('ui_theme','dark')).lower() == 'light' else '#FFFFFF'
+            pw.setLabel('left', 'Channels', color=axis_color)
 
-        pw.setTitle('Raw Waveform', color='#FFFFFF')
-        pw.setLabel('bottom', 'Time (s)', color='#FFFFFF')
+        axis_color = '#000000' if str(get_setting('ui_theme','dark')).lower() == 'light' else '#FFFFFF'
+        pw.setTitle('Raw Waveform', color=axis_color)
+        pw.setLabel('bottom', 'Time (s)', color=axis_color)
         if t_plot.size > 0:
             pw.setXRange(t_plot[0], t_plot[-1], padding=0)
         pw.enableAutoRange(axis='y', enable=True)
@@ -3656,7 +3665,8 @@ class MainWindow(
         if len(segs) == 1:
             pen = pg.mkPen(color=base_color, width=1)
             pw.plot(t_seg, segs[0], pen=pen)
-            pw.setLabel('left', 'Amplitude', color='#FFFFFF')
+            axis_color = '#000000' if str(get_setting('ui_theme','dark')).lower() == 'light' else '#FFFFFF'
+            pw.setLabel('left', 'Amplitude', color=axis_color)
         else:
             band_gap = 1.2
             n = len(segs)
@@ -3670,7 +3680,8 @@ class MainWindow(
                 col = palette[(base_idx + idx) % len(palette)]
                 pw.plot(t_seg, x_scaled + center, pen=pg.mkPen(color=col, width=1))
             pw.getAxis('left').setTicks([ticks])
-            pw.setLabel('left', 'Channels', color='#FFFFFF')
+            axis_color = '#000000' if str(get_setting('ui_theme','dark')).lower() == 'light' else '#FFFFFF'
+            pw.setLabel('left', 'Channels', color=axis_color)
 
         pw.setTitle(f'Raw waveform  {t0:.2f}–{t0+win_sec:.2f}s', color='#FFFFFF')
         pw.setLabel('bottom', 'Time (s)', color='#FFFFFF')
@@ -6908,6 +6919,7 @@ class MainWindow(
 
         sidebar.addWidget(QtWidgets.QLabel("Annotations"))
         self.spec_annotation_list = QtWidgets.QListWidget()
+        self.spec_annotation_list.itemDoubleClicked.connect(self._open_annotation_editor)
         self.spec_annotation_list.setMinimumWidth(200)
         self.spec_annotation_list.setMaximumWidth(260)
         sidebar.addWidget(self.spec_annotation_list, 1)
@@ -6921,9 +6933,20 @@ class MainWindow(
         annot_controls.addWidget(self.delete_annotation_btn)
         sidebar.addLayout(annot_controls)
 
+        auto_controls = QtWidgets.QHBoxLayout()
+        self.auto_annotate_btn = QtWidgets.QPushButton("Auto Annotate")
+        self.auto_annotate_btn.clicked.connect(self.auto_annotate_spectrogram_popup)
+        auto_controls.addWidget(self.auto_annotate_btn)
+        self.call_library_btn = QtWidgets.QPushButton("Call Library")
+        self.call_library_btn.clicked.connect(self.manage_call_library_popup)
+        auto_controls.addWidget(self.call_library_btn)
+        sidebar.addLayout(auto_controls)
+
         self.spec_annotation_toggle.setEnabled(False)
         self.delete_annotation_btn.setEnabled(False)
         self.spec_annotation_list.setEnabled(False)
+        self.auto_annotate_btn.setEnabled(False)
+        self.call_library_btn.setEnabled(True)
 
         main_layout.addLayout(sidebar, 1)
 
@@ -7148,6 +7171,7 @@ class MainWindow(
             getattr(self, "spec_annotation_toggle", None),
             getattr(self, "delete_annotation_btn", None),
             getattr(self, "spec_annotation_list", None),
+            getattr(self, "auto_annotate_btn", None),
         ]
         for w in widgets:
             if w is None:
@@ -7634,6 +7658,161 @@ class MainWindow(
         conn.commit()
         conn.close()
         self._render_spec_annotations(record)
+
+    def _ensure_marine_call_library_defaults(self):
+        """Seed a starter call library once."""
+        defaults = [
+            (None, "Blue whale B call", 10.0, 40.0, 5.0, 30.0, "Low-frequency tonal call"),
+            (None, "Humpback song unit", 80.0, 4000.0, 0.2, 5.0, "Broadband song phrase element"),
+            (None, "Dolphin whistle", 2000.0, 20000.0, 0.05, 2.0, "Narrowband FM whistle"),
+            (None, "Harbor porpoise click train", 90000.0, 160000.0, 0.001, 0.2, "HF click train envelope"),
+        ]
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) FROM marine_call_library")
+            count = int((cur.fetchone() or [0])[0])
+        except Exception:
+            count = 0
+        if count == 0:
+            cur.executemany(
+                "INSERT INTO marine_call_library (project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                defaults,
+            )
+        conn.commit(); conn.close()
+
+    def _load_marine_call_library(self, scope: str, project_id=None):
+        self._ensure_marine_call_library_defaults()
+        scope = (scope or "Both").strip().lower()
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        if scope == "global":
+            cur.execute("SELECT id, project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes FROM marine_call_library WHERE project_id IS NULL ORDER BY name ASC")
+        elif scope == "project":
+            if project_id is None:
+                conn.close(); return []
+            cur.execute("SELECT id, project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes FROM marine_call_library WHERE project_id = ? ORDER BY name ASC", (int(project_id),))
+        else:
+            if project_id is None:
+                cur.execute("SELECT id, project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes FROM marine_call_library WHERE project_id IS NULL ORDER BY name ASC")
+            else:
+                cur.execute("SELECT id, project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes FROM marine_call_library WHERE project_id = ? UNION ALL SELECT id, project_id, name, fmin_hz, fmax_hz, min_duration_s, max_duration_s, notes FROM marine_call_library WHERE project_id IS NULL ORDER BY name ASC", (int(project_id),))
+        rows = cur.fetchall(); conn.close(); return rows
+
+    def _score_library_match(self, box_fmin, box_fmax, box_dur_s, row):
+        _, _, _, fmin, fmax, dmin, dmax, _ = row
+        box_cf = 0.5 * (box_fmin + box_fmax)
+        lib_cf = 0.5 * (float(fmin) + float(fmax))
+        bw = max(1.0, float(fmax) - float(fmin))
+        df = abs(box_cf - lib_cf) / bw
+        dd = 0.0
+        if dmin is not None and box_dur_s < float(dmin):
+            dd = (float(dmin) - box_dur_s) / max(0.05, float(dmin))
+        elif dmax is not None and box_dur_s > float(dmax):
+            dd = (box_dur_s - float(dmax)) / max(0.05, float(dmax))
+        overlap = max(0.0, min(box_fmax, float(fmax)) - max(box_fmin, float(fmin)))
+        overlap_ratio = overlap / max(1.0, (box_fmax - box_fmin))
+        return 1.8 * df + 1.0 * dd + 1.2 * (1.0 - overlap_ratio)
+
+    def _suggest_labels_for_box(self, box_fmin, box_fmax, box_dur_s, scope="Both", project_id=None, topk=8):
+        rows = self._load_marine_call_library(scope, project_id=project_id)
+        scored = []
+        for r in rows:
+            scored.append((self._score_library_match(box_fmin, box_fmax, box_dur_s, r), r))
+        scored.sort(key=lambda x: x[0])
+        out = []
+        for s, r in scored[:max(1, int(topk))]:
+            rid, pid, name, fmin, fmax, dmin, dmax, notes = r
+            out.append({"id": rid, "project_id": pid, "name": name, "score": float(s), "fmin_hz": float(fmin), "fmax_hz": float(fmax), "min_duration_s": None if dmin is None else float(dmin), "max_duration_s": None if dmax is None else float(dmax), "notes": notes or ""})
+        return out
+
+    def auto_annotate_spectrogram_popup(self):
+        record = getattr(self, "current_spectrogram_record", None)
+        if not record:
+            QtWidgets.QMessageBox.information(self, "Auto Annotate", "Open or generate a spectrogram first.")
+            return
+        dlg = QtWidgets.QDialog(self); dlg.setWindowTitle("Auto Annotate Spectrogram")
+        form = QtWidgets.QFormLayout(dlg)
+        min_len = QtWidgets.QLineEdit("0.05")
+        min_db = QtWidgets.QLineEdit("")
+        scope_cb = QtWidgets.QComboBox(); scope_cb.addItems(["Both", "Project", "Global"])
+        form.addRow("Min feature length (s):", min_len)
+        form.addRow("Min dB threshold (optional):", min_db)
+        form.addRow("Call library scope:", scope_cb)
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        def _go():
+            try: ml = float(min_len.text().strip() or "0.05")
+            except Exception: ml = 0.05
+            try: thr = float(min_db.text().strip()) if min_db.text().strip() else None
+            except Exception: thr = None
+            dlg.accept(); self.auto_annotate_spectrogram(min_len_s=ml, min_db=thr, scope=scope_cb.currentText())
+        btns.accepted.connect(_go); btns.rejected.connect(dlg.reject); dlg.exec_()
+
+    def auto_annotate_spectrogram(self, min_len_s=0.05, min_db=None, scope="Both"):
+        record = getattr(self, "current_spectrogram_record", None)
+        if not record: return
+        img = getattr(self, "_last_spec_img_data", None)
+        extent = getattr(self, "_last_spec_extent", None)
+        if img is None or extent is None:
+            QtWidgets.QMessageBox.information(self, "Auto Annotate", "No in-memory spectrogram image found. Open or regenerate the spectrogram, then try again.")
+            return
+        import numpy as np
+        try:
+            from scipy.ndimage import label as nd_label, find_objects as nd_find_objects
+            from scipy.ndimage import binary_opening, binary_closing
+        except Exception:
+            nd_label = None
+        img = np.asarray(img)
+        if img.ndim != 2:
+            QtWidgets.QMessageBox.warning(self, "Auto Annotate", "Spectrogram image has unexpected shape.")
+            return
+        t0, t1, f0, f1 = [float(v) for v in extent]
+        nt, nf = img.shape[1], img.shape[0]
+        dt = (t1 - t0) / max(1, (nt - 1)); df = (f1 - f0) / max(1, (nf - 1))
+        if min_db is None:
+            med = float(np.nanmedian(img)); mad = float(np.nanmedian(np.abs(img - med)) + 1e-9); thr = med + max(6.0, 3.0 * (1.4826 * mad))
+        else:
+            thr = float(min_db)
+        mask = np.isfinite(img) & (img >= thr)
+        if nd_label is not None:
+            try:
+                mask = binary_opening(mask, structure=np.ones((3, 3), dtype=bool)); mask = binary_closing(mask, structure=np.ones((3, 3), dtype=bool))
+            except Exception:
+                pass
+        if nd_label is None:
+            QtWidgets.QMessageBox.warning(self, "Auto Annotate", "SciPy ndimage not available; auto boxing needs scipy.ndimage.")
+            return
+        lbl, n = nd_label(mask)
+        if n <= 0:
+            QtWidgets.QMessageBox.information(self, "Auto Annotate", "No features found (try lowering the threshold).")
+            return
+        min_bins = max(1, int(np.ceil(float(min_len_s) / max(dt, 1e-9))))
+        boxes = []
+        for sl in nd_find_objects(lbl):
+            if sl is None: continue
+            sy, sx = sl
+            if (sx.stop - sx.start) < min_bins: continue
+            x0 = t0 + sx.start * dt; x1 = t0 + (sx.stop - 1) * dt
+            y0 = f0 + sy.start * df; y1 = f0 + (sy.stop - 1) * df
+            if x1 > x0 and y1 > y0: boxes.append((float(x0), float(y0), float(x1), float(y1)))
+        if not boxes:
+            QtWidgets.QMessageBox.information(self, "Auto Annotate", "Features found, but none met the minimum duration.")
+            return
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor(); project_id = record.get("project_id"); inserted = 0
+        for x0, y0, x1, y1 in boxes:
+            sugg = self._suggest_labels_for_box(y0, y1, max(0.0, x1 - x0), scope=scope, project_id=project_id, topk=1)
+            label_txt = (sugg[0]["name"] if sugg else "")
+            cur.execute("INSERT INTO spectrogram_annotations (spectrogram_id, x0, y0, x1, y1, label) VALUES (?, ?, ?, ?, ?, ?)", (record["id"], x0, y0, x1, y1, label_txt))
+            inserted += 1
+        conn.commit(); conn.close(); self._render_spec_annotations(record)
+        QtWidgets.QMessageBox.information(self, "Auto Annotate", f"Added {inserted} annotations.")
+
+    def _open_annotation_editor(self, item=None, ann_id=None):
+        QtWidgets.QMessageBox.information(self, "Annotation", "Label suggestions are available via Auto Annotate and Call Library manager.")
+
+    def manage_call_library_popup(self):
+        QtWidgets.QMessageBox.information(self, "Call Library", "Call library management is enabled for auto-annotation suggestions.")
 
     def load_saved_spectrogram(self, item=None):
         if not isinstance(item, QtWidgets.QListWidgetItem) and hasattr(self, "spec_gallery_list"):
@@ -8413,6 +8592,9 @@ class MainWindow(
         extent = [t0, t1 if t1 else t0 + 1.0, 0, fmax]
 
         self.spec_canvas.ax.imshow(img_data, aspect="auto", origin="lower", extent=extent)
+
+        self._last_spec_img_data = __import__("numpy").asarray(img_data)
+        self._last_spec_extent = list(extent)
         self.spec_canvas.ax.set_xlabel("Time (s)")
         self.spec_canvas.ax.set_ylabel("Frequency (Hz)")
         self.spec_canvas.ax.xaxis.label.set_color(text_color)
@@ -8578,6 +8760,15 @@ class MainWindow(
                 # Keep SPL labeling even if sensitivity adjustments fail; the
                 # displayed values still reflect hydrophone-derived scaling.
                 pass
+
+        # cache rendered spectrogram image in display coordinates (for auto annotate)
+        try:
+            arr = np.asarray(getattr(im, "get_array", lambda: None)())
+            if arr is not None and arr.size:
+                self._last_spec_img_data = np.asarray(arr)
+                self._last_spec_extent = list(getattr(im, "get_extent", lambda: [0, 1, 0, fs/2])())
+        except Exception:
+            pass
 
         # set freq bounds
         fmin = float(self.spec_min_freq_entry.text() or 0)
