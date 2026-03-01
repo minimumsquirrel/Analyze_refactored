@@ -997,6 +997,22 @@ except NameError:
 
 
 
+
+
+class ChartTabAdapter:
+    """Compatibility adapter exposing a set_project API for the embedded Chart tab."""
+    def __init__(self, main_window):
+        self.main_window = main_window
+
+    def set_project(self, project_id=None, project_name=None):
+        try:
+            self.main_window.current_project_id = project_id
+            self.main_window.current_project_name = project_name
+        except Exception:
+            pass
+        if hasattr(self.main_window, "refresh_chart_tracks"):
+            self.main_window.refresh_chart_tracks()
+
 class MainWindow(
     QtWidgets.QMainWindow,
     WavFileToolsMixin,
@@ -2123,6 +2139,12 @@ class MainWindow(
             except Exception:
                 pass
 
+        if hasattr(self, "gps_ctd_tab") and self.gps_ctd_tab is not None:
+            try:
+                self.gps_ctd_tab.set_project(self.current_project_id, self.current_project_name)
+            except Exception:
+                pass
+
 
     def _attach_measurement_to_current_project(self, file_name: str, method: str):
         """
@@ -2937,6 +2959,7 @@ class MainWindow(
         self.chart_tab = QtWidgets.QWidget()
         self.setup_chart_tab()
         self.tabs.addTab(self.chart_tab, "Chart")
+        self.gps_ctd_tab = ChartTabAdapter(self)
 
         # --- Logs Tab ---------------------------------------------------------
         self.logs_tab = QtWidgets.QWidget()
@@ -9227,6 +9250,7 @@ class MainWindow(
         self.gps_plot.setLabel('bottom', 'Longitude')
         self.gps_plot.setLabel('left', 'Latitude')
         self.gps_plot.addLegend()
+        self.gps_plot.getViewBox().setAspectLocked(False)
         right.addWidget(self.gps_plot, 1)
 
         self.gps_info_label = QtWidgets.QLabel("No tracks loaded")
