@@ -89,6 +89,7 @@ from PyQt5.QtGui import QDesktopServices, QFont, QPixmap
 import qdarkstyle
 import pyqtgraph as pg
 import tempfile
+import xml.etree.ElementTree as ET
 from PyQt5.QtMultimedia import QSound
 import joblib
 from sklearn.cluster import KMeans
@@ -326,6 +327,10 @@ def init_db():
          "id INTEGER PRIMARY KEY AUTOINCREMENT, spectrogram_id INTEGER, x0 REAL, y0 REAL, x1 REAL, y1 REAL, label TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(spectrogram_id) REFERENCES spectrograms(id)"),
         ("marine_call_library",
          "id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, name TEXT NOT NULL, fmin_hz REAL, fmax_hz REAL, min_duration_s REAL, max_duration_s REAL, notes TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id)"),
+        ("gps_tracks",
+         "id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, name TEXT NOT NULL, source_file TEXT, color TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id)"),
+        ("gps_track_points",
+         "id INTEGER PRIMARY KEY AUTOINCREMENT, track_id INTEGER NOT NULL, point_index INTEGER, timestamp_utc TEXT, latitude REAL NOT NULL, longitude REAL NOT NULL, elevation_m REAL, FOREIGN KEY(track_id) REFERENCES gps_tracks(id) ON DELETE CASCADE"),
         ("app_settings",
          "key TEXT PRIMARY KEY, value TEXT")
     ]
@@ -390,6 +395,14 @@ def init_db():
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_marine_call_library_scope "
         "ON marine_call_library(project_id, fmin_hz, fmax_hz)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gps_tracks_project "
+        "ON gps_tracks(project_id, created_at)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_gps_track_points_track "
+        "ON gps_track_points(track_id, point_index)"
     )
 
 
@@ -1048,6 +1061,12 @@ class MainWindow(
             pass
         try:
             self.update_fft_plot()
+        except Exception:
+            pass
+
+        try:
+            self.refresh_chart_theme()
+            self._plot_selected_gps_tracks()
         except Exception:
             pass
 
@@ -2098,6 +2117,12 @@ class MainWindow(
             except Exception:
                 pass
 
+        if hasattr(self, "refresh_chart_tracks"):
+            try:
+                self.refresh_chart_tracks()
+            except Exception:
+                pass
+
 
     def _attach_measurement_to_current_project(self, file_name: str, method: str):
         """
@@ -2907,6 +2932,11 @@ class MainWindow(
         self.spectrogram_tab = QtWidgets.QWidget()
         self.setup_spectrogram_tab()
         self.tabs.addTab(self.spectrogram_tab, "Spectrogram")
+
+        # --- Chart Tab --------------------------------------------------------
+        self.chart_tab = QtWidgets.QWidget()
+        self.setup_chart_tab()
+        self.tabs.addTab(self.chart_tab, "Chart")
 
         # --- Logs Tab ---------------------------------------------------------
         self.logs_tab = QtWidgets.QWidget()
@@ -9166,6 +9196,262 @@ class MainWindow(
             self.log_entries_per_page = 50
         self.log_current_page = 0
         self.request_logs_refresh(immediate=True, refresh_filters=False)
+
+    def setup_chart_tab(self):
+        layout = QtWidgets.QHBoxLayout(self.chart_tab)
+
+        sidebar = QtWidgets.QVBoxLayout()
+        sidebar.addWidget(QtWidgets.QLabel("GPS Tracks"))
+        self.gps_track_list = QtWidgets.QListWidget()
+        self.gps_track_list.setMinimumWidth(220)
+        self.gps_track_list.itemSelectionChanged.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.gps_track_list, 1)
+
+        row = QtWidgets.QHBoxLayout()
+        self.gps_import_btn = QtWidgets.QPushButton("Import Track")
+        self.gps_import_btn.clicked.connect(self.import_gps_track)
+        row.addWidget(self.gps_import_btn)
+        self.gps_delete_btn = QtWidgets.QPushButton("Delete")
+        self.gps_delete_btn.clicked.connect(self.delete_selected_gps_tracks)
+        row.addWidget(self.gps_delete_btn)
+        sidebar.addLayout(row)
+
+        self.gps_fit_btn = QtWidgets.QPushButton("Fit View")
+        self.gps_fit_btn.clicked.connect(self._fit_gps_view)
+        sidebar.addWidget(self.gps_fit_btn)
+        layout.addLayout(sidebar, 1)
+
+        right = QtWidgets.QVBoxLayout()
+        self.gps_plot = pg.PlotWidget()
+        self.gps_plot.showGrid(x=True, y=True, alpha=0.25)
+        self.gps_plot.setLabel('bottom', 'Longitude')
+        self.gps_plot.setLabel('left', 'Latitude')
+        self.gps_plot.addLegend()
+        right.addWidget(self.gps_plot, 1)
+
+        self.gps_info_label = QtWidgets.QLabel("No tracks loaded")
+        right.addWidget(self.gps_info_label)
+        layout.addLayout(right, 4)
+
+        self._gps_curves = []
+        self.refresh_chart_theme()
+        self.refresh_chart_tracks()
+
+    def refresh_chart_theme(self):
+        if not hasattr(self, 'gps_plot') or self.gps_plot is None:
+            return
+        pal = self.palette()
+        bg = pal.color(QtGui.QPalette.Window).name()
+        axis_color = '#000000' if str(get_setting('ui_theme', 'dark')).lower() == 'light' else '#FFFFFF'
+        self.gps_plot.setBackground(bg)
+        self.gps_plot.setLabel('bottom', 'Longitude', color=axis_color)
+        self.gps_plot.setLabel('left', 'Latitude', color=axis_color)
+        self.gps_plot.getAxis('bottom').setTextPen(pg.mkPen(axis_color))
+        self.gps_plot.getAxis('left').setTextPen(pg.mkPen(axis_color))
+
+    def _iter_csv_gps_points(self, file_path):
+        with open(file_path, 'r', encoding='utf-8-sig', newline='') as fh:
+            reader = csv.DictReader(fh)
+            if not reader.fieldnames:
+                return []
+            field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
+            lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
+            lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
+            ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
+            t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
+            if not lat_key or not lon_key:
+                raise ValueError("CSV must include latitude/longitude columns.")
+            out = []
+            for i, row in enumerate(reader):
+                try:
+                    lat = float(row.get(lat_key, ""))
+                    lon = float(row.get(lon_key, ""))
+                except Exception:
+                    continue
+                ele = row.get(ele_key) if ele_key else None
+                ts = row.get(t_key) if t_key else None
+                try:
+                    ele = float(ele) if ele not in (None, "") else None
+                except Exception:
+                    ele = None
+                out.append((i, ts, lat, lon, ele))
+            return out
+
+    def _iter_gpx_points(self, file_path):
+        ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
+        root = ET.parse(file_path).getroot()
+        points = []
+
+        for idx, trkpt in enumerate(root.findall('.//gpx:trkpt', ns) + root.findall('.//trkpt')):
+            try:
+                lat = float(trkpt.attrib.get('lat'))
+                lon = float(trkpt.attrib.get('lon'))
+            except Exception:
+                continue
+            ele_node = trkpt.find('gpx:ele', ns) or trkpt.find('ele')
+            time_node = trkpt.find('gpx:time', ns) or trkpt.find('time')
+            ele = None
+            if ele_node is not None and (ele_node.text or '').strip() != '':
+                try:
+                    ele = float(ele_node.text)
+                except Exception:
+                    ele = None
+            ts = (time_node.text or '').strip() if time_node is not None else None
+            points.append((idx, ts, lat, lon, ele))
+        return points
+
+    def import_gps_track(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Import GPS Track",
+            self._dialog_default_dir("originals"),
+            "GPS Track (*.gpx *.csv);;All Files (*)",
+        )
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == '.gpx':
+                points = self._iter_gpx_points(path)
+            elif ext == '.csv':
+                points = self._iter_csv_gps_points(path)
+            else:
+                raise ValueError("Unsupported track format. Use GPX or CSV.")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
+            return
+
+        if not points:
+            QtWidgets.QMessageBox.information(self, "Import GPS Track", "No valid GPS points found.")
+            return
+
+        default_name = os.path.splitext(os.path.basename(path))[0]
+        name, ok = QtWidgets.QInputDialog.getText(self, "Track Name", "Track name:", text=default_name)
+        if not ok:
+            return
+        name = (name or '').strip() or default_name
+
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        color = palette[0] if palette else '#03DFE2'
+        pid = getattr(self, 'current_project_id', None)
+
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO gps_tracks (project_id, name, source_file, color) VALUES (?, ?, ?, ?)",
+            (pid, name, path, color),
+        )
+        track_id = cur.lastrowid
+        cur.executemany(
+            "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+            [(track_id, i, ts, lat, lon, ele) for i, ts, lat, lon, ele in points],
+        )
+        conn.commit()
+        conn.close()
+
+        self.refresh_chart_tracks(select_id=track_id)
+
+    def refresh_chart_tracks(self, select_id=None):
+        if not hasattr(self, 'gps_track_list'):
+            return
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, source_file, created_at
+            FROM gps_tracks
+            WHERE (project_id IS NULL AND ? IS NULL) OR project_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (pid, pid),
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        self.gps_track_list.blockSignals(True)
+        self.gps_track_list.clear()
+        target_item = None
+        for rid, name, src, created in rows:
+            label = f"{name}"
+            if created:
+                label += f" ({str(created).split(' ')[0]})"
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, int(rid))
+            item.setToolTip(src or '')
+            self.gps_track_list.addItem(item)
+            if select_id is not None and int(rid) == int(select_id):
+                target_item = item
+        self.gps_track_list.blockSignals(False)
+        if target_item is not None:
+            target_item.setSelected(True)
+        self._plot_selected_gps_tracks()
+
+    def _fetch_track_points(self, track_id):
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT latitude, longitude FROM gps_track_points WHERE track_id=? ORDER BY point_index ASC, id ASC",
+            (int(track_id),),
+        )
+        pts = cur.fetchall()
+        cur.execute("SELECT name, color FROM gps_tracks WHERE id=?", (int(track_id),))
+        meta = cur.fetchone()
+        conn.close()
+        return (meta[0], meta[1] or '#03DFE2', pts) if meta else (f'Track {track_id}', '#03DFE2', pts)
+
+    def _plot_selected_gps_tracks(self):
+        if not hasattr(self, 'gps_plot'):
+            return
+        self.gps_plot.clear()
+        self.gps_plot.addLegend()
+        selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
+        if not selected:
+            self.gps_info_label.setText("No tracks selected")
+            return
+
+        total_points = 0
+        all_lon = []
+        all_lat = []
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        for idx, track_id in enumerate(selected):
+            name, color, pts = self._fetch_track_points(track_id)
+            if not pts:
+                continue
+            lat = np.asarray([p[0] for p in pts], dtype=float)
+            lon = np.asarray([p[1] for p in pts], dtype=float)
+            total_points += len(pts)
+            all_lon.extend(lon.tolist())
+            all_lat.extend(lat.tolist())
+            line_color = palette[idx % len(palette)] if palette else (color or "#03DFE2")
+            self.gps_plot.plot(lon, lat, pen=pg.mkPen(line_color, width=2), name=name)
+            self.gps_plot.plot([lon[0]], [lat[0]], pen=None, symbol='o', symbolSize=7,
+                               symbolBrush=pg.mkBrush(line_color), name=f"{name} start")
+
+        self.gps_info_label.setText(f"Tracks: {len(selected)}   Points: {total_points}")
+        if all_lon and all_lat:
+            self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
+            self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
+
+    def _fit_gps_view(self):
+        self._plot_selected_gps_tracks()
+
+    def delete_selected_gps_tracks(self):
+        if not hasattr(self, 'gps_track_list'):
+            return
+        ids = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()]
+        if not ids:
+            return
+        if QtWidgets.QMessageBox.question(self, "Delete Tracks", f"Delete {len(ids)} selected track(s)?") != QtWidgets.QMessageBox.Yes:
+            return
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        for tid in ids:
+            cur.execute("DELETE FROM gps_track_points WHERE track_id=?", (int(tid),))
+            cur.execute("DELETE FROM gps_tracks WHERE id=?", (int(tid),))
+        conn.commit(); conn.close()
+        self.refresh_chart_tracks()
 
     def setup_logs_tab(self):
         # paging state
