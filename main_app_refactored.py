@@ -3888,21 +3888,6 @@ class MainWindow(
                 pass
             conn.commit()
 
-        def _ensure_projects_table(conn):
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            try:
-                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
-            except Exception:
-                pass
-            conn.commit()
-
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
             cur.execute("""
@@ -7728,21 +7713,6 @@ class MainWindow(
             except Exception:
                 pass
             return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
-
-        def _ensure_projects_table(conn):
-            cur = conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            try:
-                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
-            except Exception:
-                pass
-            conn.commit()
 
         def _ensure_projects_table(conn):
             cur = conn.cursor()
@@ -15042,6 +15012,128 @@ class MainWindow(
         }
         return fmap.get((symbol_name or 'star').strip().lower(), 'star')
 
+    def _load_ctd_profile_for_map(self, ctd_id):
+        try:
+            conn = sqlite3.connect(DB_FILENAME)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT name, dt_utc, depth_json, temp_json, sal_json, sound_speed_json
+                FROM ctd_profiles
+                WHERE id=?
+                """,
+                (int(ctd_id),),
+            )
+            row = cur.fetchone()
+            conn.close()
+        except Exception:
+            return None
+        if not row:
+            return None
+        name, dt_utc, depth_json, temp_json, sal_json, sound_speed_json = row
+        try:
+            depth = np.array(json.loads(depth_json), dtype=float) if depth_json else np.array([])
+        except Exception:
+            depth = np.array([])
+        def _arr(v):
+            try:
+                if v is None:
+                    return None
+                loaded = json.loads(v)
+                if loaded is None:
+                    return None
+                return np.array(loaded, dtype=float)
+            except Exception:
+                return None
+        temp = _arr(temp_json)
+        sal = _arr(sal_json)
+        c_ms = _arr(sound_speed_json)
+        return {
+            'name': name or f'CTD {ctd_id}',
+            'dt_utc': dt_utc,
+            'depth_m': depth,
+            'temp_c': temp,
+            'sal_psu': sal,
+            'c_ms': c_ms,
+        }
+
+    @staticmethod
+    def _ideal_deployment_depth_from_profile(depth_m, c_ms):
+        if depth_m is None or c_ms is None:
+            return None
+        if len(depth_m) == 0 or len(c_ms) == 0:
+            return None
+        n = min(len(depth_m), len(c_ms))
+        d = np.asarray(depth_m[:n], dtype=float)
+        c = np.asarray(c_ms[:n], dtype=float)
+        mask = np.isfinite(d) & np.isfinite(c)
+        if not np.any(mask):
+            return None
+        d = d[mask]
+        c = c[mask]
+        if d.size == 0:
+            return None
+        # Heuristic: minimum sound-speed depth is a practical deployment target for many SSPs.
+        return float(d[int(np.argmin(c))])
+
+    def _ctd_plot_data_uri(self, ctd_id):
+        prof = self._load_ctd_profile_for_map(ctd_id)
+        if not prof:
+            return None, None
+        depth = np.asarray(prof.get('depth_m') if prof.get('depth_m') is not None else [], dtype=float)
+        if depth.size == 0:
+            return None, None
+        temp = prof.get('temp_c')
+        sal = prof.get('sal_psu')
+        c_ms = prof.get('c_ms')
+        ideal_depth = self._ideal_deployment_depth_from_profile(depth, c_ms)
+
+        fig, (axT, axS, axC) = plt.subplots(1, 3, figsize=(10.5, 4.8), facecolor='#19232D')
+        for ax in (axT, axS, axC):
+            ax.set_facecolor('#19232D')
+            for sp in ax.spines.values():
+                sp.set_color('white')
+            ax.tick_params(colors='white')
+            ax.grid(True, ls='--', alpha=0.35, color='gray')
+            ax.invert_yaxis()
+            ax.set_ylabel('Depth (m)', color='white')
+
+        axT.set_title('Temperature', color='white')
+        axS.set_title('Salinity', color='white')
+        axC.set_title('Sound Speed', color='white')
+        axT.set_xlabel('°C', color='white')
+        axS.set_xlabel('PSU', color='white')
+        axC.set_xlabel('m/s', color='white')
+
+        if temp is not None and len(temp) > 0:
+            n = min(len(depth), len(temp))
+            axT.plot(np.asarray(temp[:n], dtype=float), depth[:n], color=getattr(self, 'graph_color', '#33C3F0'), lw=1.8)
+        if sal is not None and len(sal) > 0:
+            n = min(len(depth), len(sal))
+            axS.plot(np.asarray(sal[:n], dtype=float), depth[:n], color='#FFD166', lw=1.8)
+        if c_ms is not None and len(c_ms) > 0:
+            n = min(len(depth), len(c_ms))
+            axC.plot(np.asarray(c_ms[:n], dtype=float), depth[:n], color='#6EEB83', lw=2.0)
+
+        if ideal_depth is not None:
+            for ax in (axT, axS, axC):
+                ax.axhline(ideal_depth, color='#FF5D73', ls='--', lw=1.2)
+            axC.text(0.02, 0.04, f'Ideal deployment depth: {ideal_depth:.1f} m',
+                     color='#FFB3C1', transform=axC.transAxes, fontsize=9, ha='left', va='bottom')
+
+        title = f"{prof.get('name') or ('CTD %s' % ctd_id)}"
+        if prof.get('dt_utc'):
+            title += f"  ({prof.get('dt_utc')})"
+        fig.suptitle(title, color='white', fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+        import io
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor(), bbox_inches='tight')
+        plt.close(fig)
+        b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+        return f"data:image/png;base64,{b64}", ideal_depth
+
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
@@ -15130,10 +15222,26 @@ class MainWindow(
                 latf = float(lat); lonf = float(lon)
             except Exception:
                 continue
-            lab = f"CTD: {name or ('Cast %s' % ctd_id)}"
+            title = name or ('Cast %s' % ctd_id)
+            img_uri, ideal_depth = self._ctd_plot_data_uri(ctd_id)
+            popup_html = f"<b>CTD: {title}</b>"
             if dt_utc:
-                lab += f"<br>{dt_utc}"
-            folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
+                popup_html += f"<br>{dt_utc}"
+            popup_html += f"<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+            if ideal_depth is not None:
+                popup_html += f"<br><b>Ideal deployment depth:</b> {ideal_depth:.1f} m"
+            if img_uri:
+                popup_html += (
+                    f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
+                    f"<br><a href='{img_uri}' target='_blank' rel='noopener' "
+                    f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;text-decoration:none;border-radius:4px;'>"
+                    f"Open Full CTD Graph</a>"
+                )
+            folium.Marker(
+                [latf, lonf],
+                popup=folium.Popup(popup_html, max_width=420),
+                icon=folium.Icon(color='orange', icon='tint', prefix='fa')
+            ).add_to(m)
 
         for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
             try:
