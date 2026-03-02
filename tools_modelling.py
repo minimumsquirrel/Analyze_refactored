@@ -26,6 +26,7 @@ from scipy.signal import butter, sosfiltfilt, welch, wiener, hilbert, periodogra
 from scipy.fft import rfft, rfftfreq
 import pandas as pd
 import pywt
+import pyqtgraph as pg
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QUrl, Qt, QTimer
@@ -2775,6 +2776,13 @@ class ModellingToolsMixin:
         top.addWidget(QtWidgets.QLabel("Focus Freq:"))
         top.addWidget(focus_freq_cb)
         top.addWidget(focus_freq_edit)
+
+        dist_unit_cb = QtWidgets.QComboBox()
+        dist_unit_cb.addItems(["m", "ft", "nm", "miles"])
+        top.addSpacing(10)
+        top.addWidget(QtWidgets.QLabel("Distance Unit:"))
+        top.addWidget(dist_unit_cb)
+
         top.addStretch(1)
         top.addWidget(btn_cfg)
         top.addWidget(btn_compute)
@@ -2790,6 +2798,19 @@ class ModellingToolsMixin:
         depth_row.addWidget(btn_ctd_profile, 0)
         outer.addLayout(depth_row)
 
+        # Primary plotting surface uses pyqtgraph (theme-matching app background)
+        pg_glw = pg.GraphicsLayoutWidget()
+        try:
+            bg = dlg.palette().color(QtGui.QPalette.Window).name()
+            pg_glw.setBackground(bg)
+        except Exception:
+            pg_glw.setBackground('#19232D')
+        pg_ax1 = pg_glw.addPlot(row=0, col=0, title='RL vs Range (all frequencies)')
+        pg_ax2 = pg_glw.addPlot(row=1, col=0, title='RL vs Frequency at sample ranges')
+        pg_ax3 = pg_glw.addPlot(row=2, col=0, title='RL vs Range (representative frequencies)')
+        outer.addWidget(pg_glw, 1)
+
+        # Keep matplotlib figure for existing export pipeline
         fig = Figure(facecolor="#1e1e1e")
         ax1 = fig.add_subplot(311)
         ax2 = fig.add_subplot(312)
@@ -2798,7 +2819,8 @@ class ModellingToolsMixin:
             _style_axes(ax, dark=True)
 
         canvas = FigureCanvas(fig)
-        outer.addWidget(canvas, 1)
+        canvas.setVisible(False)
+        outer.addWidget(canvas, 0)
 
         # ------------------------------------------------------------
         # Pick readout (main plots)
@@ -3431,6 +3453,84 @@ class ModellingToolsMixin:
         # ------------------------------------------------------------
         # Compute / plot
         # ------------------------------------------------------------
+        def _style_pg_plot(ax, left_label, bottom_label):
+            axis_color = '#000000' if str(get_setting('ui_theme', 'dark')).lower() == 'light' else '#FFFFFF'
+            ax.showGrid(x=True, y=True, alpha=0.25)
+            ax.setLabel('left', left_label, color=axis_color)
+            ax.setLabel('bottom', bottom_label, color=axis_color)
+            ax.getAxis('left').setTextPen(pg.mkPen(axis_color))
+            ax.getAxis('bottom').setTextPen(pg.mkPen(axis_color))
+            try:
+                ax.getAxis('bottom').enableAutoSIPrefix(False)
+            except Exception:
+                pass
+
+        def _distance_unit_spec():
+            unit = dist_unit_cb.currentText() if 'dist_unit_cb' in locals() else 'm'
+            table = {
+                'm': (1.0, 'm'),
+                'ft': (3.280839895, 'ft'),
+                'nm': (1.0 / 1852.0, 'nm'),
+                'miles': (1.0 / 1609.344, 'miles'),
+            }
+            return table.get(unit, (1.0, 'm'))
+
+        def _plot_pyqtgraph(rr, RL_med, RL_min, RL_max, echo_RL, echo_thresh_pt, f_u, RL_mat, single_freq_mode):
+            for ax in (pg_ax1, pg_ax2, pg_ax3):
+                ax.clear()
+                ax.setLogMode(x=False, y=False)
+
+            # Plot 1
+            sf, unit_lbl = _distance_unit_spec()
+            rr_disp = np.asarray(rr, float) * sf
+            pg_ax1.setTitle('RL vs Range (all frequencies)')
+            pg_ax1.plot(rr_disp, RL_med, pen=pg.mkPen('#03DFE2', width=2), name='Median RL')
+            pg_ax1.plot(rr_disp, RL_min, pen=pg.mkPen('#77DD77', width=1), name='Min RL')
+            pg_ax1.plot(rr_disp, RL_max, pen=pg.mkPen('#FD8A8A', width=1), name='Max RL')
+            if echo_RL is not None:
+                pg_ax1.plot(rr_disp, echo_RL, pen=pg.mkPen('#FFC8A2', width=2, style=QtCore.Qt.DashLine), name='Echo (focus)')
+                if echo_thresh_pt is not None:
+                    pg_ax1.plot([echo_thresh_pt[0] * sf], [echo_thresh_pt[1]], pen=None, symbol='x', symbolSize=10,
+                                symbolPen=pg.mkPen('#FFC8A2', width=2))
+            _style_pg_plot(pg_ax1, 'Level (dB re 1 µPa)', f'Range ({unit_lbl})')
+
+            # Plot 2
+            if not single_freq_mode:
+                pg_ax2.setTitle('RL vs Frequency at sample ranges')
+                sample_ranges = [rr[0], rr[len(rr)//2], rr[-1]]
+                cols = ['#C8B6FF', '#FFFFB5', '#03DFE2']
+                f_khz = np.asarray(f_u, float) / 1000.0
+                for i, r_s in enumerate(sample_ranges):
+                    j = int(np.argmin(np.abs(rr - r_s)))
+                    pg_ax2.plot(f_khz, RL_mat[:, j], pen=pg.mkPen(cols[i % len(cols)], width=2),
+                                symbol='o', symbolSize=4)
+                _style_pg_plot(pg_ax2, 'RL (dB re 1 µPa)', 'Frequency (kHz)')
+            else:
+                f0 = float(f_u[0])
+                pg_ax2.setTitle(f'RL vs Range (only one frequency in dataset: {f0:.0f} Hz)')
+                pg_ax2.plot(rr_disp, RL_mat[0, :], pen=pg.mkPen('#C8B6FF', width=2))
+                if echo_RL is not None:
+                    pg_ax2.plot(rr_disp, echo_RL, pen=pg.mkPen('#FFC8A2', width=2, style=QtCore.Qt.DashLine))
+                _style_pg_plot(pg_ax2, 'RL (dB re 1 µPa)', f'Range ({unit_lbl})')
+
+            # Plot 3
+            pg_ax3.setTitle('RL vs Range (representative frequencies)')
+            order = np.argsort(f_u)
+            f_sorted = f_u[order]
+            RL_sorted = RL_mat[order, :]
+            idxs = []
+            if f_sorted.size >= 1:
+                idxs.append(0)
+            if f_sorted.size >= 3:
+                idxs.append(f_sorted.size // 2); idxs.append(f_sorted.size - 1)
+            elif f_sorted.size == 2:
+                idxs.append(1)
+            idxs = sorted(set(idxs))
+            cols3 = ['#77DD77', '#03DFE2', '#FD8A8A', '#C8B6FF']
+            for i, k in enumerate(idxs):
+                pg_ax3.plot(rr_disp, RL_sorted[k, :], pen=pg.mkPen(cols3[i % len(cols3)], width=2))
+            _style_pg_plot(pg_ax3, 'RL (dB re 1 µPa)', f'Range ({unit_lbl})')
+
         def _compute_and_plot():
             nonlocal last_results
 
@@ -3725,6 +3825,8 @@ class ModellingToolsMixin:
             ax3.legend(loc="best", facecolor="#1e1e1e", edgecolor="#555", labelcolor="white")
             _force_plain_x(ax3, log=True)
 
+            _plot_pyqtgraph(rr, RL_med, RL_min, RL_max, echo_RL, echo_thresh_pt, f_u, RL_mat, single_freq_mode)
+
             try:
                 fig.tight_layout()
             except Exception:
@@ -3748,6 +3850,7 @@ class ModellingToolsMixin:
         method_cb.currentIndexChanged.connect(_on_method_changed)
         file_cb.currentIndexChanged.connect(_on_file_changed)
         ctd_cb.currentIndexChanged.connect(_update_depth_hint)
+        dist_unit_cb.currentIndexChanged.connect(lambda *_: _compute_and_plot())
 
         btn_ctd_profile.clicked.connect(_show_ctd_sound_speed_popup)
         btn_cfg.clicked.connect(_open_config)
