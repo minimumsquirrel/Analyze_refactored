@@ -10544,6 +10544,11 @@ class MainWindow(
         self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
         sidebar.addWidget(self.chart_refresh_btn)
 
+        self.chart_use_webmap_cb = QtWidgets.QCheckBox("Use Web Map (Folium)")
+        self.chart_use_webmap_cb.setChecked(False)
+        self.chart_use_webmap_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_use_webmap_cb)
+
         sidebar.addWidget(QtWidgets.QLabel("Waypoints"))
         self.waypoint_list = QtWidgets.QListWidget()
         self.waypoint_list.setMinimumHeight(120)
@@ -11064,10 +11069,19 @@ class MainWindow(
             except Exception:
                 pass
 
-        if self.gps_map_view is not None and folium is not None:
+        use_web_map = bool(
+            getattr(self, 'chart_use_webmap_cb', None)
+            and self.chart_use_webmap_cb.isChecked()
+            and self.gps_map_view is not None
+            and folium is not None
+        )
+
+        if use_web_map:
             self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
             if hasattr(self, 'gps_map_stack'):
                 self.gps_map_stack.setCurrentWidget(self.gps_map_view)
+            if hasattr(self, 'gps_cursor_label'):
+                self.gps_cursor_label.setText('Cursor: hover coordinates available in PyQtGraph mode')
         else:
             if not hasattr(self, 'gps_plot'):
                 return
@@ -11108,7 +11122,7 @@ class MainWindow(
             self.gps_info_label.setText('No tracks selected')
             return
 
-        backend = 'Folium' if (self.gps_map_view is not None and folium is not None) else 'PyQtGraph'
+        backend = 'Folium' if use_web_map else 'PyQtGraph'
         self.gps_info_label.setText(
             f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}"
         )
