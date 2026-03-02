@@ -3947,7 +3947,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
-            _ensure_projects_table(conn)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -3976,8 +3987,20 @@ class MainWindow(
             conn = sqlite3.connect(path)
             _ensure_projects_table(conn)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -5193,7 +5216,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
-            _ensure_projects_table(conn)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -5221,8 +5255,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -6438,6 +6484,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -6465,8 +6523,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -7697,7 +7767,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
-            _ensure_projects_table(conn)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -7726,8 +7807,20 @@ class MainWindow(
             conn = sqlite3.connect(path)
             _ensure_projects_table(conn)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
