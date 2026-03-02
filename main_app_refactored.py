@@ -3867,10 +3867,26 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
+
+        def _ensure_projects_table(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
+            conn.commit()
 
         def _ensure_projects_table(conn):
             cur = conn.cursor()
@@ -5157,10 +5173,11 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -6431,10 +6448,11 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -7705,10 +7723,26 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
+
+        def _ensure_projects_table(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
+            conn.commit()
 
         def _ensure_projects_table(conn):
             cur = conn.cursor()
