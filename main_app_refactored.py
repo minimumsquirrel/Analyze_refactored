@@ -14354,31 +14354,118 @@ class MainWindow(
 
     def _iter_csv_gps_points(self, file_path):
         with open(file_path, 'r', encoding='utf-8-sig', newline='') as fh:
-            reader = csv.DictReader(fh)
-            if not reader.fieldnames:
-                return []
-            field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
-            lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
-            lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
-            ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
-            t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
-            if not lat_key or not lon_key:
-                raise ValueError("CSV must include latitude/longitude columns.")
-            out = []
-            for i, row in enumerate(reader):
-                try:
-                    lat = float(row.get(lat_key, ""))
-                    lon = float(row.get(lon_key, ""))
-                except Exception:
-                    continue
-                ele = row.get(ele_key) if ele_key else None
-                ts = row.get(t_key) if t_key else None
-                try:
-                    ele = float(ele) if ele not in (None, "") else None
-                except Exception:
-                    ele = None
-                out.append((i, ts, lat, lon, ele))
-            return out
+            lines = fh.readlines()
+
+        points = self._parse_header_csv_points(lines)
+        if points:
+            return points
+
+        nmea_points = self._parse_nmea_points(lines)
+        if nmea_points:
+            return nmea_points
+
+        raise ValueError(
+            "CSV must include latitude/longitude columns, or contain NMEA GGA sentences with coordinates."
+        )
+
+    @staticmethod
+    def _parse_header_csv_points(lines):
+        reader = csv.DictReader(lines)
+        if not reader.fieldnames:
+            return []
+        field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
+        lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
+        lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
+        ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
+        t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
+        if not lat_key or not lon_key:
+            return []
+        out = []
+        for i, row in enumerate(reader):
+            try:
+                lat = float(row.get(lat_key, ""))
+                lon = float(row.get(lon_key, ""))
+            except Exception:
+                continue
+            ele = row.get(ele_key) if ele_key else None
+            ts = row.get(t_key) if t_key else None
+            try:
+                ele = float(ele) if ele not in (None, "") else None
+            except Exception:
+                ele = None
+            out.append((i, ts, lat, lon, ele))
+        return out
+
+    @staticmethod
+    def _nmea_coord_to_decimal(raw_value, hemi, is_lat):
+        value = (raw_value or '').strip()
+        hemi = (hemi or '').strip().upper()
+        if value == '':
+            raise ValueError('Missing coordinate value')
+        num = float(value)
+        deg = int(num / 100)
+        mins = num - (deg * 100)
+        dec = deg + (mins / 60.0)
+        if is_lat and hemi == 'S':
+            dec = -dec
+        if (not is_lat) and hemi == 'W':
+            dec = -dec
+        return dec
+
+    def _parse_nmea_points(self, lines):
+        points = []
+        current_date = None
+        idx = 0
+        for raw in lines:
+            line = (raw or '').strip()
+            if not line.startswith('$'):
+                continue
+            sentence = line.split('*', 1)[0]
+            parts = sentence.split(',')
+            if not parts:
+                continue
+            msg = parts[0].upper()
+            if msg.endswith('ZDA') and len(parts) >= 5:
+                day = (parts[2] or '').zfill(2)
+                month = (parts[3] or '').zfill(2)
+                year = parts[4] or ''
+                if day.strip('0') == '':
+                    day = '01'
+                if month.strip('0') == '':
+                    month = '01'
+                if len(year) == 4 and day.isdigit() and month.isdigit():
+                    current_date = f"{year}-{month}-{day}"
+                continue
+            if not msg.endswith('GGA') or len(parts) < 10:
+                continue
+            try:
+                lat = self._nmea_coord_to_decimal(parts[2], parts[3], is_lat=True)
+                lon = self._nmea_coord_to_decimal(parts[4], parts[5], is_lat=False)
+            except Exception:
+                continue
+
+            time_token = (parts[1] or '').strip()
+            timestamp = None
+            if time_token:
+                hh = time_token[0:2] if len(time_token) >= 2 else '00'
+                mm = time_token[2:4] if len(time_token) >= 4 else '00'
+                ss = time_token[4:] if len(time_token) > 4 else '00'
+                hh = hh if hh.isdigit() else '00'
+                mm = mm if mm.isdigit() else '00'
+                if ss == '':
+                    ss = '00'
+                base_date = current_date or '1970-01-01'
+                timestamp = f"{base_date}T{hh}:{mm}:{ss}Z"
+
+            ele = None
+            try:
+                ele = float(parts[9]) if (parts[9] or '').strip() != '' else None
+            except Exception:
+                ele = None
+
+            points.append((idx, timestamp, lat, lon, ele))
+            idx += 1
+        return points
 
     def _iter_gpx_points(self, file_path):
         ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
@@ -14408,7 +14495,7 @@ class MainWindow(
             self,
             "Import GPS Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv);;All Files (*)",
+            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -14417,10 +14504,10 @@ class MainWindow(
         try:
             if ext == '.gpx':
                 points = self._iter_gpx_points(path)
-            elif ext == '.csv':
+            elif ext in {'.csv', '.txt', '.log', '.nmea'}:
                 points = self._iter_csv_gps_points(path)
             else:
-                raise ValueError("Unsupported track format. Use GPX or CSV.")
+                raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
             return
