@@ -10544,11 +10544,6 @@ class MainWindow(
         self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
         sidebar.addWidget(self.chart_refresh_btn)
 
-        self.chart_use_webmap_cb = QtWidgets.QCheckBox("Use Web Map (Folium)")
-        self.chart_use_webmap_cb.setChecked(False)
-        self.chart_use_webmap_cb.toggled.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(self.chart_use_webmap_cb)
-
         sidebar.addWidget(QtWidgets.QLabel("Waypoints"))
         self.waypoint_list = QtWidgets.QListWidget()
         self.waypoint_list.setMinimumHeight(120)
@@ -10994,6 +10989,11 @@ class MainWindow(
             pts = list(zip(tr["lat"], tr["lon"]))
             if not pts:
                 continue
+            if len(pts) > 5000:
+                step = max(1, len(pts) // 5000)
+                pts = pts[::step]
+                if pts[-1] != (tr["lat"][-1], tr["lon"][-1]):
+                    pts.append((tr["lat"][-1], tr["lon"][-1]))
             folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
             folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
                                 tooltip=f'{tr["name"]} start').add_to(m)
@@ -11069,12 +11069,7 @@ class MainWindow(
             except Exception:
                 pass
 
-        use_web_map = bool(
-            getattr(self, 'chart_use_webmap_cb', None)
-            and self.chart_use_webmap_cb.isChecked()
-            and self.gps_map_view is not None
-            and folium is not None
-        )
+        use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
