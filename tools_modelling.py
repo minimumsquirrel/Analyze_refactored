@@ -3453,11 +3453,15 @@ class ModellingToolsMixin:
             ax.setLabel('bottom', bottom_label, color=axis_color)
             ax.getAxis('left').setTextPen(pg.mkPen(axis_color))
             ax.getAxis('bottom').setTextPen(pg.mkPen(axis_color))
+            try:
+                ax.getAxis('bottom').enableAutoSIPrefix(False)
+            except Exception:
+                pass
 
         def _plot_pyqtgraph(rr, RL_med, RL_min, RL_max, echo_RL, echo_thresh_pt, f_u, RL_mat, single_freq_mode):
             for ax in (pg_ax1, pg_ax2, pg_ax3):
                 ax.clear()
-                ax.setLogMode(x=True, y=False)
+                ax.setLogMode(x=False, y=False)
 
             # Plot 1
             pg_ax1.setTitle('RL vs Range (all frequencies)')
@@ -3474,14 +3478,14 @@ class ModellingToolsMixin:
             # Plot 2
             if not single_freq_mode:
                 pg_ax2.setTitle('RL vs Frequency at sample ranges')
-                pg_ax2.setLogMode(x=True, y=False)
                 sample_ranges = [rr[0], rr[len(rr)//2], rr[-1]]
                 cols = ['#C8B6FF', '#FFFFB5', '#03DFE2']
+                f_khz = np.asarray(f_u, float) / 1000.0
                 for i, r_s in enumerate(sample_ranges):
                     j = int(np.argmin(np.abs(rr - r_s)))
-                    pg_ax2.plot(f_u, RL_mat[:, j], pen=pg.mkPen(cols[i % len(cols)], width=2),
+                    pg_ax2.plot(f_khz, RL_mat[:, j], pen=pg.mkPen(cols[i % len(cols)], width=2),
                                 symbol='o', symbolSize=4)
-                _style_pg_plot(pg_ax2, 'RL (dB re 1 µPa)', 'Frequency (Hz)')
+                _style_pg_plot(pg_ax2, 'RL (dB re 1 µPa)', 'Frequency (kHz)')
             else:
                 f0 = float(f_u[0])
                 pg_ax2.setTitle(f'RL vs Range (only one frequency in dataset: {f0:.0f} Hz)')
