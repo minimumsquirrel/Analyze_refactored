@@ -10503,23 +10503,10 @@ class MainWindow(
         self.gps_fit_btn.clicked.connect(self._fit_gps_view)
         sidebar.addWidget(self.gps_fit_btn)
 
-        self.chart_show_ctd_cb = QtWidgets.QCheckBox("Show CTD Casts")
-        self.chart_show_ctd_cb.setChecked(True)
-        self.chart_show_ctd_cb.toggled.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(self.chart_show_ctd_cb)
-
         self.chart_refresh_btn = QtWidgets.QPushButton("Refresh Chart")
         self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
         sidebar.addWidget(self.chart_refresh_btn)
 
-        self.chart_map_layer_combo = QtWidgets.QComboBox()
-        self.chart_map_layer_combo.addItems([
-            "Street Map",
-            "Bathymetry / Ocean",
-        ])
-        self.chart_map_layer_combo.currentIndexChanged.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(QtWidgets.QLabel("Map Layer"))
-        sidebar.addWidget(self.chart_map_layer_combo)
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -10763,24 +10750,27 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-        layer_choice = (self.chart_map_layer_combo.currentText() if hasattr(self, 'chart_map_layer_combo') else 'Street Map')
-        if layer_choice == 'Bathymetry / Ocean':
-            m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-            folium.TileLayer(
-                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-                attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-                name='Bathymetry / Ocean',
-                overlay=False,
-                control=True,
-            ).add_to(m)
-            folium.TileLayer(
-                tiles='OpenStreetMap',
-                name='Street Map',
-                overlay=False,
-                control=True,
-            ).add_to(m)
-        else:
-            m = folium.Map(location=center, zoom_start=zoom, tiles='OpenStreetMap', control_scale=True)
+        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
+        folium.TileLayer(
+            tiles='OpenStreetMap',
+            name='Street Map',
+            overlay=False,
+            control=True,
+        ).add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri',
+            name='Aerial',
+            overlay=False,
+            control=True,
+        ).add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
+            name='Bathymetry / Ocean',
+            overlay=False,
+            control=True,
+        ).add_to(m)
 
         for tr in tracks:
             pts = list(zip(tr["lat"], tr["lon"]))
@@ -10831,19 +10821,15 @@ class MainWindow(
                 tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon})
 
         ctd_count = 0
-        show_ctd = bool(getattr(self, 'chart_show_ctd_cb', None) and self.chart_show_ctd_cb.isChecked())
-        if show_ctd:
-            try:
-                ctd_rows = self._fetch_ctd_points_for_chart()
-            except Exception:
-                ctd_rows = []
-            for _, _, lat, lon, _ in ctd_rows:
-                try:
-                    all_lon.append(float(lon)); all_lat.append(float(lat)); ctd_count += 1
-                except Exception:
-                    pass
-        else:
+        try:
+            ctd_rows = self._fetch_ctd_points_for_chart()
+        except Exception:
             ctd_rows = []
+        for _, _, lat, lon, _ in ctd_rows:
+            try:
+                all_lon.append(float(lon)); all_lat.append(float(lat)); ctd_count += 1
+            except Exception:
+                pass
 
         if self.gps_map_view is not None and folium is not None:
             self._render_folium_chart_map(tracks, ctd_rows)
