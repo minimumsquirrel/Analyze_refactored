@@ -4009,6 +4009,42 @@ class ModellingToolsMixin:
                     return interp, nm
             return None, None
 
+        def _resolve_curve_interp_for_channel(ch_idx=None):
+            """Resolve hydrophone curve interp from channel config, then app-level fallback."""
+            # 1) Per-channel config
+            try:
+                if ch_idx is not None and hasattr(self, '_get_channel_config'):
+                    cfg = self._get_channel_config(ch_idx) or {}
+                    c_name = cfg.get('hydrophone_curve') if isinstance(cfg, dict) else None
+                    if c_name:
+                        fn, nm = build_curve_interp(c_name)
+                        if fn is not None:
+                            return fn, nm
+            except Exception:
+                pass
+
+            # 2) App-level selected curve fallback (legacy/global flow)
+            try:
+                if hasattr(self, '_get_selected_hydrophone_curve'):
+                    sel = self._get_selected_hydrophone_curve()
+                    c_name = sel.get('curve_name') if isinstance(sel, dict) else None
+                    if c_name:
+                        fn, nm = build_curve_interp(c_name)
+                        if fn is not None:
+                            return fn, nm
+            except Exception:
+                pass
+
+            # 3) First available DB curve fallback
+            try:
+                if curve_rows:
+                    fn, nm = build_curve_interp(curve_rows[0][0])
+                    if fn is not None:
+                        return fn, nm
+            except Exception:
+                pass
+            return None, None
+
         # -------- UI ----------
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Wenz Curves + Measured PSD + CTD")
@@ -4279,12 +4315,7 @@ class ModellingToolsMixin:
                         "No channels are configured as hydrophones for the current file.",
                     )
                 for data, ch_label, ch_idx in zip(data_list, meas_labels, meas_idxs):
-                    RS_fn = None
-                    if ch_idx is not None:
-                        cfg = self._get_channel_config(ch_idx) or {}
-                        curve_name = cfg.get("hydrophone_curve")
-                        if curve_name:
-                            RS_fn, _ = build_curve_interp(curve_name)
+                    RS_fn, resolved_curve_name = _resolve_curve_interp_for_channel(ch_idx)
                     if RS_fn is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
