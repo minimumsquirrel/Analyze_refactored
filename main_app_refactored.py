@@ -4421,8 +4421,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -5689,8 +5695,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -6957,8 +6969,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -8241,8 +8259,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
