@@ -3989,7 +3989,7 @@ class ModellingToolsMixin:
         curve_rows = []
         conn_h = None
         try:
-            from analyze_qt import DB_FILENAME
+            # Use shared DB path from the refactored app context.
             conn_h = sqlite3.connect(DB_FILENAME)
             cur = conn_h.cursor()
             cur.execute("SELECT curve_name, min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves ORDER BY curve_name")
