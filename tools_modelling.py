@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Modelling & Plotting Tools — methods for MainWindow mixin
 Auto-extracted from main application. Each method is a mixin for self.
