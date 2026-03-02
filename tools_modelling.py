@@ -2778,7 +2778,7 @@ class ModellingToolsMixin:
         top.addWidget(focus_freq_edit)
 
         dist_unit_cb = QtWidgets.QComboBox()
-        dist_unit_cb.addItems(["m", "ft", "nm", "miles"])
+        dist_unit_cb.addItems(["m", "km", "ft", "nm", "miles"])
         top.addSpacing(10)
         top.addWidget(QtWidgets.QLabel("Distance Unit:"))
         top.addWidget(dist_unit_cb)
@@ -3469,6 +3469,7 @@ class ModellingToolsMixin:
             unit = dist_unit_cb.currentText() if 'dist_unit_cb' in locals() else 'm'
             table = {
                 'm': (1.0, 'm'),
+                'km': (1.0 / 1000.0, 'km'),
                 'ft': (3.280839895, 'ft'),
                 'nm': (1.0 / 1852.0, 'nm'),
                 'miles': (1.0 / 1609.344, 'miles'),
@@ -3944,6 +3945,45 @@ class ModellingToolsMixin:
                     "source": source, "depth_m": depth, "temperature_C": temp,
                     "salinity_PSU": sal, "sound_speed_m_s": c_ms}
 
+        def _list_spl_files():
+            try:
+                conn = sqlite3.connect(_db_path()); cur = conn.cursor()
+                cur.execute("SELECT DISTINCT file_name FROM spl_calculations WHERE file_name IS NOT NULL AND TRIM(file_name)!='' ORDER BY file_name")
+                rows = [r[0] for r in cur.fetchall() if r and r[0]]
+                conn.close()
+                return rows
+            except Exception:
+                return []
+
+        def _load_spl_curve_for_file(file_name):
+            if not file_name:
+                return None
+            try:
+                conn = sqlite3.connect(_db_path()); cur = conn.cursor()
+                cur.execute(
+                    "SELECT target_frequency, spl FROM spl_calculations WHERE file_name=? ORDER BY id DESC",
+                    (file_name,),
+                )
+                rows = cur.fetchall(); conn.close()
+            except Exception:
+                return None
+            if not rows:
+                return None
+            f = np.asarray([r[0] for r in rows], float)
+            L = np.asarray([r[1] for r in rows], float)
+            m = np.isfinite(f) & np.isfinite(L) & (f > 0)
+            if not np.any(m):
+                return None
+            f = f[m]; L = L[m]
+            fk = np.round(f, 3)
+            uniq = np.unique(fk)
+            fu, Lu = [], []
+            for u in uniq:
+                mm = fk == u
+                fu.append(float(np.median(f[mm])))
+                Lu.append(float(np.median(L[mm])))
+            return np.asarray(fu, float), np.asarray(Lu, float)
+
         # -------- Hydrophone curves ----------
         curve_rows = []
         conn_h = None
@@ -4013,6 +4053,18 @@ class ModellingToolsMixin:
         grid.addWidget(use_current_btn, r, 1); grid.addWidget(pick_wav_btn, r, 2)
         meas_lbl = QtWidgets.QLabel("(none)"); meas_lbl.setStyleSheet("color:#ddd;")
         grid.addWidget(meas_lbl, r, 3, 1, 5)
+
+        r += 1
+        grid.addWidget(QtWidgets.QLabel("Measured Source:"), r, 0)
+        meas_source_cb = QtWidgets.QComboBox()
+        meas_source_cb.addItems(["WAV PSD", "SPL DB (Analyzed)", "WAV + SPL DB"])
+        grid.addWidget(meas_source_cb, r, 1, 1, 2)
+        grid.addWidget(QtWidgets.QLabel("Analyzed File:"), r, 3)
+        spl_file_cb = QtWidgets.QComboBox(); spl_file_cb.setMinimumWidth(220)
+        spl_file_cb.addItem("<Current file>", userData=None)
+        for _fn in _list_spl_files():
+            spl_file_cb.addItem(_fn, userData=_fn)
+        grid.addWidget(spl_file_cb, r, 4, 1, 4)
 
         r += 1
         grid.addWidget(QtWidgets.QLabel("Start (s):"), r, 0); start_edit = _num("0", 80); grid.addWidget(start_edit, r, 1)
@@ -4211,7 +4263,11 @@ class ModellingToolsMixin:
             Ntot = _logsum_db(*comps) + off
 
             meas = []
-            if show_meas_cb.isChecked() and (getattr(self, "full_data", None) is not None or getattr(self, "file_name", None)):
+            source_mode = meas_source_cb.currentText() if 'meas_source_cb' in locals() else 'WAV PSD'
+            use_wav = source_mode in ('WAV PSD', 'WAV + SPL DB')
+            use_spl_db = source_mode in ('SPL DB (Analyzed)', 'WAV + SPL DB')
+
+            if show_meas_cb.isChecked() and use_wav and (getattr(self, "full_data", None) is not None or getattr(self, "file_name", None)):
                 try:
                     data_list, meas_labels, meas_idxs, fs = _load_chunk(meas_path["path"])
                 except Exception as e:
@@ -4246,6 +4302,22 @@ class ModellingToolsMixin:
                         L_meas = _apply_curve_cal(Pxx, fM, RS_fn)
                         fS, Ls = _smooth_third_oct(fM, L_meas)
                         meas.append({"label": ch_label, "f": fHz, "L": np.interp(fHz, fS, Ls)})
+
+            if show_meas_cb.isChecked() and use_spl_db:
+                spl_file = spl_file_cb.currentData() if 'spl_file_cb' in locals() else None
+                if not spl_file:
+                    spl_file = getattr(self, 'file_name', None)
+                spl_curve = _load_spl_curve_for_file(spl_file)
+                if spl_curve is not None:
+                    f_db, L_db = spl_curve
+                    m = (f_db >= fmin) & (f_db <= fmax)
+                    if np.any(m):
+                        f_db = f_db[m]; L_db = L_db[m]
+                        meas.append({
+                            "label": f"Analyzed SPL: {os.path.basename(spl_file) if spl_file else 'current'}",
+                            "f": fHz,
+                            "L": np.interp(fHz, f_db, L_db),
+                        })
 
             sea_state_totals = {}
             if sea_state_cb.isChecked():
@@ -4526,6 +4598,8 @@ class ModellingToolsMixin:
             cb.stateChanged.connect(_plot)
         sea_state_count.valueChanged.connect(_plot)
         sea_state_edit.editingFinished.connect(_plot)
+        meas_source_cb.currentIndexChanged.connect(_plot)
+        spl_file_cb.currentIndexChanged.connect(_plot)
 
         # init
         on_ctd_mode_changed()
