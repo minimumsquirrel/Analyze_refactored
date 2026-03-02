@@ -3867,10 +3867,26 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
+
+        def _ensure_projects_table(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
+            conn.commit()
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -3932,6 +3948,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -3959,8 +3987,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -4381,8 +4421,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -5111,10 +5157,11 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -5176,6 +5223,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -5203,8 +5262,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -5625,8 +5696,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -6355,10 +6432,11 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -6420,6 +6498,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -6447,8 +6537,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -6869,8 +6971,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -7599,10 +7707,26 @@ class MainWindow(
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
-                return DB_FILENAME
+                if 'DB_FILENAME' in globals() and DB_FILENAME:
+                    return DB_FILENAME
             except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+                pass
+            return os.path.join(os.path.abspath(os.getcwd()), "analysis_log.db")
+
+        def _ensure_projects_table(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
+            conn.commit()
 
         def _ensure_ctd_table(conn):
             cur = conn.cursor()
@@ -7664,6 +7788,18 @@ class MainWindow(
         def _list_ctd_profiles(project_id=None):
             path = _db_path()
             conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             _ensure_ctd_table(conn)
             cur = conn.cursor()
             if project_id:
@@ -7691,8 +7827,20 @@ class MainWindow(
             path = _db_path()
             conn = sqlite3.connect(path)
             cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            try:
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+            except Exception:
+                pass
             cur.execute("SELECT id, name FROM projects ORDER BY name")
             rows = cur.fetchall()
+            conn.commit()
             conn.close()
             return rows
 
@@ -8113,8 +8261,14 @@ class MainWindow(
             md = _prompt_metadata(default_name, default_dt)
             if md is not None:
                 try:
-                    proj_id = getattr(self, "current_project_id", None)
-                    if not proj_id:
+                    proj_id = None
+                    try:
+                        proj_id = project_cb.currentData()
+                    except Exception:
+                        proj_id = None
+                    if proj_id is None:
+                        proj_id = getattr(self, "current_project_id", None)
+                    if proj_id is None:
                         QtWidgets.QMessageBox.warning(
                             dlg,
                             "No Project",
@@ -14268,6 +14422,15 @@ class MainWindow(
         row.addWidget(self.gps_delete_btn)
         sidebar.addLayout(row)
 
+        color_row = QtWidgets.QHBoxLayout()
+        color_row.addWidget(QtWidgets.QLabel("Track line color:"))
+        self.chart_track_color_mode = QtWidgets.QComboBox()
+        self.chart_track_color_mode.addItems(["Palette", "White", "Black"])
+        self.chart_track_color_mode.setCurrentText("Palette")
+        self.chart_track_color_mode.currentIndexChanged.connect(self._plot_selected_gps_tracks)
+        color_row.addWidget(self.chart_track_color_mode)
+        sidebar.addLayout(color_row)
+
         self.gps_fit_btn = QtWidgets.QPushButton("Fit View")
         self.gps_fit_btn.clicked.connect(self._fit_gps_view)
         sidebar.addWidget(self.gps_fit_btn)
@@ -14354,31 +14517,126 @@ class MainWindow(
 
     def _iter_csv_gps_points(self, file_path):
         with open(file_path, 'r', encoding='utf-8-sig', newline='') as fh:
-            reader = csv.DictReader(fh)
-            if not reader.fieldnames:
-                return []
-            field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
-            lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
-            lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
-            ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
-            t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
-            if not lat_key or not lon_key:
-                raise ValueError("CSV must include latitude/longitude columns.")
-            out = []
-            for i, row in enumerate(reader):
-                try:
-                    lat = float(row.get(lat_key, ""))
-                    lon = float(row.get(lon_key, ""))
-                except Exception:
-                    continue
-                ele = row.get(ele_key) if ele_key else None
-                ts = row.get(t_key) if t_key else None
-                try:
-                    ele = float(ele) if ele not in (None, "") else None
-                except Exception:
-                    ele = None
-                out.append((i, ts, lat, lon, ele))
-            return out
+            lines = fh.readlines()
+
+        points = self._parse_header_csv_points(lines)
+        if points:
+            return points
+
+        nmea_points = self._parse_nmea_points(lines)
+        if nmea_points:
+            return nmea_points
+
+        raise ValueError(
+            "CSV must include latitude/longitude columns, or contain NMEA GGA sentences with coordinates."
+        )
+
+    @staticmethod
+    def _parse_header_csv_points(lines):
+        reader = csv.DictReader(lines)
+        if not reader.fieldnames:
+            return []
+        field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
+        lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
+        lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
+        ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
+        t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
+        if not lat_key or not lon_key:
+            return []
+        out = []
+        for i, row in enumerate(reader):
+            try:
+                lat = float(row.get(lat_key, ""))
+                lon = float(row.get(lon_key, ""))
+            except Exception:
+                continue
+            if (not math.isfinite(lat)) or (not math.isfinite(lon)):
+                continue
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                continue
+            ele = row.get(ele_key) if ele_key else None
+            ts = row.get(t_key) if t_key else None
+            try:
+                ele = float(ele) if ele not in (None, "") else None
+            except Exception:
+                ele = None
+            out.append((i, ts, lat, lon, ele))
+        return out
+
+    @staticmethod
+    def _nmea_coord_to_decimal(raw_value, hemi, is_lat):
+        value = (raw_value or '').strip()
+        hemi = (hemi or '').strip().upper()
+        if value == '':
+            raise ValueError('Missing coordinate value')
+        num = float(value)
+        deg = int(num / 100)
+        mins = num - (deg * 100)
+        dec = deg + (mins / 60.0)
+        if is_lat and hemi == 'S':
+            dec = -dec
+        if (not is_lat) and hemi == 'W':
+            dec = -dec
+        return dec
+
+    def _parse_nmea_points(self, lines):
+        points = []
+        current_date = None
+        idx = 0
+        for raw in lines:
+            line = (raw or '').strip()
+            if not line.startswith('$'):
+                continue
+            sentence = line.split('*', 1)[0]
+            parts = sentence.split(',')
+            if not parts:
+                continue
+            msg = parts[0].upper()
+            if msg.endswith('ZDA') and len(parts) >= 5:
+                day = (parts[2] or '').zfill(2)
+                month = (parts[3] or '').zfill(2)
+                year = parts[4] or ''
+                if day.strip('0') == '':
+                    day = '01'
+                if month.strip('0') == '':
+                    month = '01'
+                if len(year) == 4 and day.isdigit() and month.isdigit():
+                    current_date = f"{year}-{month}-{day}"
+                continue
+            if not msg.endswith('GGA') or len(parts) < 10:
+                continue
+            try:
+                lat = self._nmea_coord_to_decimal(parts[2], parts[3], is_lat=True)
+                lon = self._nmea_coord_to_decimal(parts[4], parts[5], is_lat=False)
+            except Exception:
+                continue
+            if (not math.isfinite(lat)) or (not math.isfinite(lon)):
+                continue
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                continue
+
+            time_token = (parts[1] or '').strip()
+            timestamp = None
+            if time_token:
+                hh = time_token[0:2] if len(time_token) >= 2 else '00'
+                mm = time_token[2:4] if len(time_token) >= 4 else '00'
+                ss = time_token[4:] if len(time_token) > 4 else '00'
+                hh = hh if hh.isdigit() else '00'
+                mm = mm if mm.isdigit() else '00'
+                if ss == '':
+                    ss = '00'
+                base_date = current_date or '1970-01-01'
+                timestamp = f"{base_date}T{hh}:{mm}:{ss}Z"
+
+            ele = None
+            try:
+                ele = float(parts[9]) if (parts[9] or '').strip() != '' else None
+            except Exception:
+                ele = None
+
+            points.append((idx, timestamp, lat, lon, ele))
+            idx += 1
+        return points
 
     def _iter_gpx_points(self, file_path):
         ns = {"gpx": "http://www.topografix.com/GPX/1/1"}
@@ -14408,7 +14666,7 @@ class MainWindow(
             self,
             "Import GPS Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv);;All Files (*)",
+            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -14417,10 +14675,10 @@ class MainWindow(
         try:
             if ext == '.gpx':
                 points = self._iter_gpx_points(path)
-            elif ext == '.csv':
+            elif ext in {'.csv', '.txt', '.log', '.nmea'}:
                 points = self._iter_csv_gps_points(path)
             else:
-                raise ValueError("Unsupported track format. Use GPX or CSV.")
+                raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
             return
@@ -14541,14 +14799,18 @@ class MainWindow(
         conn = sqlite3.connect(DB_FILENAME)
         cur = conn.cursor()
         cur.execute(
-            "SELECT latitude, longitude FROM gps_track_points WHERE track_id=? ORDER BY point_index ASC, id ASC",
+            "SELECT timestamp_utc, latitude, longitude FROM gps_track_points WHERE track_id=? ORDER BY point_index ASC, id ASC",
             (int(track_id),),
         )
-        pts = cur.fetchall()
+        rows = cur.fetchall()
+        pts = [(float(lat), float(lon)) for ts, lat, lon in rows]
+        detailed = [(ts, float(lat), float(lon)) for ts, lat, lon in rows]
         cur.execute("SELECT name, color FROM gps_tracks WHERE id=?", (int(track_id),))
         meta = cur.fetchone()
         conn.close()
-        return (meta[0], meta[1] or '#03DFE2', pts) if meta else (f'Track {track_id}', '#03DFE2', pts)
+        if meta:
+            return (meta[0], meta[1] or '#03DFE2', pts, detailed)
+        return (f'Track {track_id}', '#03DFE2', pts, detailed)
 
     def _ensure_waypoints_table(self):
         conn = sqlite3.connect(DB_FILENAME)
@@ -14754,10 +15016,6 @@ class MainWindow(
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
-        vb = self.gps_plot.getViewBox()
-        pt = vb.mapSceneToView(pos)
-        if hasattr(self, 'gps_cursor_label'):
-            self.gps_cursor_label.setText(f"Cursor: Lat {float(pt.y()):.6f}, Lon {float(pt.x()):.6f}")
 
         all_lat = []
         all_lon = []
@@ -14816,6 +15074,27 @@ class MainWindow(
             folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
             folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
                                 tooltip=f'{tr["name"]} start').add_to(m)
+            detailed = tr.get('points') or []
+            marker_step = max(1, len(detailed) // 200) if detailed else 1
+            for pidx in range(0, len(detailed), marker_step):
+                ts, plat, plon = detailed[pidx]
+                speed_kn = None
+                if pidx > 0:
+                    pts_prev = detailed[pidx - 1]
+                    t0 = self._parse_iso_utc(pts_prev[0])
+                    t1 = self._parse_iso_utc(ts)
+                    if t0 is not None and t1 is not None:
+                        dt = (t1 - t0).total_seconds()
+                        if dt > 0:
+                            dist_m = self._haversine_m(pts_prev[1], pts_prev[2], plat, plon)
+                            speed_kn = (dist_m / dt) * 1.9438444924406
+                popup = f"<b>{tr['name']}</b><br>Point: {pidx}<br>Lat: {plat:.6f}<br>Lon: {plon:.6f}"
+                if ts:
+                    popup += f"<br>UTC: {ts}"
+                if speed_kn is not None and math.isfinite(speed_kn):
+                    popup += f"<br>Speed (kn): {speed_kn:.2f}"
+                folium.CircleMarker([plat, plon], radius=3, color=tr["color"], fill=True, fill_opacity=0.85,
+                                    popup=folium.Popup(popup, max_width=320)).add_to(m)
 
         for ctd_id, name, lat, lon, dt_utc in ctd_rows:
             try:
@@ -14844,90 +15123,38 @@ class MainWindow(
         self._gps_folium_html_path = out.name
         self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
-        all_lat = []
-        all_lon = []
-        for tr in tracks:
-            all_lat.extend(tr["lat"])
-            all_lon.extend(tr["lon"])
-        for _, _, lat, lon, _ in ctd_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
-        for _, _, lat, lon, _, _ in waypoint_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
+    def _chart_track_line_color(self, default_color, idx):
+        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
+        if mode == 'White':
+            return '#FFFFFF'
+        if mode == 'Black':
+            return '#000000'
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
 
-        if all_lat and all_lon:
-            center = [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
-            zoom = 11
-        else:
-            center = [0.0, 0.0]
-            zoom = 2
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap',
-            name='Street Map',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Aerial',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-            name='Bathymetry / Ocean',
-            overlay=False,
-            control=True,
-        ).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
-        for tr in tracks:
-            pts = list(zip(tr["lat"], tr["lon"]))
-            if not pts:
-                continue
-            if len(pts) > 5000:
-                step = max(1, len(pts) // 5000)
-                pts = pts[::step]
-                if pts[-1] != (tr["lat"][-1], tr["lon"][-1]):
-                    pts.append((tr["lat"][-1], tr["lon"][-1]))
-            folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
-            folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
-                                tooltip=f'{tr["name"]} start').add_to(m)
-
-        for ctd_id, name, lat, lon, dt_utc in ctd_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            lab = f"CTD: {name or ('Cast %s' % ctd_id)}"
-            if dt_utc:
-                lab += f"<br>{dt_utc}"
-            folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
-
-        for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            scope = 'Global' if proj_id is None else 'Project'
-            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}<br>Symbol: {symbol}",
-                          icon=folium.Icon(color='blue', icon=self._waypoint_icon_folium(symbol), prefix='fa')).add_to(m)
-
-        folium.LayerControl(collapsed=False).add_to(m)
-
-        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
-        out.close()
-        m.save(out.name)
-        self._gps_folium_html_path = out.name
-        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
 
     def _plot_selected_gps_tracks(self):
@@ -14935,12 +15162,10 @@ class MainWindow(
         total_points = 0
         all_lon = []
         all_lat = []
-        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
-
         tracks = []
         if selected:
             for idx, track_id in enumerate(selected):
-                name, color, pts = self._fetch_track_points(track_id)
+                name, color, pts, detailed_pts = self._fetch_track_points(track_id)
                 if not pts:
                     continue
                 lat = [float(p[0]) for p in pts]
@@ -14948,8 +15173,8 @@ class MainWindow(
                 total_points += len(pts)
                 all_lon.extend(lon)
                 all_lat.extend(lat)
-                line_color = palette[idx % len(palette)] if palette else (color or '#03DFE2')
-                tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon})
+                line_color = self._chart_track_line_color(color, idx)
+                tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon, 'points': detailed_pts})
 
         ctd_count = 0
         try:
@@ -14973,7 +15198,7 @@ class MainWindow(
             except Exception:
                 pass
 
-        use_web_map = False  # disable folium/webengine path due runtime freezes; use stable pyqtgraph renderer
+        use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
