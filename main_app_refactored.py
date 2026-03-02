@@ -89,6 +89,16 @@ from PyQt5.QtGui import QDesktopServices, QFont, QPixmap
 import qdarkstyle
 import pyqtgraph as pg
 import tempfile
+
+try:
+    import folium
+except Exception:
+    folium = None
+
+try:
+    from PyQt5 import QtWebEngineWidgets
+except Exception:
+    QtWebEngineWidgets = None
 import xml.etree.ElementTree as ET
 from PyQt5.QtMultimedia import QSound
 import joblib
@@ -10504,13 +10514,30 @@ class MainWindow(
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
+        self.gps_map_stack = QtWidgets.QStackedWidget()
+
+        self.gps_map_view = None
+        if QtWebEngineWidgets is not None and folium is not None:
+            try:
+                self.gps_map_view = QtWebEngineWidgets.QWebEngineView()
+                self.gps_map_stack.addWidget(self.gps_map_view)
+            except Exception:
+                self.gps_map_view = None
+
         self.gps_plot = pg.PlotWidget()
         self.gps_plot.showGrid(x=True, y=True, alpha=0.25)
         self.gps_plot.setLabel('bottom', 'Longitude')
         self.gps_plot.setLabel('left', 'Latitude')
         self.gps_plot.addLegend()
         self.gps_plot.getViewBox().setAspectLocked(False)
-        right.addWidget(self.gps_plot, 1)
+        self.gps_map_stack.addWidget(self.gps_plot)
+
+        if self.gps_map_view is not None:
+            self.gps_map_stack.setCurrentWidget(self.gps_map_view)
+        else:
+            self.gps_map_stack.setCurrentWidget(self.gps_plot)
+
+        right.addWidget(self.gps_map_stack, 1)
 
         self.gps_info_label = QtWidgets.QLabel("No tracks loaded")
         right.addWidget(self.gps_info_label)
@@ -10518,6 +10545,7 @@ class MainWindow(
 
         self._gps_curves = []
         self._gps_ctd_markers = []
+        self._gps_folium_html_path = None
         self.refresh_chart_theme()
         self.refresh_chart_tracks()
 
@@ -10704,30 +10732,75 @@ class MainWindow(
         conn.close()
         return rows
 
-    def _plot_selected_gps_tracks(self):
-        if not hasattr(self, 'gps_plot'):
+    def _render_folium_chart_map(self, tracks, ctd_rows):
+        if self.gps_map_view is None or folium is None:
             return
-        self.gps_plot.clear()
-        self.gps_plot.addLegend()
+
+        all_lat = []
+        all_lon = []
+        for tr in tracks:
+            all_lat.extend(tr["lat"])
+            all_lon.extend(tr["lon"])
+        for _, _, lat, lon, _ in ctd_rows:
+            try:
+                all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
+
+        if all_lat and all_lon:
+            center = [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
+            zoom = 11
+        else:
+            center = [0.0, 0.0]
+            zoom = 2
+
+        m = folium.Map(location=center, zoom_start=zoom, tiles='OpenStreetMap', control_scale=True)
+
+        for tr in tracks:
+            pts = list(zip(tr["lat"], tr["lon"]))
+            if not pts:
+                continue
+            folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
+            folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
+                                tooltip=f'{tr["name"]} start').add_to(m)
+
+        for ctd_id, name, lat, lon, dt_utc in ctd_rows:
+            try:
+                latf = float(lat); lonf = float(lon)
+            except Exception:
+                continue
+            lab = f"CTD: {name or ('Cast %s' % ctd_id)}"
+            if dt_utc:
+                lab += f"<br>{dt_utc}"
+            folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
+
+        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
+        out.close()
+        m.save(out.name)
+        self._gps_folium_html_path = out.name
+        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
+
+
+    def _plot_selected_gps_tracks(self):
         selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
         total_points = 0
         all_lon = []
         all_lat = []
         palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+
+        tracks = []
         if selected:
             for idx, track_id in enumerate(selected):
                 name, color, pts = self._fetch_track_points(track_id)
                 if not pts:
                     continue
-                lat = np.asarray([p[0] for p in pts], dtype=float)
-                lon = np.asarray([p[1] for p in pts], dtype=float)
+                lat = [float(p[0]) for p in pts]
+                lon = [float(p[1]) for p in pts]
                 total_points += len(pts)
-                all_lon.extend(lon.tolist())
-                all_lat.extend(lat.tolist())
-                line_color = palette[idx % len(palette)] if palette else (color or "#03DFE2")
-                self.gps_plot.plot(lon, lat, pen=pg.mkPen(line_color, width=2), name=name)
-                self.gps_plot.plot([lon[0]], [lat[0]], pen=None, symbol='o', symbolSize=7,
-                                   symbolBrush=pg.mkBrush(line_color), name=f"{name} start")
+                all_lon.extend(lon)
+                all_lat.extend(lat)
+                line_color = palette[idx % len(palette)] if palette else (color or '#03DFE2')
+                tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon})
 
         ctd_count = 0
         show_ctd = bool(getattr(self, 'chart_show_ctd_cb', None) and self.chart_show_ctd_cb.isChecked())
@@ -10736,39 +10809,53 @@ class MainWindow(
                 ctd_rows = self._fetch_ctd_points_for_chart()
             except Exception:
                 ctd_rows = []
+            for _, _, lat, lon, _ in ctd_rows:
+                try:
+                    all_lon.append(float(lon)); all_lat.append(float(lat)); ctd_count += 1
+                except Exception:
+                    pass
+        else:
+            ctd_rows = []
+
+        if self.gps_map_view is not None and folium is not None:
+            self._render_folium_chart_map(tracks, ctd_rows)
+            if hasattr(self, 'gps_map_stack'):
+                self.gps_map_stack.setCurrentWidget(self.gps_map_view)
+        else:
+            if not hasattr(self, 'gps_plot'):
+                return
+            self.gps_plot.clear()
+            self.gps_plot.addLegend()
+            for tr in tracks:
+                self.gps_plot.plot(tr['lon'], tr['lat'], pen=pg.mkPen(tr['color'], width=2), name=tr['name'])
+                self.gps_plot.plot([tr['lon'][0]], [tr['lat'][0]], pen=None, symbol='o', symbolSize=7,
+                                   symbolBrush=pg.mkBrush(tr['color']), name=f"{tr['name']} start")
+
             for idx, (ctd_id, name, lat, lon, dt_utc) in enumerate(ctd_rows):
                 try:
-                    latf = float(lat)
-                    lonf = float(lon)
+                    latf = float(lat); lonf = float(lon)
                 except Exception:
                     continue
-                ctd_count += 1
-                all_lon.append(lonf)
-                all_lat.append(latf)
                 label = f"CTD: {name or f'Cast {ctd_id}'}"
                 if dt_utc:
                     label += f" ({str(dt_utc).split('T')[0]})"
-                self.gps_plot.plot(
-                    [lonf],
-                    [latf],
-                    pen=None,
-                    symbol='t',
-                    symbolSize=10,
-                    symbolBrush=pg.mkBrush('#FFD166'),
-                    symbolPen=pg.mkPen('#333333', width=1),
-                    name=label if idx == 0 else None,
-                )
+                self.gps_plot.plot([lonf], [latf], pen=None, symbol='t', symbolSize=10,
+                                   symbolBrush=pg.mkBrush('#FFD166'), symbolPen=pg.mkPen('#333333', width=1),
+                                   name=label if idx == 0 else None)
 
-        if not selected and ctd_count == 0:
-            self.gps_info_label.setText("No tracks selected")
+            if all_lon and all_lat:
+                self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
+                self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
+
+        if not tracks and ctd_count == 0:
+            self.gps_info_label.setText('No tracks selected')
             return
 
+        backend = 'Folium' if (self.gps_map_view is not None and folium is not None) else 'PyQtGraph'
         self.gps_info_label.setText(
-            f"Tracks: {len(selected)}   Track Points: {total_points}   CTD Casts: {ctd_count}"
+            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}"
         )
-        if all_lon and all_lat:
-            self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
-            self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
+
 
     def _fit_gps_view(self):
         self._plot_selected_gps_tracks()
