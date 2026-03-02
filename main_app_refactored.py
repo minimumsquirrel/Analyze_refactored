@@ -15249,15 +15249,48 @@ class MainWindow(
                 )
                 if full_graph_url:
                     popup_html += (
-                        f"<br><a href='{full_graph_url}' "
-                        f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;text-decoration:none;border-radius:4px;'>"
-                        f"Open Full CTD Graph</a>"
+                        f"<br><button onclick=\"window.open('{full_graph_url}','_blank','width=1100,height=760,resizable=yes,scrollbars=yes');return false;\" "
+                        f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
+                        f"Open Full CTD Graph</button>"
                     )
             folium.Marker(
                 [latf, lonf],
                 popup=folium.Popup(popup_html, max_width=420),
                 icon=folium.Icon(color='orange', icon='tint', prefix='fa')
             ).add_to(m)
+
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
+
+
+    def _chart_track_line_color(self, default_color, idx):
+        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
+        if mode == 'White':
+            return '#FFFFFF'
+        if mode == 'Black':
+            return '#000000'
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
 
     @staticmethod
     def _haversine_m(lat1, lon1, lat2, lon2):
