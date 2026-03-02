@@ -1360,7 +1360,7 @@ class MainWindow(
                 except Exception:
                     pass
 
-            if hasattr(self, 'update_fft_plot'):
+            if getattr(self, 'fft_mode', False) and hasattr(self, 'update_fft_plot'):
                 try:
                     self.update_fft_plot()
                 except Exception:
@@ -4903,6 +4903,8 @@ class MainWindow(
 
     def update_fft_plot(self):
         """Redraw waveform snippet (top) and spectrum (bottom) using pyqtgraph."""
+        if not getattr(self, 'fft_mode', False):
+            return
         import numpy as np
         from PyQt5 import QtWidgets
         try:
