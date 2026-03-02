@@ -14387,6 +14387,10 @@ class MainWindow(
                 lon = float(row.get(lon_key, ""))
             except Exception:
                 continue
+            if (not math.isfinite(lat)) or (not math.isfinite(lon)):
+                continue
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                continue
             ele = row.get(ele_key) if ele_key else None
             ts = row.get(t_key) if t_key else None
             try:
@@ -14442,6 +14446,10 @@ class MainWindow(
                 lat = self._nmea_coord_to_decimal(parts[2], parts[3], is_lat=True)
                 lon = self._nmea_coord_to_decimal(parts[4], parts[5], is_lat=False)
             except Exception:
+                continue
+            if (not math.isfinite(lat)) or (not math.isfinite(lon)):
+                continue
+            if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
                 continue
 
             time_token = (parts[1] or '').strip()
