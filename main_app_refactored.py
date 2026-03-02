@@ -3986,6 +3986,7 @@ class MainWindow(
         def _list_projects():
             path = _db_path()
             conn = sqlite3.connect(path)
+            _ensure_projects_table(conn)
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -7826,6 +7827,7 @@ class MainWindow(
         def _list_projects():
             path = _db_path()
             conn = sqlite3.connect(path)
+            _ensure_projects_table(conn)
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -14481,10 +14483,7 @@ class MainWindow(
         self.gps_plot.getViewBox().setAspectLocked(False)
         self.gps_map_stack.addWidget(self.gps_plot)
 
-        if self.gps_map_view is not None:
-            self.gps_map_stack.setCurrentWidget(self.gps_map_view)
-        else:
-            self.gps_map_stack.setCurrentWidget(self.gps_plot)
+        self.gps_map_stack.setCurrentWidget(self.gps_plot)
 
         right.addWidget(self.gps_map_stack, 1)
 
