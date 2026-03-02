@@ -15147,54 +15147,53 @@ class MainWindow(
 
         return inline_uri, ideal_depth, full_graph_url
 
+    def _get_ctd_plot_artifacts_cached(self, ctd_id):
+        cache = getattr(self, '_ctd_popup_artifact_cache', None)
+        if cache is None:
+            cache = {}
+            self._ctd_popup_artifact_cache = cache
+        if ctd_id in cache:
+            return cache[ctd_id]
+        art = self._ctd_plot_artifacts(ctd_id)
+        cache[ctd_id] = art
+        return art
+
+
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
 
-        all_lat = []
-        all_lon = []
-        for tr in tracks:
-            all_lat.extend(tr["lat"])
-            all_lon.extend(tr["lon"])
-        for _, _, lat, lon, _ in ctd_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
-        for _, _, lat, lon, _, _ in waypoint_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
+    def _chart_track_line_color(self, default_color, idx):
+        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
+        if mode == 'White':
+            return '#FFFFFF'
+        if mode == 'Black':
+            return '#000000'
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
 
-        if all_lat and all_lon:
-            center = [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
-            zoom = 11
-        else:
-            center = [0.0, 0.0]
-            zoom = 2
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap',
-            name='Street Map',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Aerial',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-            name='Bathymetry / Ocean',
-            overlay=False,
-            control=True,
-        ).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
         for tr in tracks:
             pts = list(zip(tr["lat"], tr["lon"]))
@@ -15230,19 +15229,25 @@ class MainWindow(
                 folium.CircleMarker([plat, plon], radius=3, color=tr["color"], fill=True, fill_opacity=0.85,
                                     popup=folium.Popup(popup, max_width=320)).add_to(m)
 
+        enable_ctd_popup_graphs = len(ctd_rows) <= 5
         for ctd_id, name, lat, lon, dt_utc in ctd_rows:
             try:
                 latf = float(lat); lonf = float(lon)
             except Exception:
                 continue
             title = name or ('Cast %s' % ctd_id)
-            img_uri, ideal_depth, full_graph_url = self._ctd_plot_artifacts(ctd_id)
+            if enable_ctd_popup_graphs:
+                img_uri, ideal_depth, full_graph_url = self._get_ctd_plot_artifacts_cached(int(ctd_id))
+            else:
+                img_uri, ideal_depth, full_graph_url = (None, None, None)
             popup_html = f"<b>CTD: {title}</b>"
             if dt_utc:
                 popup_html += f"<br>{dt_utc}"
             popup_html += f"<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
             if ideal_depth is not None:
                 popup_html += f"<br><b>Ideal deployment depth:</b> {ideal_depth:.1f} m"
+            if not enable_ctd_popup_graphs:
+                popup_html += "<br><i>CTD graph preview disabled for performance (too many casts on map).</i>"
             if img_uri:
                 popup_html += (
                     f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
@@ -15258,39 +15263,6 @@ class MainWindow(
                 popup=folium.Popup(popup_html, max_width=420),
                 icon=folium.Icon(color='orange', icon='tint', prefix='fa')
             ).add_to(m)
-
-    @staticmethod
-    def _haversine_m(lat1, lon1, lat2, lon2):
-        r = 6371000.0
-        p1 = math.radians(lat1)
-        p2 = math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
-        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
-
-    @staticmethod
-    def _parse_iso_utc(ts):
-        if not ts:
-            return None
-        txt = str(ts).strip()
-        if not txt:
-            return None
-        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
-        try:
-            return datetime.fromisoformat(txt)
-        except Exception:
-            return None
-
-
-    def _chart_track_line_color(self, default_color, idx):
-        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
-        if mode == 'White':
-            return '#FFFFFF'
-        if mode == 'Black':
-            return '#000000'
-        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
-        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
 
     @staticmethod
     def _haversine_m(lat1, lon1, lat2, lon2):
