@@ -14268,6 +14268,15 @@ class MainWindow(
         row.addWidget(self.gps_delete_btn)
         sidebar.addLayout(row)
 
+        color_row = QtWidgets.QHBoxLayout()
+        color_row.addWidget(QtWidgets.QLabel("Track line color:"))
+        self.chart_track_color_mode = QtWidgets.QComboBox()
+        self.chart_track_color_mode.addItems(["Palette", "White", "Black"])
+        self.chart_track_color_mode.setCurrentText("Palette")
+        self.chart_track_color_mode.currentIndexChanged.connect(self._plot_selected_gps_tracks)
+        color_row.addWidget(self.chart_track_color_mode)
+        sidebar.addLayout(color_row)
+
         self.gps_fit_btn = QtWidgets.QPushButton("Fit View")
         self.gps_fit_btn.clicked.connect(self._fit_gps_view)
         sidebar.addWidget(self.gps_fit_btn)
@@ -14633,14 +14642,18 @@ class MainWindow(
         conn = sqlite3.connect(DB_FILENAME)
         cur = conn.cursor()
         cur.execute(
-            "SELECT latitude, longitude FROM gps_track_points WHERE track_id=? ORDER BY point_index ASC, id ASC",
+            "SELECT timestamp_utc, latitude, longitude FROM gps_track_points WHERE track_id=? ORDER BY point_index ASC, id ASC",
             (int(track_id),),
         )
-        pts = cur.fetchall()
+        rows = cur.fetchall()
+        pts = [(float(lat), float(lon)) for ts, lat, lon in rows]
+        detailed = [(ts, float(lat), float(lon)) for ts, lat, lon in rows]
         cur.execute("SELECT name, color FROM gps_tracks WHERE id=?", (int(track_id),))
         meta = cur.fetchone()
         conn.close()
-        return (meta[0], meta[1] or '#03DFE2', pts) if meta else (f'Track {track_id}', '#03DFE2', pts)
+        if meta:
+            return (meta[0], meta[1] or '#03DFE2', pts, detailed)
+        return (f'Track {track_id}', '#03DFE2', pts, detailed)
 
     def _ensure_waypoints_table(self):
         conn = sqlite3.connect(DB_FILENAME)
@@ -14904,6 +14917,27 @@ class MainWindow(
             folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
             folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
                                 tooltip=f'{tr["name"]} start').add_to(m)
+            detailed = tr.get('points') or []
+            marker_step = max(1, len(detailed) // 200) if detailed else 1
+            for pidx in range(0, len(detailed), marker_step):
+                ts, plat, plon = detailed[pidx]
+                speed_kn = None
+                if pidx > 0:
+                    pts_prev = detailed[pidx - 1]
+                    t0 = self._parse_iso_utc(pts_prev[0])
+                    t1 = self._parse_iso_utc(ts)
+                    if t0 is not None and t1 is not None:
+                        dt = (t1 - t0).total_seconds()
+                        if dt > 0:
+                            dist_m = self._haversine_m(pts_prev[1], pts_prev[2], plat, plon)
+                            speed_kn = (dist_m / dt) * 1.9438444924406
+                popup = f"<b>{tr['name']}</b><br>Point: {pidx}<br>Lat: {plat:.6f}<br>Lon: {plon:.6f}"
+                if ts:
+                    popup += f"<br>UTC: {ts}"
+                if speed_kn is not None and math.isfinite(speed_kn):
+                    popup += f"<br>Speed (kn): {speed_kn:.2f}"
+                folium.CircleMarker([plat, plon], radius=3, color=tr["color"], fill=True, fill_opacity=0.85,
+                                    popup=folium.Popup(popup, max_width=320)).add_to(m)
 
         for ctd_id, name, lat, lon, dt_utc in ctd_rows:
             try:
@@ -14932,18 +14966,49 @@ class MainWindow(
         self._gps_folium_html_path = out.name
         self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
+    def _chart_track_line_color(self, default_color, idx):
+        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
+        if mode == 'White':
+            return '#FFFFFF'
+        if mode == 'Black':
+            return '#000000'
+        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
+        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
+
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
+
+
 
     def _plot_selected_gps_tracks(self):
         selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
         total_points = 0
         all_lon = []
         all_lat = []
-        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
-
         tracks = []
         if selected:
             for idx, track_id in enumerate(selected):
-                name, color, pts = self._fetch_track_points(track_id)
+                name, color, pts, detailed_pts = self._fetch_track_points(track_id)
                 if not pts:
                     continue
                 lat = [float(p[0]) for p in pts]
@@ -14951,8 +15016,8 @@ class MainWindow(
                 total_points += len(pts)
                 all_lon.extend(lon)
                 all_lat.extend(lat)
-                line_color = palette[idx % len(palette)] if palette else (color or '#03DFE2')
-                tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon})
+                line_color = self._chart_track_line_color(color, idx)
+                tracks.append({'name': name, 'color': line_color, 'lat': lat, 'lon': lon, 'points': detailed_pts})
 
         ctd_count = 0
         try:
