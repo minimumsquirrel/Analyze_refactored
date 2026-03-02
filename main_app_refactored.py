@@ -6615,7 +6615,10 @@ class MainWindow(
 
 
     def _spl_current_where(self, override_files=None):
-        """Return (from_clause, where_sql, params) matching current SPL filters."""
+        """Return (base_table, from_clause, where_sql, params) matching current SPL filters.
+
+        Uses EXISTS predicates (instead of JOIN fan-out) so each SPL row appears once.
+        """
         base_table = "spl_calculations"
 
         file_filter   = self.spl_file_filter_combo.currentText() if hasattr(self, "spl_file_filter_combo") else "All"
@@ -6626,15 +6629,9 @@ class MainWindow(
             project_id = self._get_project_id(self.current_project_name)
             self.current_project_id = project_id
 
-        join_measurements = (method_filter and method_filter != "All") or project_id is not None
-        tbl_alias = "s"
-        from_clause = f"{base_table} AS {tbl_alias}"
-        if join_measurements:
-            from_clause += " JOIN measurements AS m ON s.voltage_log_id = m.id"
-        if project_id is not None:
-            from_clause += " JOIN project_items AS p ON p.file_name = m.file_name AND p.method = m.method"
-
+        from_clause = "spl_calculations AS s"
         where_clauses, params = [], []
+
         if file_filter and file_filter != "All" and not override_files:
             where_clauses.append("s.file_name = ?")
             params.append(file_filter)
@@ -6642,15 +6639,39 @@ class MainWindow(
             placeholders = ",".join(["?"] * len(override_files))
             where_clauses.append(f"s.file_name IN ({placeholders})")
             params.extend(override_files)
+
         if method_filter and method_filter != "All":
-            where_clauses.append("m.method = ?")
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM measurements m
+                    WHERE m.id = s.voltage_log_id
+                      AND m.method = ?
+                )
+                """
+            )
             params.append(method_filter)
+
         if project_id is not None:
-            where_clauses.append("p.project_id = ?")
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1
+                    FROM measurements m
+                    JOIN project_items p
+                      ON p.file_name = m.file_name
+                     AND p.method    = m.method
+                    WHERE m.id = s.voltage_log_id
+                      AND p.project_id = ?
+                )
+                """
+            )
             params.append(project_id)
 
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         return base_table, from_clause, where_sql, params
+
 
     def _spl_available_files_for_plot(self):
         """Return distinct SPL file names honoring project/method filters."""
