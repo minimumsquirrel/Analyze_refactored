@@ -3986,6 +3986,7 @@ class MainWindow(
         def _list_projects():
             path = _db_path()
             conn = sqlite3.connect(path)
+            _ensure_projects_table(conn)
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -7826,6 +7827,7 @@ class MainWindow(
         def _list_projects():
             path = _db_path()
             conn = sqlite3.connect(path)
+            _ensure_projects_table(conn)
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
@@ -14481,10 +14483,7 @@ class MainWindow(
         self.gps_plot.getViewBox().setAspectLocked(False)
         self.gps_map_stack.addWidget(self.gps_plot)
 
-        if self.gps_map_view is not None:
-            self.gps_map_stack.setCurrentWidget(self.gps_map_view)
-        else:
-            self.gps_map_stack.setCurrentWidget(self.gps_plot)
+        self.gps_map_stack.setCurrentWidget(self.gps_plot)
 
         right.addWidget(self.gps_map_stack, 1)
 
@@ -15191,27 +15190,18 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap',
-            name='Street Map',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Aerial',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-            name='Bathymetry / Ocean',
-            overlay=False,
-            control=True,
-        ).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
         for tr in tracks:
             pts = list(zip(tr["lat"], tr["lon"]))
@@ -15285,22 +15275,29 @@ class MainWindow(
                 icon=folium.Icon(color='orange', icon='tint', prefix='fa')
             ).add_to(m)
 
-        for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            scope = 'Global' if proj_id is None else 'Project'
-            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}<br>Symbol: {symbol}",
-                          icon=folium.Icon(color='blue', icon=self._waypoint_icon_folium(symbol), prefix='fa')).add_to(m)
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
-        folium.LayerControl(collapsed=False).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
-        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
-        out.close()
-        m.save(out.name)
-        self._gps_folium_html_path = out.name
-        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
     def _chart_track_line_color(self, default_color, idx):
         mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
