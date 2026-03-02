@@ -14846,95 +14846,6 @@ class MainWindow(
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
-        vb = self.gps_plot.getViewBox()
-        pt = vb.mapSceneToView(pos)
-        if hasattr(self, 'gps_cursor_label'):
-            self.gps_cursor_label.setText(f"Cursor: Lat {float(pt.y()):.6f}, Lon {float(pt.x()):.6f}")
-
-        all_lat = []
-        all_lon = []
-        for tr in tracks:
-            all_lat.extend(tr["lat"])
-            all_lon.extend(tr["lon"])
-        for _, _, lat, lon, _ in ctd_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
-        for _, _, lat, lon, _, _ in waypoint_rows:
-            try:
-                all_lat.append(float(lat)); all_lon.append(float(lon))
-            except Exception:
-                pass
-
-        if all_lat and all_lon:
-            center = [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
-            zoom = 11
-        else:
-            center = [0.0, 0.0]
-            zoom = 2
-
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap',
-            name='Street Map',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Aerial',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-            name='Bathymetry / Ocean',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-
-        for tr in tracks:
-            pts = list(zip(tr["lat"], tr["lon"]))
-            if not pts:
-                continue
-            if len(pts) > 5000:
-                step = max(1, len(pts) // 5000)
-                pts = pts[::step]
-                if pts[-1] != (tr["lat"][-1], tr["lon"][-1]):
-                    pts.append((tr["lat"][-1], tr["lon"][-1]))
-            folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
-            folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
-                                tooltip=f'{tr["name"]} start').add_to(m)
-
-        for ctd_id, name, lat, lon, dt_utc in ctd_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            lab = f"CTD: {name or ('Cast %s' % ctd_id)}"
-            if dt_utc:
-                lab += f"<br>{dt_utc}"
-            folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
-
-        for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            scope = 'Global' if proj_id is None else 'Project'
-            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}<br>Symbol: {symbol}",
-                          icon=folium.Icon(color='blue', icon=self._waypoint_icon_folium(symbol), prefix='fa')).add_to(m)
-
-        folium.LayerControl(collapsed=False).add_to(m)
-
-        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
-        out.close()
-        m.save(out.name)
-        self._gps_folium_html_path = out.name
-        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
         all_lat = []
         all_lon = []
@@ -15065,7 +14976,7 @@ class MainWindow(
             except Exception:
                 pass
 
-        use_web_map = False  # disable folium/webengine path due runtime freezes; use stable pyqtgraph renderer
+        use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
