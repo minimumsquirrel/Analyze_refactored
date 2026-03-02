@@ -10483,6 +10483,15 @@ class MainWindow(
         self.gps_fit_btn = QtWidgets.QPushButton("Fit View")
         self.gps_fit_btn.clicked.connect(self._fit_gps_view)
         sidebar.addWidget(self.gps_fit_btn)
+
+        self.chart_show_ctd_cb = QtWidgets.QCheckBox("Show CTD Casts")
+        self.chart_show_ctd_cb.setChecked(True)
+        self.chart_show_ctd_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_show_ctd_cb)
+
+        self.chart_refresh_btn = QtWidgets.QPushButton("Refresh Chart")
+        self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
+        sidebar.addWidget(self.chart_refresh_btn)
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -10499,6 +10508,7 @@ class MainWindow(
         layout.addLayout(right, 4)
 
         self._gps_curves = []
+        self._gps_ctd_markers = []
         self.refresh_chart_theme()
         self.refresh_chart_tracks()
 
@@ -10666,35 +10676,87 @@ class MainWindow(
         conn.close()
         return (meta[0], meta[1] or '#03DFE2', pts) if meta else (f'Track {track_id}', '#03DFE2', pts)
 
+    def _fetch_ctd_points_for_chart(self):
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, latitude, longitude, dt_utc
+            FROM ctd_profiles
+            WHERE latitude IS NOT NULL
+              AND longitude IS NOT NULL
+              AND (((project_id IS NULL) AND (? IS NULL)) OR project_id = ?)
+            ORDER BY dt_utc DESC, id DESC
+            """,
+            (pid, pid),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return rows
+
     def _plot_selected_gps_tracks(self):
         if not hasattr(self, 'gps_plot'):
             return
         self.gps_plot.clear()
         self.gps_plot.addLegend()
         selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
-        if not selected:
-            self.gps_info_label.setText("No tracks selected")
-            return
-
         total_points = 0
         all_lon = []
         all_lat = []
         palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
-        for idx, track_id in enumerate(selected):
-            name, color, pts = self._fetch_track_points(track_id)
-            if not pts:
-                continue
-            lat = np.asarray([p[0] for p in pts], dtype=float)
-            lon = np.asarray([p[1] for p in pts], dtype=float)
-            total_points += len(pts)
-            all_lon.extend(lon.tolist())
-            all_lat.extend(lat.tolist())
-            line_color = palette[idx % len(palette)] if palette else (color or "#03DFE2")
-            self.gps_plot.plot(lon, lat, pen=pg.mkPen(line_color, width=2), name=name)
-            self.gps_plot.plot([lon[0]], [lat[0]], pen=None, symbol='o', symbolSize=7,
-                               symbolBrush=pg.mkBrush(line_color), name=f"{name} start")
+        if selected:
+            for idx, track_id in enumerate(selected):
+                name, color, pts = self._fetch_track_points(track_id)
+                if not pts:
+                    continue
+                lat = np.asarray([p[0] for p in pts], dtype=float)
+                lon = np.asarray([p[1] for p in pts], dtype=float)
+                total_points += len(pts)
+                all_lon.extend(lon.tolist())
+                all_lat.extend(lat.tolist())
+                line_color = palette[idx % len(palette)] if palette else (color or "#03DFE2")
+                self.gps_plot.plot(lon, lat, pen=pg.mkPen(line_color, width=2), name=name)
+                self.gps_plot.plot([lon[0]], [lat[0]], pen=None, symbol='o', symbolSize=7,
+                                   symbolBrush=pg.mkBrush(line_color), name=f"{name} start")
 
-        self.gps_info_label.setText(f"Tracks: {len(selected)}   Points: {total_points}")
+        ctd_count = 0
+        show_ctd = bool(getattr(self, 'chart_show_ctd_cb', None) and self.chart_show_ctd_cb.isChecked())
+        if show_ctd:
+            try:
+                ctd_rows = self._fetch_ctd_points_for_chart()
+            except Exception:
+                ctd_rows = []
+            for idx, (ctd_id, name, lat, lon, dt_utc) in enumerate(ctd_rows):
+                try:
+                    latf = float(lat)
+                    lonf = float(lon)
+                except Exception:
+                    continue
+                ctd_count += 1
+                all_lon.append(lonf)
+                all_lat.append(latf)
+                label = f"CTD: {name or f'Cast {ctd_id}'}"
+                if dt_utc:
+                    label += f" ({str(dt_utc).split('T')[0]})"
+                self.gps_plot.plot(
+                    [lonf],
+                    [latf],
+                    pen=None,
+                    symbol='t',
+                    symbolSize=10,
+                    symbolBrush=pg.mkBrush('#FFD166'),
+                    symbolPen=pg.mkPen('#333333', width=1),
+                    name=label if idx == 0 else None,
+                )
+
+        if not selected and ctd_count == 0:
+            self.gps_info_label.setText("No tracks selected")
+            return
+
+        self.gps_info_label.setText(
+            f"Tracks: {len(selected)}   Track Points: {total_points}   CTD Casts: {ctd_count}"
+        )
         if all_lon and all_lat:
             self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
             self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
