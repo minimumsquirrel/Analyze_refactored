@@ -2987,6 +2987,21 @@ class MainWindow(
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
         # --- Summary & Stats Tab removed per request ---
+        self.proj_cb = None
+        self.stat_cb = None
+        self.plot_cb = None
+        self.stats_table = None
+        self.stats_fig = None
+        self.stats_canvas = None
+
+        # Defensive cleanup in case a stale build path added the old tab
+        try:
+            for _i in range(self.tabs.count() - 1, -1, -1):
+                _label = self.tabs.tabText(_i) or ""
+                if "summary" in _label.lower() and "stats" in _label.lower():
+                    self.tabs.removeTab(_i)
+        except Exception:
+            pass
 
         # --- Matrix Tab ---------------------------------------------------------
         matrix_tab = QtWidgets.QWidget()
