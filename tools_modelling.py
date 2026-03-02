@@ -3998,6 +3998,26 @@ class ModellingToolsMixin:
             curve_rows = []
 
         def build_curve_interp(name):
+            # 0) Prefer in-memory curves already loaded by the app/session.
+            try:
+                for info in getattr(self, 'hydrophone_curves', {}).values():
+                    if info.get('curve_name') != name:
+                        continue
+                    arr = np.asarray(info.get('sensitivity', []), float)
+                    if arr.size == 0:
+                        continue
+                    fmin = float(info.get('min_freq', 0) or 0)
+                    fmax = float(info.get('max_freq', fmin) or fmin)
+                    freqs = np.linspace(fmin, fmax, arr.size) if arr.size > 1 else np.array([fmin])
+                    def interp(f_Hz):
+                        f = np.atleast_1d(f_Hz).astype(float)
+                        if freqs.size == 1:
+                            return np.full_like(f, arr[0], dtype=float)
+                        return np.interp(f, freqs, arr, left=arr[0], right=arr[-1])
+                    return interp, name
+            except Exception:
+                pass
+
             for nm, fmin, fmax, sj in curve_rows:
                 if nm == name and sj:
                     arr = np.array(ast.literal_eval(sj) if str(sj).strip().startswith('[') else json.loads(sj), float)
