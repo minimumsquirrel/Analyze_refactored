@@ -4274,7 +4274,10 @@ class MainWindow(
             dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss 'UTC'")
             dt.setTimeSpec(QtCore.Qt.UTC)
             dt.setDateTime(QtCore.QDateTime.fromString(default_dt_utc.replace("Z",""), "yyyy-MM-ddTHH:mm:ss"))
-            lat = QtWidgets.QLineEdit(""); lon = QtWidgets.QLineEdit("")
+            seed_loc = getattr(self, '_ctd_seed_location', None)
+            seed_lat = '' if not seed_loc else f"{float(seed_loc[0]):.7f}"
+            seed_lon = '' if not seed_loc else f"{float(seed_loc[1]):.7f}"
+            lat = QtWidgets.QLineEdit(seed_lat); lon = QtWidgets.QLineEdit(seed_lon)
             notes = QtWidgets.QTextEdit("")
             notes.setFixedHeight(60)
             for w in (lat, lon):
@@ -10585,11 +10588,16 @@ class MainWindow(
 
         self.gps_info_label = QtWidgets.QLabel("No tracks loaded")
         right.addWidget(self.gps_info_label)
+        self.gps_cursor_label = QtWidgets.QLabel("Cursor: --")
+        right.addWidget(self.gps_cursor_label)
         layout.addLayout(right, 4)
 
         self._gps_curves = []
         self._gps_ctd_markers = []
         self._gps_folium_html_path = None
+        self._chart_map_click_pos = None
+        self.gps_plot.scene().sigMouseMoved.connect(self._on_chart_map_mouse_moved)
+        self.gps_plot.scene().sigMouseClicked.connect(self._on_chart_map_mouse_clicked)
         self.refresh_chart_theme()
         self.refresh_chart_tracks()
 
@@ -10821,14 +10829,14 @@ class MainWindow(
         conn.close()
         return rows
 
-    def add_chart_waypoint(self):
+    def add_chart_waypoint(self, default_lat=None, default_lon=None):
         self._ensure_waypoints_table()
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle('Add Waypoint')
         form = QtWidgets.QFormLayout(dlg)
         name_e = QtWidgets.QLineEdit()
-        lat_e = QtWidgets.QLineEdit()
-        lon_e = QtWidgets.QLineEdit()
+        lat_e = QtWidgets.QLineEdit('' if default_lat is None else f"{float(default_lat):.7f}")
+        lon_e = QtWidgets.QLineEdit('' if default_lon is None else f"{float(default_lon):.7f}")
         scope_cb = QtWidgets.QComboBox()
         scope_cb.addItems(['Project waypoint', 'Global waypoint'])
         form.addRow('Name:', name_e)
@@ -10858,6 +10866,40 @@ class MainWindow(
         conn.commit(); conn.close()
         self.refresh_chart_waypoints()
         self._plot_selected_gps_tracks()
+
+    def _open_ctd_import_at(self, lat, lon):
+        self._ctd_seed_location = (float(lat), float(lon))
+        try:
+            self.ctd_import_popup()
+        finally:
+            self._ctd_seed_location = None
+        self._plot_selected_gps_tracks()
+
+    def _on_chart_map_mouse_moved(self, pos):
+        if not hasattr(self, 'gps_plot') or self.gps_plot is None:
+            return
+        vb = self.gps_plot.getViewBox()
+        pt = vb.mapSceneToView(pos)
+        if hasattr(self, 'gps_cursor_label'):
+            self.gps_cursor_label.setText(f"Cursor: Lat {float(pt.y()):.6f}, Lon {float(pt.x()):.6f}")
+
+    def _on_chart_map_mouse_clicked(self, event):
+        if not hasattr(self, 'gps_plot') or self.gps_plot is None:
+            return
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        vb = self.gps_plot.getViewBox()
+        pt = vb.mapSceneToView(event.scenePos())
+        lat = float(pt.y())
+        lon = float(pt.x())
+        menu = QtWidgets.QMenu(self)
+        a_wp = menu.addAction(f"Create waypoint here ({lat:.5f}, {lon:.5f})")
+        a_ctd = menu.addAction(f"Import CTD data at this location ({lat:.5f}, {lon:.5f})")
+        chosen = menu.exec_(QtGui.QCursor.pos())
+        if chosen is a_wp:
+            self.add_chart_waypoint(default_lat=lat, default_lon=lon)
+        elif chosen is a_ctd:
+            self._open_ctd_import_at(lat, lon)
 
     def delete_selected_waypoints(self):
         if not hasattr(self, 'waypoint_list'):
