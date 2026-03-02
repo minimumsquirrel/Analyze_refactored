@@ -15163,9 +15163,22 @@ class MainWindow(
         if self.gps_map_view is None or folium is None:
             return
 
-    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
-        if self.gps_map_view is None or folium is None:
-            return
+        # Always initialize bounds lists here so startup/empty states cannot raise NameError.
+        all_lat = []
+        all_lon = []
+        for tr in tracks:
+            all_lat.extend(tr["lat"])
+            all_lon.extend(tr["lon"])
+        for _, _, lat, lon, _ in ctd_rows:
+            try:
+                all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
+        for _, _, lat, lon, _, _ in waypoint_rows:
+            try:
+                all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
 
         total_track_points = sum(len(tr.get("lat", [])) for tr in tracks)
         folium_fast_mode = (total_track_points > 12000) or (len(tracks) > 3) or (len(ctd_rows) > 8)
@@ -15177,27 +15190,18 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='OpenStreetMap',
-            name='Street Map',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri',
-            name='Aerial',
-            overlay=False,
-            control=True,
-        ).add_to(m)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
-            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
-            name='Bathymetry / Ocean',
-            overlay=False,
-            control=True,
-        ).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
         for tr in tracks:
             pts = list(zip(tr["lat"], tr["lon"]))
@@ -15328,39 +15332,6 @@ class MainWindow(
             return None
 
 
-    def _chart_track_line_color(self, default_color, idx):
-        mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
-        if mode == 'White':
-            return '#FFFFFF'
-        if mode == 'Black':
-            return '#000000'
-        palette = self._ordered_palette() if hasattr(self, '_ordered_palette') else ['#03DFE2']
-        return palette[idx % len(palette)] if palette else (default_color or '#03DFE2')
-
-    @staticmethod
-    def _haversine_m(lat1, lon1, lat2, lon2):
-        r = 6371000.0
-        p1 = math.radians(lat1)
-        p2 = math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
-        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
-
-    @staticmethod
-    def _parse_iso_utc(ts):
-        if not ts:
-            return None
-        txt = str(ts).strip()
-        if not txt:
-            return None
-        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
-        try:
-            return datetime.fromisoformat(txt)
-        except Exception:
-            return None
-
-
 
     def _plot_selected_gps_tracks(self):
         selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
@@ -15406,12 +15377,21 @@ class MainWindow(
         use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
-            self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
-            if hasattr(self, 'gps_map_stack'):
-                self.gps_map_stack.setCurrentWidget(self.gps_map_view)
-            if hasattr(self, 'gps_cursor_label'):
-                self.gps_cursor_label.setText('Cursor: hover coordinates available in PyQtGraph mode')
-        else:
+            try:
+                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
+                if hasattr(self, 'gps_map_stack'):
+                    self.gps_map_stack.setCurrentWidget(self.gps_map_view)
+                if hasattr(self, 'gps_cursor_label'):
+                    self.gps_cursor_label.setText('Cursor: hover coordinates available in PyQtGraph mode')
+            except Exception as e:
+                # Never crash startup/chart tab on folium rendering errors; fall back to PyQtGraph.
+                use_web_map = False
+                try:
+                    if hasattr(self, 'gps_info_label'):
+                        self.gps_info_label.setText(f'Map: PyQtGraph fallback (web map error: {e})')
+                except Exception:
+                    pass
+        if not use_web_map:
             if not hasattr(self, 'gps_plot'):
                 return
             if hasattr(self, 'gps_map_stack'):
