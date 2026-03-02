@@ -10544,6 +10544,12 @@ class MainWindow(
         self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
         sidebar.addWidget(self.chart_refresh_btn)
 
+        self.chart_interactive_mode_cb = QtWidgets.QCheckBox("Interactive Edit Mode")
+        self.chart_interactive_mode_cb.setChecked(True)
+        self.chart_interactive_mode_cb.setToolTip("Use PyQtGraph map so left-click menu works for waypoint/CTD actions")
+        self.chart_interactive_mode_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_interactive_mode_cb)
+
         sidebar.addWidget(QtWidgets.QLabel("Waypoints"))
         self.waypoint_list = QtWidgets.QListWidget()
         self.waypoint_list.setMinimumHeight(120)
@@ -10782,6 +10788,10 @@ class MainWindow(
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_map_waypoints_project ON map_waypoints(project_id)")
+        cur.execute("PRAGMA table_info(map_waypoints)")
+        cols = {r[1] for r in cur.fetchall()}
+        if 'symbol' not in cols:
+            cur.execute("ALTER TABLE map_waypoints ADD COLUMN symbol TEXT DEFAULT 'star'")
         conn.commit()
         conn.close()
 
@@ -10794,7 +10804,7 @@ class MainWindow(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, name, latitude, longitude, project_id
+            SELECT id, name, latitude, longitude, project_id, COALESCE(symbol,'star')
             FROM map_waypoints
             WHERE project_id IS NULL OR project_id = ?
             ORDER BY project_id IS NULL DESC, name COLLATE NOCASE ASC, id DESC
@@ -10805,9 +10815,9 @@ class MainWindow(
         conn.close()
 
         self.waypoint_list.clear()
-        for wid, name, lat, lon, proj_id in rows:
+        for wid, name, lat, lon, proj_id, symbol in rows:
             scope = 'Global' if proj_id is None else 'Project'
-            item = QtWidgets.QListWidgetItem(f"{name} [{scope}] ({lat:.5f}, {lon:.5f})")
+            item = QtWidgets.QListWidgetItem(f"{name} [{scope}] <{symbol}> ({lat:.5f}, {lon:.5f})")
             item.setData(QtCore.Qt.UserRole, int(wid))
             self.waypoint_list.addItem(item)
 
@@ -10818,7 +10828,7 @@ class MainWindow(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, name, latitude, longitude, project_id
+            SELECT id, name, latitude, longitude, project_id, COALESCE(symbol,'star')
             FROM map_waypoints
             WHERE project_id IS NULL OR project_id = ?
             ORDER BY created_at DESC, id DESC
@@ -10839,10 +10849,13 @@ class MainWindow(
         lon_e = QtWidgets.QLineEdit('' if default_lon is None else f"{float(default_lon):.7f}")
         scope_cb = QtWidgets.QComboBox()
         scope_cb.addItems(['Project waypoint', 'Global waypoint'])
+        symbol_cb = QtWidgets.QComboBox()
+        symbol_cb.addItems(['star', 'circle', 'square', 'triangle', 'diamond', 'cross'])
         form.addRow('Name:', name_e)
         form.addRow('Latitude:', lat_e)
         form.addRow('Longitude:', lon_e)
         form.addRow('Scope:', scope_cb)
+        form.addRow('Symbol:', symbol_cb)
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         form.addRow(btns)
         btns.accepted.connect(dlg.accept)
@@ -10857,11 +10870,12 @@ class MainWindow(
             QtWidgets.QMessageBox.warning(self, 'Waypoint', 'Invalid waypoint values.')
             return
         proj_id = None if scope_cb.currentText().startswith('Global') else getattr(self, 'current_project_id', None)
+        symbol = symbol_cb.currentText().strip() or 'star'
         conn = sqlite3.connect(DB_FILENAME)
         cur = conn.cursor()
         cur.execute(
-            'INSERT INTO map_waypoints (name, latitude, longitude, project_id) VALUES (?, ?, ?, ?)',
-            (name, lat, lon, proj_id),
+            'INSERT INTO map_waypoints (name, latitude, longitude, project_id, symbol) VALUES (?, ?, ?, ?, ?)',
+            (name, lat, lon, proj_id, symbol),
         )
         conn.commit(); conn.close()
         self.refresh_chart_waypoints()
@@ -10936,9 +10950,41 @@ class MainWindow(
         conn.close()
         return rows
 
+
+    def _waypoint_symbol_pg(self, symbol_name):
+        smap = {
+            'star': 'star',
+            'circle': 'o',
+            'square': 's',
+            'triangle': 't',
+            'diamond': 'd',
+            'cross': 'x',
+        }
+        return smap.get((symbol_name or 'star').strip().lower(), 'star')
+
+    def _waypoint_icon_folium(self, symbol_name):
+        fmap = {
+            'star': 'star',
+            'circle': 'circle',
+            'square': 'square',
+            'triangle': 'play',
+            'diamond': 'certificate',
+            'cross': 'times',
+        }
+        return fmap.get((symbol_name or 'star').strip().lower(), 'star')
+
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
+        if QtWidgets.QMessageBox.question(self, 'Delete Waypoints', f'Delete {len(ids)} selected waypoint(s)?') != QtWidgets.QMessageBox.Yes:
+            return
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        for wid in ids:
+            cur.execute('DELETE FROM map_waypoints WHERE id=?', (int(wid),))
+        conn.commit(); conn.close()
+        self.refresh_chart_waypoints()
+        self._plot_selected_gps_tracks()
 
         all_lat = []
         all_lon = []
@@ -10950,7 +10996,7 @@ class MainWindow(
                 all_lat.append(float(lat)); all_lon.append(float(lon))
             except Exception:
                 pass
-        for _, _, lat, lon, _ in waypoint_rows:
+        for _, _, lat, lon, _, _ in waypoint_rows:
             try:
                 all_lat.append(float(lat)); all_lon.append(float(lon))
             except Exception:
@@ -11008,14 +11054,14 @@ class MainWindow(
                 lab += f"<br>{dt_utc}"
             folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
 
-        for wp_id, wp_name, lat, lon, proj_id in waypoint_rows:
+        for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
             try:
                 latf = float(lat); lonf = float(lon)
             except Exception:
                 continue
             scope = 'Global' if proj_id is None else 'Project'
-            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}",
-                          icon=folium.Icon(color='blue', icon='flag', prefix='fa')).add_to(m)
+            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}<br>Symbol: {symbol}",
+                          icon=folium.Icon(color='blue', icon=self._waypoint_icon_folium(symbol), prefix='fa')).add_to(m)
 
         folium.LayerControl(collapsed=False).add_to(m)
 
@@ -11063,13 +11109,13 @@ class MainWindow(
         except Exception:
             waypoint_rows = []
         wp_count = 0
-        for _, _, lat, lon, _ in waypoint_rows:
+        for _, _, lat, lon, _, _ in waypoint_rows:
             try:
                 all_lon.append(float(lon)); all_lat.append(float(lat)); wp_count += 1
             except Exception:
                 pass
 
-        use_web_map = bool(self.gps_map_view is not None and folium is not None)
+        use_web_map = bool(self.gps_map_view is not None and folium is not None and not (getattr(self, 'chart_interactive_mode_cb', None) and self.chart_interactive_mode_cb.isChecked()))
 
         if use_web_map:
             self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
@@ -11099,13 +11145,13 @@ class MainWindow(
                                    symbolBrush=pg.mkBrush('#FFD166'), symbolPen=pg.mkPen('#333333', width=1),
                                    name=label if idx == 0 else None)
 
-            for idx, (wp_id, wp_name, lat, lon, proj_id) in enumerate(waypoint_rows):
+            for idx, (wp_id, wp_name, lat, lon, proj_id, symbol) in enumerate(waypoint_rows):
                 try:
                     latf = float(lat); lonf = float(lon)
                 except Exception:
                     continue
                 scope = 'Global' if proj_id is None else 'Project'
-                self.gps_plot.plot([lonf], [latf], pen=None, symbol='star', symbolSize=12,
+                self.gps_plot.plot([lonf], [latf], pen=None, symbol=self._waypoint_symbol_pg(symbol), symbolSize=12,
                                    symbolBrush=pg.mkBrush('#4DA3FF'), symbolPen=pg.mkPen('#1E3A5F', width=1),
                                    name=(f"Waypoint: {wp_name} ({scope})" if idx == 0 else None))
 
