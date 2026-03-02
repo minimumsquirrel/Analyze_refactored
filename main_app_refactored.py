@@ -741,6 +741,14 @@ class MplCanvas(QtWidgets.QWidget):
         self.plot_fft = self.glw.addPlot(row=1, col=0)
         self._style_plot(self.plot_fft, 'Spectrum', 'Frequency (Hz)', 'Magnitude')
         self.plot_fft.setVisible(False)
+
+        # Keep pyqtgraph native context menu/actions available on right-click
+        for _p in (self.plot_waveform, self.plot_fft):
+            try:
+                _p.setMenuEnabled(True)
+                _p.getViewBox().setMenuEnabled(True)
+            except Exception:
+                pass
         # Waveform fills all space; FFT row collapses when hidden
         self.glw.ci.layout.setRowStretchFactor(0, 1)
         self.glw.ci.layout.setRowStretchFactor(1, 0)
@@ -5281,6 +5289,18 @@ class MainWindow(
 
         vb = pw.getViewBox()
 
+        # Keep the native pyqtgraph context menu/interaction reachable
+        try:
+            pw.setMenuEnabled(True)
+            vb.setMenuEnabled(True)
+        except Exception:
+            pass
+
+        if not hasattr(self, '_orig_wave_vb_mouse_press'):
+            self._orig_wave_vb_mouse_press = vb.mousePressEvent
+            self._orig_wave_vb_mouse_move = vb.mouseMoveEvent
+            self._orig_wave_vb_mouse_release = vb.mouseReleaseEvent
+
         def _mouse_press(event):
             if event.button() == QtCore.Qt.LeftButton:
                 pos = vb.mapSceneToView(event.scenePos())
@@ -5288,6 +5308,12 @@ class MainWindow(
                 self._span_dragging = True
                 region.setRegion((pos.x(), pos.x()))
                 event.accept()
+                return
+            # preserve right-click/context menu + built-in interactions
+            try:
+                self._orig_wave_vb_mouse_press(event)
+            except Exception:
+                pass
 
         def _mouse_move(event):
             if self._span_dragging and self._span_x0 is not None:
@@ -5296,6 +5322,11 @@ class MainWindow(
                 x1 = pos.x()
                 region.setRegion((min(x0, x1), max(x0, x1)))
                 event.accept()
+                return
+            try:
+                self._orig_wave_vb_mouse_move(event)
+            except Exception:
+                pass
 
         def _mouse_release(event):
             if self._span_dragging and event.button() == QtCore.Qt.LeftButton:
@@ -5307,6 +5338,11 @@ class MainWindow(
                     except Exception:
                         pass
                 event.accept()
+                return
+            try:
+                self._orig_wave_vb_mouse_release(event)
+            except Exception:
+                pass
 
         # Disconnect any previous handlers
         try:
@@ -5621,6 +5657,26 @@ class MainWindow(
         # Aliases for compat
         self.ax_waveform = pw
         self.ax_fft      = pf
+
+        # In FFT mode, keep native mouse behavior so left-click measurement works.
+        try:
+            vb = pw.getViewBox()
+            if hasattr(self, '_orig_wave_vb_mouse_press'):
+                vb.mousePressEvent = self._orig_wave_vb_mouse_press
+            if hasattr(self, '_orig_wave_vb_mouse_move'):
+                vb.mouseMoveEvent = self._orig_wave_vb_mouse_move
+            if hasattr(self, '_orig_wave_vb_mouse_release'):
+                vb.mouseReleaseEvent = self._orig_wave_vb_mouse_release
+            pw.setMenuEnabled(True)
+            vb.setMenuEnabled(True)
+        except Exception:
+            pass
+        if getattr(self, '_span_region', None) is not None:
+            try:
+                pw.removeItem(self._span_region)
+            except Exception:
+                pass
+            self._span_region = None
 
         # Wire click on waveform for echo measurement
         pw.scene().sigMouseClicked.connect(self._pg_on_waveform_click)
