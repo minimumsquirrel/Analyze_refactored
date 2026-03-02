@@ -3878,6 +3878,781 @@ class MainWindow(
         plt.close(fig)
 
 
+    def ctd_import_popup(self):
+        """
+        CTD Import & Sound-Speed Profile  — with metadata prompt + DB save
+        - Reads Sea-Bird .cnv and CSV with headers
+        - Computes c(z) with Mackenzie (1981) if not supplied
+        - Prompts for Name / Date-Time / GPS and saves to sqlite `ctd_profiles`
+        - Can set as 'active' (self.ctd_profile) for other tools (e.g., Wenz)
+        """
+        from PyQt5 import QtWidgets, QtCore, QtGui
+        import os, csv, re, json, sqlite3, numpy as np, ast
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
+        # --- DB setup ----------------------------------------------------------
+        def _db_path():
+            try:
+                from analyze_qt import DB_FILENAME
+                return DB_FILENAME
+            except Exception:
+                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+
+        def _ensure_ctd_table(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ctd_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    dt_utc TEXT,
+                    latitude REAL,
+                    longitude REAL,
+                    notes TEXT,
+                    project_id INTEGER,
+                    source TEXT,
+                    depth_json TEXT NOT NULL,
+                    temp_json TEXT,
+                    sal_json TEXT,
+                    sound_speed_json TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
+            try:
+                cur.execute("ALTER TABLE ctd_profiles ADD COLUMN notes TEXT")
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE ctd_profiles ADD COLUMN project_id INTEGER")
+            except Exception:
+                pass
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ctd_profiles_dt ON ctd_profiles(dt_utc)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ctd_profiles_name ON ctd_profiles(name)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ctd_profiles_project ON ctd_profiles(project_id)")
+            conn.commit()
+
+        def _save_profile_to_db(name, dt_iso_utc, lat, lon, notes, project_id, source, depth, temp, sal, c_ms):
+            path = _db_path()
+            conn = sqlite3.connect(path)
+            _ensure_ctd_table(conn)
+            cur = conn.cursor()
+            as_list = lambda a: [] if a is None else [float(x) for x in np.asarray(a).ravel()]
+            cur.execute("""
+                INSERT INTO ctd_profiles
+                (name, dt_utc, latitude, longitude, notes, project_id, source,
+                depth_json, temp_json, sal_json, sound_speed_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                name, dt_iso_utc, None if lat is None else float(lat),
+                None if lon is None else float(lon),
+                notes or "",
+                project_id,
+                source or "",
+                json.dumps(as_list(depth)),
+                json.dumps(as_list(temp) if temp is not None else None),
+                json.dumps(as_list(sal) if sal is not None else None),
+                json.dumps(as_list(c_ms) if c_ms is not None else None),
+            ))
+            conn.commit()
+            conn.close()
+
+        def _list_ctd_profiles(project_id=None):
+            path = _db_path()
+            conn = sqlite3.connect(path)
+            _ensure_ctd_table(conn)
+            cur = conn.cursor()
+            if project_id:
+                cur.execute("""
+                    SELECT c.id, c.name, c.dt_utc, c.latitude, c.longitude, c.notes,
+                           p.name as project_name
+                    FROM ctd_profiles c
+                    LEFT JOIN projects p ON c.project_id = p.id
+                    WHERE c.project_id = ?
+                    ORDER BY c.dt_utc DESC, c.id DESC
+                """, (project_id,))
+            else:
+                cur.execute("""
+                    SELECT c.id, c.name, c.dt_utc, c.latitude, c.longitude, c.notes,
+                           p.name as project_name
+                    FROM ctd_profiles c
+                    LEFT JOIN projects p ON c.project_id = p.id
+                    ORDER BY c.dt_utc DESC, c.id DESC
+                """)
+            rows = cur.fetchall()
+            conn.close()
+            return rows
+
+        def _list_projects():
+            path = _db_path()
+            conn = sqlite3.connect(path)
+            cur = conn.cursor()
+            cur.execute("SELECT id, name FROM projects ORDER BY name")
+            rows = cur.fetchall()
+            conn.close()
+            return rows
+
+        def _delete_ctd_profile(ctd_id):
+            path = _db_path()
+            conn = sqlite3.connect(path)
+            _ensure_ctd_table(conn)
+            cur = conn.cursor()
+            cur.execute("DELETE FROM ctd_profiles WHERE id = ?", (ctd_id,))
+            conn.commit()
+            conn.close()
+
+        def _load_ctd_profile(ctd_id):
+            """
+            Loads CTD arrays from ctd_profiles table columns:
+            depth_json (required), temp_json, sal_json, sound_speed_json
+            Returns normalized dict:
+            {"depth_m": D, "temp_C": T, "sal_ppt": S, "pH": None, "c_ms": C}
+            """
+            try:
+                conn = sqlite3.connect(_db_path()); cur = conn.cursor()
+                cur.execute("""
+                    SELECT depth_json, temp_json, sal_json, sound_speed_json
+                    FROM ctd_profiles
+                    WHERE id=?
+                """, (ctd_id,))
+                row = cur.fetchone()
+                conn.close()
+            except Exception:
+                row = None
+
+            if not row:
+                return None
+
+            depth_txt, temp_txt, sal_txt, c_txt = row
+
+            def _parse_arr(txt):
+                if txt is None:
+                    return None
+                txt = str(txt).strip()
+                if not txt:
+                    return None
+                try:
+                    obj = json.loads(txt)
+                except Exception:
+                    try:
+                        obj = ast.literal_eval(txt)
+                    except Exception:
+                        return None
+
+                # Accept: [1,2,3] or {"data":[...]} or {"values":[...]}
+                if isinstance(obj, dict):
+                    for k in ("data", "values", "array", "points"):
+                        if k in obj:
+                            obj = obj[k]
+                            break
+
+                try:
+                    a = np.asarray(obj, dtype=float)
+                except Exception:
+                    return None
+
+                if a.ndim != 1:
+                    # If stored as [[depth,temp],...], take first column
+                    if a.ndim == 2 and a.shape[1] >= 1:
+                        a = np.asarray(a[:, 0], dtype=float)
+                    else:
+                        return None
+
+                a = a[np.isfinite(a)]
+                return a if a.size >= 2 else None
+
+            D = _parse_arr(depth_txt)
+            T = _parse_arr(temp_txt)
+            S = _parse_arr(sal_txt)
+            C = _parse_arr(c_txt)
+
+            if D is None or D.size < 3:
+                return None
+
+            # If T missing, we can't compute depth guidance; still return what we have.
+            # But the "ideal depth" feature requires temp.
+            # We'll handle that upstream.
+            if T is not None:
+                n = min(D.size, T.size)
+                D = D[:n]; T = T[:n]
+                if S is not None:
+                    S = S[:n] if S.size >= n else None
+                if C is not None:
+                    C = C[:n] if C.size >= n else None
+
+                # sort by depth
+                idx = np.argsort(D)
+                D = D[idx]; T = T[idx]
+                if S is not None: S = S[idx]
+                if C is not None: C = C[idx]
+
+            return {"depth_m": D, "temp_C": T, "sal_ppt": S, "pH": None, "c_ms": C}
+
+
+        # --- UI skeleton -------------------------------------------------------
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Import CTD / Plot Profiles")
+        dlg.setStyleSheet("background:#19232D; color:white;")
+        dlg.resize(1100, 700)
+        vbox = QtWidgets.QVBoxLayout(dlg); vbox.setContentsMargins(10,10,10,10); vbox.setSpacing(8)
+
+        tabs = QtWidgets.QTabWidget()
+        vbox.addWidget(tabs)
+
+        # --- Tab 1: Import -----------------------------------------------------
+        import_tab = QtWidgets.QWidget()
+        tabs.addTab(import_tab, "Import")
+        import_layout = QtWidgets.QVBoxLayout(import_tab)
+        import_layout.setContentsMargins(10, 10, 10, 10)
+        import_layout.setSpacing(8)
+
+        top = QtWidgets.QHBoxLayout()
+        pick_btn = QtWidgets.QPushButton("Open CTD (.cnv / .csv)")
+        pick_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
+        browse_btn = QtWidgets.QPushButton("Browse Saved Casts")
+        browse_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
+        file_lbl = QtWidgets.QLabel("(no file)"); file_lbl.setStyleSheet("color:#A0C4FF;")
+        top.addWidget(pick_btn); top.addWidget(browse_btn); top.addSpacing(10); top.addWidget(file_lbl); top.addStretch()
+
+        opt = QtWidgets.QHBoxLayout()
+        use_c_from_file = QtWidgets.QCheckBox("Use sound speed column if present"); use_c_from_file.setChecked(True)
+        flip_depth = QtWidgets.QCheckBox("Depth down"); flip_depth.setChecked(True)
+        opt.addWidget(use_c_from_file); opt.addSpacing(12); opt.addWidget(flip_depth); opt.addStretch()
+
+        import_layout.addLayout(top)
+        import_layout.addLayout(opt)
+
+        fig = Figure(facecolor="#19232D")
+        axT = fig.add_subplot(131); axS = fig.add_subplot(132, sharey=axT); axC = fig.add_subplot(133, sharey=axT)
+        def _style_axes(ax, xlab, ylab=None):
+            ax.set_facecolor("#19232D")
+            for s in ax.spines.values(): s.set_color("white")
+            ax.tick_params(colors="white")
+            ax.grid(True, ls="--", alpha=0.35, color="gray")
+            ax.set_xlabel(xlab, color="white")
+            if ylab: ax.set_ylabel(ylab, color="white")
+        _style_axes(axT, "Temperature (°C)", "Depth (m)")
+        _style_axes(axS, "Salinity (PSU)")
+        _style_axes(axC, "Sound speed c (m/s)")
+        fig.tight_layout()
+        canvas = FigureCanvas(fig)
+        import_layout.addWidget(canvas, 1)
+
+        # Bottom row
+        bot = QtWidgets.QHBoxLayout()
+        save_btn = QtWidgets.QPushButton("Save Plot")
+        save_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
+        csv_btn = QtWidgets.QPushButton("Export CSV")
+        csv_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
+        set_active_btn = QtWidgets.QPushButton("Set As Active Profile")
+        set_active_btn.setStyleSheet("background:#6EEB83;color:#111;padding:6px 12px;border-radius:6px;font-weight:bold;")
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
+        for b in (save_btn, csv_btn, set_active_btn, close_btn): bot.addWidget(b)
+        bot.addStretch(); import_layout.addLayout(bot)
+
+        # --- Tab 2: Browse -----------------------------------------------------
+        browse_tab = QtWidgets.QWidget()
+        tabs.addTab(browse_tab, "Browse Casts")
+        browse_layout = QtWidgets.QVBoxLayout(browse_tab)
+        browse_layout.setContentsMargins(10, 10, 10, 10)
+        browse_layout.setSpacing(8)
+
+        browse_top = QtWidgets.QHBoxLayout()
+        browse_top.addWidget(QtWidgets.QLabel("Project:"))
+        project_cb = QtWidgets.QComboBox()
+        project_cb.setMinimumWidth(200)
+        browse_top.addWidget(project_cb)
+        browse_top.addStretch()
+        browse_layout.addLayout(browse_top)
+
+        table = QtWidgets.QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(["Name", "Date (UTC)", "Latitude", "Longitude", "Notes", "Project"])
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        table.horizontalHeader().setStretchLastSection(True)
+        browse_layout.addWidget(table)
+
+        browse_btns = QtWidgets.QHBoxLayout()
+        load_btn = QtWidgets.QPushButton("Load")
+        export_btn = QtWidgets.QPushButton("Export CSV")
+        export_all_btn = QtWidgets.QPushButton("Export Project CSVs")
+        delete_btn = QtWidgets.QPushButton("Delete")
+        refresh_btn = QtWidgets.QPushButton("Refresh")
+        for b in (load_btn, export_btn, export_all_btn, delete_btn, refresh_btn):
+            browse_btns.addWidget(b)
+        browse_btns.addStretch()
+        browse_layout.addLayout(browse_btns)
+
+        # --- Helpers: parsing & physics ---------------------------------------
+        def _mackenzie_c_ms(T, S, z):
+            T = np.asarray(T, float); S = np.asarray(S, float); z = np.asarray(z, float)
+            return (1448.96 + 4.591*T - 5.304e-2*T**2 + 2.374e-4*T**3
+                    + 1.340*(S - 35.0) + 1.630e-2*z + 1.675e-7*z**2
+                    - 1.025e-2*T*(S - 35.0) - 7.139e-13*T*z**3)
+
+        def _pressure_to_depth_m(p_dbar):
+            return np.asarray(p_dbar, float) * 1.0197
+
+        def _read_cnv(path):
+            names, units, data = [], [], []
+            with open(path, "r", errors="ignore") as fh:
+                lines = fh.read().splitlines()
+            for ln in lines:
+                if ln.startswith("# name ") and "=" in ln:
+                    right = ln.split("=", 1)[1].strip()
+                    nm = right.split(":")[0].strip()
+                    m = re.search(r"\[(.+?)\]", ln)
+                    u = m.group(1) if m else ""
+                    names.append(nm); units.append(u)
+            start_idx = 0
+            for i, ln in enumerate(lines):
+                if (ln and not ln.startswith("#") and not ln.startswith("*")):
+                    start_idx = i; break
+            for ln in lines[start_idx:]:
+                if not ln or ln.startswith("#") or ln.startswith("*"): continue
+                parts = ln.strip().split()
+                try: data.append([float(x) for x in parts])
+                except: pass
+            arr = np.array(data, float) if data else np.zeros((0, len(names)), float)
+            return names, units, arr
+
+        def _read_csv(path):
+            with open(path, "r", newline="", errors="ignore") as fh:
+                rdr = csv.reader(fh); rows = list(rdr)
+            if not rows: return [], [], np.zeros((0,0), float)
+
+            header = []
+            data_rows = []
+            in_data = False
+            tab_mode = False
+            def _to_float(val):
+                try:
+                    return float(val)
+                except Exception:
+                    return np.nan
+            for row in rows:
+                line = "\t".join(row).strip()
+                if line.startswith("[MeasurementMetadata]"):
+                    continue
+                if line.startswith("[MeasurementData]"):
+                    in_data = True
+                    continue
+                if line.startswith("["):
+                    continue
+                if line.startswith("Columns="):
+                    raw_cols = line.split("=", 1)[1]
+                    cols = [h.strip() for h in raw_cols.split("\t") if h.strip()]
+                    if len(cols) <= 1:
+                        cols = [h.strip() for h in raw_cols.split(",") if h.strip()]
+                    header = cols
+                    tab_mode = True
+                    continue
+                if not in_data:
+                    continue
+                if not header:
+                    header = [f"Column {i+1}" for i in range(len(row))]
+                if tab_mode:
+                    vals = line.split("\t")[:len(header)]
+                else:
+                    vals = row[:len(header)]
+                if not vals:
+                    continue
+                data_rows.append([_to_float(x) if str(x).strip() != "" else np.nan for x in vals])
+
+            if not data_rows:
+                header = [h.strip() for h in rows[0]]
+                data_rows = []
+                for r in rows[1:]:
+                    data_rows.append([_to_float(x) if str(x).strip() != "" else np.nan for x in r[:len(header)]])
+
+            arr = np.array(data_rows, float) if data_rows else np.zeros((0, len(header)), float)
+            names, units = [], []
+            for h in header:
+                m = re.match(r"(.+?)\s*\((.+?)\)\s*$", h)
+                if m: names.append(m.group(1).strip()); units.append(m.group(2).strip())
+                else: names.append(h); units.append("")
+            return names, units, arr
+
+        def _pick_columns(names):
+            idx = dict(depth=None, pressure=None, temp=None, sal=None, c=None)
+            lname = [n.lower() for n in names]
+            def find_any(keys):
+                for i, n in enumerate(lname):
+                    for k in keys:
+                        if k in n: return i
+                return None
+            idx["depth"]   = find_any(["depth", "depsm", "dep", "z"])
+            idx["pressure"]= find_any(["press", "pressure", "prd", "prdm"])
+            idx["temp"]    = find_any(["temperature", "temp", "t090", "t190"])
+            idx["sal"]     = find_any(["sal", "salin", "salinity", "psu", "practical"])
+            idx["c"]       = find_any(["sound", "sv", "snd", "veloc", "c("])
+            return idx
+
+        # --- State -------------------------------------------------------------
+        state = {"path": None, "depth_m": None, "temp_c": None, "sal_psu": None, "c_ms": None}
+
+        # --- Metadata dialog ---------------------------------------------------
+        def _prompt_metadata(default_name, default_dt_utc):
+            d = QtWidgets.QDialog(dlg)
+            d.setWindowTitle("Save CTD Profile")
+            form = QtWidgets.QFormLayout(d); form.setContentsMargins(12,12,12,12); form.setSpacing(8)
+            name = QtWidgets.QLineEdit(default_name)
+            dt = QtWidgets.QDateTimeEdit()
+            dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss 'UTC'")
+            dt.setTimeSpec(QtCore.Qt.UTC)
+            dt.setDateTime(QtCore.QDateTime.fromString(default_dt_utc.replace("Z",""), "yyyy-MM-ddTHH:mm:ss"))
+            lat = QtWidgets.QLineEdit(""); lon = QtWidgets.QLineEdit("")
+            notes = QtWidgets.QTextEdit("")
+            notes.setFixedHeight(60)
+            for w in (lat, lon):
+                w.setPlaceholderText("e.g., 45.1234 or -66.4321")
+                w.setValidator(QtGui.QDoubleValidator(-999.0, 999.0, 8))
+            form.addRow("Name:", name)
+            form.addRow("Date/Time (UTC):", dt)
+            form.addRow("Latitude:", lat)
+            form.addRow("Longitude:", lon)
+            form.addRow("Notes:", notes)
+            bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok|QtWidgets.QDialogButtonBox.Cancel)
+            form.addRow(bb)
+            bb.accepted.connect(d.accept); bb.rejected.connect(d.reject)
+            if d.exec_() != QtWidgets.QDialog.Accepted: return None
+            nm = name.text().strip()
+            if not nm: nm = default_name
+            dt_iso = dt.dateTime().toUTC().toString(QtCore.Qt.ISODate)  # 'YYYY-MM-DDTHH:mm:ssZ'
+            def _f(txt):
+                t = txt.strip()
+                if not t: return None
+                try: return float(t)
+                except: return None
+            return {
+                "name": nm,
+                "dt_iso": dt_iso,
+                "lat": _f(lat.text()),
+                "lon": _f(lon.text()),
+                "notes": notes.toPlainText().strip(),
+            }
+
+        # --- Core: parse -> derive -> plot ------------------------------------
+        def _load_and_plot(path):
+            if path is None: return
+            file_lbl.setText(os.path.basename(path))
+            ext = os.path.splitext(path)[1].lower()
+            names, units, arr = (_read_cnv(path) if ext == ".cnv" else _read_csv(path))
+            if arr.size == 0 or len(names) == 0:
+                QtWidgets.QMessageBox.warning(dlg, "Parse error", "No numeric data found.")
+                return
+
+            idx = _pick_columns(names)
+
+            # Depth
+            if idx["depth"] is not None:
+                depth = arr[:, idx["depth"]].astype(float)
+            elif idx["pressure"] is not None:
+                depth = _pressure_to_depth_m(arr[:, idx["pressure"]].astype(float))
+            else:
+                QtWidgets.QMessageBox.warning(dlg, "Missing column", "No Depth or Pressure column found.")
+                return
+
+            # Temp / Sal
+            temp = arr[:, idx["temp"]].astype(float) if idx["temp"] is not None else None
+            sal  = arr[:, idx["sal"]].astype(float)  if idx["sal"]  is not None else None
+
+            # Sound speed
+            c_col = arr[:, idx["c"]].astype(float) if idx["c"] is not None else None
+            if c_col is not None and use_c_from_file.isChecked():
+                c_ms = c_col
+            else:
+                if temp is None or sal is None:
+                    QtWidgets.QMessageBox.information(dlg, "Need T & S",
+                        "No sound speed column and insufficient data to compute c(z) (need Temperature & Salinity).")
+                    c_ms = None
+                else:
+                    c_ms = _mackenzie_c_ms(temp, sal, np.maximum(depth, 0.0))
+
+            # Sort by depth
+            order = np.argsort(depth)
+            depth = depth[order]
+            temp  = temp[order] if temp is not None else None
+            sal   = sal[order]  if sal  is not None else None
+            c_ms  = c_ms[order] if c_ms is not None else None
+
+            # Save state
+            state.update({"path": path, "depth_m": depth, "temp_c": temp, "sal_psu": sal, "c_ms": c_ms})
+
+            # Plot
+            axT.clear(); axS.clear(); axC.clear()
+            _style_axes(axT, "Temperature (°C)", "Depth (m)")
+            _style_axes(axS, "Salinity (PSU)")
+            _style_axes(axC, "Sound speed c (m/s)")
+            if temp is not None: axT.plot(temp, depth, color=getattr(self, "graph_color", "#33C3F0"), lw=1.8, label="T")
+            if sal  is not None: axS.plot(sal,  depth, color="#FFD166", lw=1.8, label="S")
+            if c_ms is not None: axC.plot(c_ms, depth, color="#6EEB83", lw=2.0, label="c(z)")
+            if flip_depth.isChecked():
+                for a in (axT, axS, axC): a.invert_yaxis()
+            for a in (axT, axS, axC): a.legend(facecolor="#222", edgecolor="#444", labelcolor="white")
+            fig.tight_layout(); canvas.draw()
+
+            # --- Prompt for metadata and save to DB ----------------------------
+            # Defaults
+            base = os.path.splitext(os.path.basename(path))[0]
+            default_name = f"CTD {base}"
+            try:
+                mtime = os.path.getmtime(path)
+                default_dt = QtCore.QDateTime.fromSecsSinceEpoch(int(mtime), QtCore.Qt.UTC).toString(QtCore.Qt.ISODate)
+            except Exception:
+                default_dt = QtCore.QDateTime.currentDateTimeUtc().toString(QtCore.Qt.ISODate)
+
+            md = _prompt_metadata(default_name, default_dt)
+            if md is not None:
+                try:
+                    proj_id = getattr(self, "current_project_id", None)
+                    if not proj_id:
+                        QtWidgets.QMessageBox.warning(
+                            dlg,
+                            "No Project",
+                            "Select a project before saving a CTD cast.",
+                        )
+                        return
+                    _save_profile_to_db(
+                        md["name"],
+                        md["dt_iso"],
+                        md["lat"],
+                        md["lon"],
+                        md.get("notes"),
+                        proj_id,
+                        path,
+                        depth,
+                        temp,
+                        sal,
+                        c_ms,
+                    )
+                    QtWidgets.QMessageBox.information(dlg, "Saved",
+                        f"Saved CTD profile “{md['name']}” to database.")
+                    # Also set as active
+                    self.ctd_profile = {
+                        "source": path, "name": md["name"], "dt_utc": md["dt_iso"],
+                        "latitude": md["lat"], "longitude": md["lon"],
+                        "notes": md.get("notes"),
+                        "depth_m": depth, "temperature_C": temp, "salinity_PSU": sal, "sound_speed_m_s": c_ms,
+                    }
+                except Exception as e:
+                    QtWidgets.QMessageBox.warning(dlg, "DB error", str(e))
+
+        def _selected_id():
+            idx = table.currentRow()
+            if idx < 0:
+                return None
+            item = table.item(idx, 0)
+            return item.data(QtCore.Qt.UserRole) if item else None
+
+        def _populate_projects():
+            project_cb.blockSignals(True)
+            project_cb.clear()
+            project_cb.addItem("All Projects", None)
+            for pid, name in _list_projects():
+                project_cb.addItem(name, pid)
+            current_pid = getattr(self, "current_project_id", None)
+            if current_pid:
+                idx = project_cb.findData(current_pid)
+                if idx >= 0:
+                    project_cb.setCurrentIndex(idx)
+            project_cb.blockSignals(False)
+
+        def _populate_table():
+            pid = project_cb.currentData()
+            rows = _list_ctd_profiles(project_id=pid)
+            table.setRowCount(0)
+            for row in rows:
+                rid, name, dt_utc, lat, lon, notes, project_name = row
+                r = table.rowCount()
+                table.insertRow(r)
+                values = [
+                    name or "",
+                    dt_utc or "",
+                    "" if lat is None else f"{lat:.6f}",
+                    "" if lon is None else f"{lon:.6f}",
+                    notes or "",
+                    project_name or "",
+                ]
+                for c, val in enumerate(values):
+                    item = QtWidgets.QTableWidgetItem(val)
+                    item.setData(QtCore.Qt.UserRole, rid)
+                    table.setItem(r, c, item)
+
+        def _load_selected():
+            ctd_id = _selected_id()
+            if not ctd_id:
+                QtWidgets.QMessageBox.information(dlg, "Select Cast", "Select a CTD cast first.")
+                return
+            prof = _load_ctd_profile(ctd_id)
+            if not prof:
+                QtWidgets.QMessageBox.warning(dlg, "Load Failed", "Could not load cast.")
+                return
+            state.update({
+                "path": prof.get("source"),
+                "depth_m": prof.get("depth_m"),
+                "temp_c": prof.get("temperature_C"),
+                "sal_psu": prof.get("salinity_PSU"),
+                "c_ms": prof.get("sound_speed_m_s"),
+            })
+            axT.clear(); axS.clear(); axC.clear()
+            _style_axes(axT, "Temperature (°C)", "Depth (m)")
+            _style_axes(axS, "Salinity (PSU)")
+            _style_axes(axC, "Sound speed c (m/s)")
+            if prof.get("temperature_C") is not None:
+                axT.plot(prof["temperature_C"], prof["depth_m"], color=getattr(self, "graph_color", "#33C3F0"), lw=1.8, label="T")
+            if prof.get("salinity_PSU") is not None:
+                axS.plot(prof["salinity_PSU"], prof["depth_m"], color="#FFD166", lw=1.8, label="S")
+            if prof.get("sound_speed_m_s") is not None:
+                axC.plot(prof["sound_speed_m_s"], prof["depth_m"], color="#6EEB83", lw=2.0, label="c(z)")
+            if flip_depth.isChecked():
+                for a in (axT, axS, axC): a.invert_yaxis()
+            for a in (axT, axS, axC): a.legend(facecolor="#222", edgecolor="#444", labelcolor="white")
+            fig.tight_layout(); canvas.draw()
+            file_lbl.setText(prof.get("source") or "(from DB)")
+            self.ctd_profile = prof
+            tabs.setCurrentWidget(import_tab)
+
+        def _export_selected():
+            ctd_id = _selected_id()
+            if not ctd_id:
+                QtWidgets.QMessageBox.information(dlg, "Select Cast", "Select a CTD cast first.")
+                return
+            prof = _load_ctd_profile(ctd_id)
+            if not prof:
+                QtWidgets.QMessageBox.warning(dlg, "Export Failed", "Could not load cast.")
+                return
+            p, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export CTD CSV", "", "CSV (*.csv)")
+            if not p:
+                return
+            _export_ctd_profile_csv(prof, p)
+
+        def _export_ctd_profile_csv(prof, path):
+            with open(path, "w", newline="") as fh:
+                w = csv.writer(fh)
+                header = ["Depth_m"]
+                cols = [prof.get("depth_m")]
+                if prof.get("temperature_C") is not None:
+                    header.append("Temperature_C"); cols.append(prof["temperature_C"])
+                if prof.get("salinity_PSU") is not None:
+                    header.append("Salinity_PSU"); cols.append(prof["salinity_PSU"])
+                if prof.get("sound_speed_m_s") is not None:
+                    header.append("SoundSpeed_m_per_s"); cols.append(prof["sound_speed_m_s"])
+                w.writerow(header)
+                if cols[0] is None:
+                    return
+                for i in range(len(cols[0])):
+                    row = [cols[0][i]] + [col[i] if col is not None and i < len(col) else "" for col in cols[1:]]
+                    w.writerow(row)
+
+        def _export_project_casts():
+            pid = project_cb.currentData()
+            if not pid:
+                QtWidgets.QMessageBox.information(dlg, "Select Project", "Select a project to export.")
+                return
+            proj_name = project_cb.currentText()
+            out_dir = QtWidgets.QFileDialog.getExistingDirectory(dlg, "Select export folder")
+            if not out_dir:
+                return
+            rows = _list_ctd_profiles(project_id=pid)
+            if not rows:
+                QtWidgets.QMessageBox.information(dlg, "No Casts", "No CTD casts for that project.")
+                return
+            for rid, name, dt_utc, lat, lon, notes, project_name in rows:
+                prof = _load_ctd_profile(rid)
+                if not prof:
+                    continue
+                safe = re.sub(r"[^\w\-\. ]+", "_", name or f"ctd_{rid}").strip() or f"ctd_{rid}"
+                path = os.path.join(out_dir, f"{safe}.csv")
+                _export_ctd_profile_csv(prof, path)
+            QtWidgets.QMessageBox.information(
+                dlg,
+                "Exported",
+                f"Exported {len(rows)} CTD casts for {proj_name}.",
+            )
+
+        def _delete_selected():
+            ctd_id = _selected_id()
+            if not ctd_id:
+                QtWidgets.QMessageBox.information(dlg, "Select Cast", "Select a CTD cast first.")
+                return
+            if QtWidgets.QMessageBox.question(
+                dlg,
+                "Delete CTD Cast",
+                "Delete the selected CTD cast?",
+            ) != QtWidgets.QMessageBox.Yes:
+                return
+            _delete_ctd_profile(ctd_id)
+            _populate_table()
+
+        def _show_saved_casts():
+            tabs.setCurrentWidget(browse_tab)
+            _populate_projects()
+            _populate_table()
+
+        # --- Actions -----------------------------------------------------------
+        def on_pick():
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                dlg, "Open CTD", "", "Sea-Bird CNV (*.cnv);;CSV (*.csv);;All Files (*)"
+            )
+            if not path: return
+            _load_and_plot(path)
+
+        def on_save_plot():
+            if state["depth_m"] is None:
+                QtWidgets.QMessageBox.information(dlg, "Nothing to save", "Load a CTD file first."); return
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Plot", "", "PNG (*.png);;JPEG (*.jpg)")
+            if not path: return
+            fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight")
+
+        def on_export_csv():
+            if state["depth_m"] is None:
+                QtWidgets.QMessageBox.information(dlg, "Nothing to export", "Load a CTD file first."); return
+            p, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export CSV", "", "CSV (*.csv)")
+            if not p: return
+            with open(p, "w", newline="") as fh:
+                w = csv.writer(fh)
+                header = ["Depth_m"]; cols = [state["depth_m"]]
+                if state["temp_c"] is not None: header += ["Temperature_C"]; cols += [state["temp_c"]]
+                if state["sal_psu"] is not None: header += ["Salinity_PSU"];  cols += [state["sal_psu"]]
+                if state["c_ms"]   is not None: header += ["SoundSpeed_m_per_s"]; cols += [state["c_ms"]]
+                w.writerow(header); N = len(state["depth_m"])
+                for i in range(N):
+                    row = [cols[0][i]] + [col[i] if i < len(col) else "" for col in cols[1:]]
+                    w.writerow(row)
+
+        def on_set_active():
+            if state["depth_m"] is None:
+                QtWidgets.QMessageBox.information(dlg, "No profile", "Load a CTD file first."); return
+            self.ctd_profile = {
+                "source": state["path"], "depth_m": state["depth_m"],
+                "temperature_C": state["temp_c"], "salinity_PSU": state["sal_psu"],
+                "sound_speed_m_s": state["c_ms"],
+            }
+            QtWidgets.QMessageBox.information(dlg, "Active profile set",
+                "CTD profile stored in self.ctd_profile for other tools.")
+
+        # Wire up
+        pick_btn.clicked.connect(on_pick)
+        browse_btn.clicked.connect(_show_saved_casts)
+        save_btn.clicked.connect(on_save_plot)
+        csv_btn.clicked.connect(on_export_csv)
+        set_active_btn.clicked.connect(on_set_active)
+        close_btn.clicked.connect(dlg.accept)
+
+        project_cb.currentIndexChanged.connect(_populate_table)
+        refresh_btn.clicked.connect(_populate_projects)
+        refresh_btn.clicked.connect(_populate_table)
+        load_btn.clicked.connect(_load_selected)
+        export_btn.clicked.connect(_export_selected)
+        export_all_btn.clicked.connect(_export_project_casts)
+        delete_btn.clicked.connect(_delete_selected)
+
+        _populate_projects()
+        _populate_table()
+
+        dlg.exec_()
+
     # ---------------------
     # Tool Selection Logic
     # ---------------------
