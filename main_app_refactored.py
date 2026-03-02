@@ -3412,6 +3412,472 @@ class MainWindow(
 
 
 
+    def octave_band_analysis_popup(self):
+        """
+        Octave-Band Analysis (multi-channel, project-aware).
+
+        • Requires a project selection.
+        • For each selected channel:
+            - Computes Welch PSD on that channel (in volts)
+            - Integrates PSD over each band (1-octave or 1/3-octave) to get VRMS
+            - Converts VRMS → dB (20*log10(VRMS)) stored in misc
+        • Plot:
+            - Fullscreen-style dialog with a grouped bar chart:
+              each band has one bar per selected channel
+        • Logging:
+            - One measurement per channel per band with _chN suffix in file_name
+            - Screenshot of the multi-channel bar plot saved and attached
+        • Extras:
+            - Save Graph… (JPG / PNG)
+            - Data table of band values
+            - Export CSV of table
+        """
+        import numpy as np
+        import os
+        import csv
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from scipy.signal import welch
+
+        # --- Require project selection ---
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.warning(
+                self, "Project Required",
+                "Please select a Project before running Octave-Band Analysis."
+            )
+            return
+
+        # --- Basic checks ---
+        if getattr(self, "full_data", None) is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
+            return
+        if not hasattr(self, "sample_rate") or self.sample_rate <= 0:
+            QtWidgets.QMessageBox.critical(self, "Error", "Invalid sample rate.")
+            return
+
+        # === 1) Band type dialog ===
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Octave-Band Analysis")
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        form = QtWidgets.QFormLayout()
+        bw_combo = QtWidgets.QComboBox()
+        bw_combo.addItems(["1-Octave", "1/3-Octave"])
+        form.addRow("Band Type:", bw_combo)
+        layout.addLayout(form)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        compute_btn = QtWidgets.QPushButton("Compute")
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        btn_row.addStretch()
+        btn_row.addWidget(compute_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        params = {}
+
+        def on_compute():
+            params["band_type"] = bw_combo.currentText()
+            dlg.accept()
+
+        compute_btn.clicked.connect(on_compute)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        band_type = params["band_type"]
+
+        # === 2) Prepare data as (N, C) and convert to volts ===
+        data = np.asarray(self.full_data)
+        sr = float(self.sample_rate)
+
+        if data.ndim == 1:
+            data_2d = data.reshape(-1, 1)
+        else:
+            data_2d = data
+        n_samples, n_ch = data_2d.shape
+
+        # Counts → volts using max_voltage_entry and original_dtype
+        if np.issubdtype(self.original_dtype, np.integer):
+            try:
+                vmax = float(self.max_voltage_entry.text())
+            except Exception:
+                vmax = 1.0
+            conv = vmax / np.iinfo(self.original_dtype).max
+        else:
+            conv = 1.0
+            vmax = 0.0
+
+        data_2d = data_2d.astype(np.float64) * conv
+
+        # Selected channels
+        if hasattr(self, "selected_channel_indices") and callable(self.selected_channel_indices):
+            sel_channels = self.selected_channel_indices()
+        else:
+            sel_channels = list(range(n_ch))
+        sel_channels = [ch for ch in sel_channels if 0 <= ch < n_ch]
+        if not sel_channels:
+            sel_channels = [0]
+
+        # === 3) Build center frequencies ===
+        nyq = sr / 2.0
+        centers = []
+        if band_type == "1-Octave":
+            f = 10.0
+            while f <= nyq:
+                centers.append(f)
+                f *= 2.0
+        else:  # 1/3-Octave
+            f = 10.0
+            step = 2 ** (1.0 / 3.0)
+            while f <= nyq:
+                centers.append(f)
+                f *= step
+
+        if not centers:
+            QtWidgets.QMessageBox.information(
+                self, "Octave-Band Analysis",
+                "No octave bands fall below Nyquist."
+            )
+            return
+
+        centers = np.array(centers, dtype=float)
+        band_low = centers / (2.0 ** 0.5)
+        band_high = centers * (2.0 ** 0.5)
+
+        # === 4) Compute Welch PSD per channel and band VRMS ===
+        vrms_by_ch = {}
+        db_by_ch = {}
+
+        nperseg = min(1024, n_samples if n_samples > 0 else 1024)
+
+        for ch in sel_channels:
+            x = data_2d[:, ch]
+            freqs, Pxx = welch(x, fs=sr, nperseg=nperseg)
+
+            ch_vrms = []
+            ch_db = []
+
+            for f0 in centers:
+                f_low = f0 / (2 ** 0.5)
+                f_high = f0 * (2 ** 0.5)
+                mask = (freqs >= f_low) & (freqs <= f_high)
+
+                if mask.any():
+                    area = float(np.trapz(Pxx[mask], freqs[mask]))
+                    if area > 0.0:
+                        vrms = float(np.sqrt(area))
+                        lvl_db = float(20.0 * np.log10(vrms))
+                    else:
+                        vrms = float("nan")
+                        lvl_db = float("nan")
+                else:
+                    vrms = float("nan")
+                    lvl_db = float("nan")
+
+                ch_vrms.append(vrms)
+                ch_db.append(lvl_db)
+
+            vrms_by_ch[ch] = np.array(ch_vrms, dtype=float)
+            db_by_ch[ch] = np.array(ch_db, dtype=float)
+
+        # === 5) Build fullscreen-style results dialog with grouped bars ===
+        fig, ax = plt.subplots(facecolor="#19232D")
+        ax.set_facecolor("#000000")
+
+        # X positions for bands
+        num_bands = len(centers)
+        x = np.arange(num_bands)
+
+        # Grouped bar width
+        num_ch = len(sel_channels)
+        bar_group_width = 0.8
+        bar_width = bar_group_width / max(1, num_ch)
+
+        # Colors from your palette
+        color_keys = list(self.color_options.keys())
+        color_vals = [self.color_options[k] for k in color_keys]
+        num_colors = len(color_vals) if color_vals else 1
+
+        for idx, ch in enumerate(sel_channels):
+            offset = (idx - (num_ch - 1) / 2.0) * bar_width
+            col = color_vals[idx % num_colors] if color_vals else self.graph_color
+            ax.bar(
+                x + offset,
+                vrms_by_ch[ch],
+                width=bar_width * 0.95,
+                label=f"Ch {ch+1}",
+                color=col,
+            )
+
+        # Axis labels and formatting
+        band_labels = [f"{int(round(f))}" for f in centers]
+        ax.set_xticks(x)
+        ax.set_xticklabels(band_labels, rotation=45, ha="right", color="white")
+
+        ax.set_title(
+            f"{band_type} Band VRMS (All Selected Channels)",
+            color="white",
+        )
+        ax.set_xlabel("Center Frequency (Hz)", color="white")
+        ax.set_ylabel("VRMS (V)", color="white")
+        ax.tick_params(colors="white")
+
+        for spine in ax.spines.values():
+            spine.set_edgecolor("white")
+
+        if num_ch > 1:
+            leg = ax.legend()
+            for txt in leg.get_texts():
+                txt.set_color("white")
+
+        canvas = FigureCanvas(fig)
+
+        # === 6) Results dialog (graph + table + buttons) ===
+        win = QtWidgets.QDialog(self)
+        win.setWindowTitle("Octave-Band Results")
+        vbox = QtWidgets.QVBoxLayout(win)
+        vbox.addWidget(canvas)
+
+        # Data table label
+        table_label = QtWidgets.QLabel("Octave-band values (per channel):")
+        table_label.setStyleSheet("color: white; font-weight: bold;")
+        vbox.addWidget(table_label)
+
+        # Data table
+        table = QtWidgets.QTableWidget()
+        num_cols = 3 + 2 * num_ch  # center, low, high + (VRMS, dB) per channel
+        table.setRowCount(num_bands)
+        table.setColumnCount(num_cols)
+
+        headers = ["Center Hz", "Low Hz", "High Hz"]
+        for idx, ch in enumerate(sel_channels):
+            headers.append(f"Ch {ch+1} VRMS (V)")
+            headers.append(f"Ch {ch+1} dB re 1 V")
+        table.setHorizontalHeaderLabels(headers)
+
+        # Fill table
+        for i in range(num_bands):
+            table.setItem(i, 0, QtWidgets.QTableWidgetItem(f"{centers[i]:.3f}"))
+            table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{band_low[i]:.3f}"))
+            table.setItem(i, 2, QtWidgets.QTableWidgetItem(f"{band_high[i]:.3f}"))
+            col = 3
+            for ch in sel_channels:
+                v = vrms_by_ch[ch][i]
+                d = db_by_ch[ch][i]
+                v_str = "" if not np.isfinite(v) else f"{v:.6g}"
+                d_str = "" if not np.isfinite(d) else f"{d:.3f}"
+                table.setItem(i, col,   QtWidgets.QTableWidgetItem(v_str))
+                table.setItem(i, col+1, QtWidgets.QTableWidgetItem(d_str))
+                col += 2
+
+        table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.Stretch
+        )
+        table.setStyleSheet(
+            "QTableWidget { background-color: #202020; color: white; gridline-color: #404040; }"
+            "QHeaderView::section { background-color: #333333; color: white; }"
+        )
+        vbox.addWidget(table)
+
+        # Buttons
+        btns = QtWidgets.QHBoxLayout()
+        btns.addStretch()
+        save_graph_btn = QtWidgets.QPushButton("Save Graph…")
+        export_csv_btn = QtWidgets.QPushButton("Export CSV")
+        save_store_btn = QtWidgets.QPushButton("Save & Store")
+        close_btn = QtWidgets.QPushButton("Close")
+        for b in (save_graph_btn, export_csv_btn, save_store_btn, close_btn):
+            btns.addWidget(b)
+        vbox.addLayout(btns)
+
+        # Make the dialog large / fullscreen-ish
+        screen = QtWidgets.QApplication.desktop().availableGeometry(win)
+        win.resize(int(screen.width() * 0.9), int(screen.height() * 0.9))
+        win.showMaximized()
+
+        screenshot_path = ""
+
+        # --- Save Graph to JPG/PNG ---
+        def on_save_graph():
+            nonlocal screenshot_path
+            base_path = getattr(self, "wav_file_path", "") or getattr(
+                self, "current_file_path", ""
+            ) or ""
+            if not base_path:
+                base_path = self.file_name or "octave_output"
+
+            base_dir = os.path.dirname(base_path)
+            if not base_dir:
+                base_dir = os.getcwd()
+
+            root_name = os.path.splitext(os.path.basename(base_path))[0]
+            default_path = os.path.join(base_dir, f"{root_name}_octaveVRMS_multi.jpg")
+
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                win,
+                "Save Graph",
+                default_path,
+                "JPEG Files (*.jpg *.jpeg);;PNG Files (*.png);;All Files (*)",
+            )
+            if not path:
+                return
+
+            try:
+                fig.savefig(path, dpi=150, facecolor=fig.get_facecolor())
+                screenshot_path = path
+                QtWidgets.QMessageBox.information(
+                    win, "Saved", f"Graph saved to:\n{path}"
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    win, "Save Graph", f"Could not save graph:\n{e}"
+                )
+
+        # --- Export table to CSV ---
+        def on_export_csv():
+            base_path = getattr(self, "wav_file_path", "") or getattr(
+                self, "current_file_path", ""
+            ) or ""
+            if not base_path:
+                base_path = self.file_name or "octave_output"
+
+            base_dir = os.path.dirname(base_path)
+            if not base_dir:
+                base_dir = os.getcwd()
+
+            root_name = os.path.splitext(os.path.basename(base_path))[0]
+            default_path = os.path.join(base_dir, f"{root_name}_octave_bands.csv")
+
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                win,
+                "Export CSV",
+                default_path,
+                "CSV Files (*.csv);;All Files (*)",
+            )
+            if not path:
+                return
+
+            try:
+                with open(path, "w", newline="") as f:
+                    w = csv.writer(f)
+                    w.writerow(headers)
+                    for i in range(num_bands):
+                        row = [
+                            f"{centers[i]:.9f}",
+                            f"{band_low[i]:.9f}",
+                            f"{band_high[i]:.9f}",
+                        ]
+                        for ch in sel_channels:
+                            v = vrms_by_ch[ch][i]
+                            d = db_by_ch[ch][i]
+                            row.append("" if not np.isfinite(v) else f"{v:.9g}")
+                            row.append("" if not np.isfinite(d) else f"{d:.6f}")
+                        w.writerow(row)
+
+                QtWidgets.QMessageBox.information(
+                    win, "Export CSV", f"Saved:\n{path}"
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    win, "Export CSV", f"Failed to save CSV:\n{e}"
+                )
+
+        # --- Save & Store to DB (per channel, per band) ---
+        def on_save_and_store():
+            nonlocal screenshot_path
+
+            # Ensure we have at least some screenshot path
+            if not screenshot_path:
+                base_path = getattr(self, "wav_file_path", "") or getattr(
+                    self, "current_file_path", ""
+                ) or ""
+                if not base_path:
+                    base_path = self.file_name or "octave_output"
+
+                base_dir = os.path.dirname(base_path)
+                if not base_dir:
+                    base_dir = os.getcwd()
+
+                root_name = os.path.splitext(os.path.basename(base_path))[0]
+                out_path = os.path.join(base_dir, f"{root_name}_octaveVRMS_multi.png")
+                try:
+                    fig.savefig(out_path, dpi=150, facecolor=fig.get_facecolor())
+                    screenshot_path = out_path
+                except Exception as e:
+                    QtWidgets.QMessageBox.warning(
+                        win, "Save Graph", f"Could not save default screenshot:\n{e}"
+                    )
+                    screenshot_path = ""
+
+            if not hasattr(self, "log_measurement_with_project"):
+                QtWidgets.QMessageBox.warning(
+                    win, "Logging", "log_measurement_with_project() is not available."
+                )
+                return
+
+            try:
+                vmax_local = float(self.max_voltage_entry.text())
+            except Exception:
+                vmax_local = vmax
+
+            total_rows = 0
+            for ch in sel_channels:
+                # per-channel file name & method
+                if n_ch > 1:
+                    try:
+                        fname = self.channel_file_label(ch)
+                    except Exception:
+                        fname = f"{self.file_name}_ch{ch+1}"
+                    method_name = f"{band_type} Octave-Band VRMS_ch{ch+1}"
+                else:
+                    fname = self.file_name
+                    method_name = f"{band_type} Octave-Band VRMS"
+
+                for idx_band, f0 in enumerate(centers):
+                    vrms_val = float(vrms_by_ch[ch][idx_band])
+                    lvl_db = float(db_by_ch[ch][idx_band])
+                    if not np.isfinite(vrms_val):
+                        continue
+
+                    f_low = float(band_low[idx_band])
+                    f_high = float(band_high[idx_band])
+                    bw = f_high - f_low
+
+                    # Use 0 for time-related fields (no time window here)
+                    self.log_measurement_with_project(
+                        fname,
+                        method_name,
+                        float(f0),         # target_frequency
+                        0.0,               # start_time
+                        0.0,               # end_time
+                        0.0,               # window_length
+                        vmax_local,        # max_voltage
+                        bw,                # bandwidth (Hz)
+                        vrms_val,          # measured_voltage (VRMS)
+                        False,             # filter_applied
+                        screenshot_path,   # screenshot
+                        misc=lvl_db,       # store dB level
+                    )
+                    total_rows += 1
+
+            QtWidgets.QMessageBox.information(
+                win,
+                "Stored",
+                f"Stored {total_rows} octave-band value(s) across {len(sel_channels)} channel(s).",
+            )
+            win.accept()
+
+        save_graph_btn.clicked.connect(on_save_graph)
+        export_csv_btn.clicked.connect(on_export_csv)
+        save_store_btn.clicked.connect(on_save_and_store)
+        close_btn.clicked.connect(win.reject)
+
+        win.exec_()
+        plt.close(fig)
+
+
     # ---------------------
     # Tool Selection Logic
     # ---------------------
