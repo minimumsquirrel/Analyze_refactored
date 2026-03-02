@@ -2986,67 +2986,7 @@ class MainWindow(
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
 
-        # --- Stats Tab --------------------------------------------------------
-        stats_tab    = QtWidgets.QWidget()
-        stats_layout = QtWidgets.QVBoxLayout(stats_tab)
-
-        # (a) Project selector + Manage button
-        top = QtWidgets.QHBoxLayout()
-        top.addWidget(QtWidgets.QLabel("Project:"))
-        self.proj_cb = QtWidgets.QComboBox()
-        btn_manage = QtWidgets.QPushButton("Manage Projects…")
-        top.addWidget(self.proj_cb)
-        top.addWidget(btn_manage)
-        top.addStretch()
-        stats_layout.addLayout(top)
-        btn_manage.clicked.connect(self.manage_projects)
-
-        # (b) Stat selector + Plot type + Compute
-        frow = QtWidgets.QHBoxLayout()
-        self.stat_cb = QtWidgets.QComboBox()
-        
-        # Multi‑Channel RMS overlay button
-        self.multi_rms_btn = QtWidgets.QPushButton("Multi‑Ch RMS")
-        self.multi_rms_btn.setToolTip("Compute windowed RMS for selected channels and overlay plots")
-        self.multi_rms_btn.clicked.connect(self.multi_channel_rms_popup)
-        frow.addWidget(self.multi_rms_btn)
-        self.stat_cb.addItems(["Mean","Median","Min","Max","Count"])
-        self.plot_cb = QtWidgets.QComboBox()
-        self.plot_cb.addItems([
-            "Histogram",
-            "Boxplot",
-            "Violin Plot",
-            "KDE",
-            "CDF",
-            "Scatter Plot",
-            "Per-File Boxplots"
-        ])
-        run_btn = QtWidgets.QPushButton("Compute")
-        run_btn.clicked.connect(self.compute_stats)
-        for w in ( QtWidgets.QLabel("Metric:"), self.stat_cb,
-                QtWidgets.QLabel("Plot:"),   self.plot_cb,
-                run_btn ):
-            frow.addWidget(w)
-        frow.addStretch()
-        stats_layout.addLayout(frow)
-
-        # (c) Results splitter: table + plot
-        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self.stats_table = QtWidgets.QTableWidget()
-        self.stats_table.setColumnCount(2)
-        self.stats_table.setHorizontalHeaderLabels(["Metric","Value"])
-        split.addWidget(self.stats_table)
-
-        self.stats_fig    = Figure(facecolor='#19232D')
-        self.stats_canvas = FigureCanvas(self.stats_fig)
-        split.addWidget(self.stats_canvas)
-        stats_layout.addWidget(split)
-
-        # add the tab
-        # self.tabs.addTab(stats_tab, "Summary & Stats")
-        self.tabs.addTab(stats_tab, "Summary & Stats")
-
-        
+        # --- Summary & Stats Tab removed per request ---
 
         # --- Matrix Tab ---------------------------------------------------------
         matrix_tab = QtWidgets.QWidget()
