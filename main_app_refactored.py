@@ -15076,13 +15076,13 @@ class MainWindow(
         # Heuristic: minimum sound-speed depth is a practical deployment target for many SSPs.
         return float(d[int(np.argmin(c))])
 
-    def _ctd_plot_data_uri(self, ctd_id):
+    def _ctd_plot_artifacts(self, ctd_id):
         prof = self._load_ctd_profile_for_map(ctd_id)
         if not prof:
-            return None, None
+            return None, None, None
         depth = np.asarray(prof.get('depth_m') if prof.get('depth_m') is not None else [], dtype=float)
         if depth.size == 0:
-            return None, None
+            return None, None, None
         temp = prof.get('temp_c')
         sal = prof.get('sal_psu')
         c_ms = prof.get('c_ms')
@@ -15131,8 +15131,21 @@ class MainWindow(
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=150, facecolor=fig.get_facecolor(), bbox_inches='tight')
         plt.close(fig)
-        b64 = base64.b64encode(buf.getvalue()).decode('ascii')
-        return f"data:image/png;base64,{b64}", ideal_depth
+        png_bytes = buf.getvalue()
+        b64 = base64.b64encode(png_bytes).decode('ascii')
+        inline_uri = f"data:image/png;base64,{b64}"
+
+        full_graph_url = None
+        try:
+            out = tempfile.NamedTemporaryFile(prefix='ctd_cast_', suffix='.png', delete=False)
+            out.write(png_bytes)
+            out.flush()
+            out.close()
+            full_graph_url = QUrl.fromLocalFile(out.name).toString()
+        except Exception:
+            full_graph_url = inline_uri
+
+        return inline_uri, ideal_depth, full_graph_url
 
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
@@ -15223,7 +15236,7 @@ class MainWindow(
             except Exception:
                 continue
             title = name or ('Cast %s' % ctd_id)
-            img_uri, ideal_depth = self._ctd_plot_data_uri(ctd_id)
+            img_uri, ideal_depth, full_graph_url = self._ctd_plot_artifacts(ctd_id)
             popup_html = f"<b>CTD: {title}</b>"
             if dt_utc:
                 popup_html += f"<br>{dt_utc}"
@@ -15233,32 +15246,42 @@ class MainWindow(
             if img_uri:
                 popup_html += (
                     f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
-                    f"<br><a href='{img_uri}' target='_blank' rel='noopener' "
-                    f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;text-decoration:none;border-radius:4px;'>"
-                    f"Open Full CTD Graph</a>"
                 )
+                if full_graph_url:
+                    popup_html += (
+                        f"<br><a href='{full_graph_url}' "
+                        f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;text-decoration:none;border-radius:4px;'>"
+                        f"Open Full CTD Graph</a>"
+                    )
             folium.Marker(
                 [latf, lonf],
                 popup=folium.Popup(popup_html, max_width=420),
                 icon=folium.Icon(color='orange', icon='tint', prefix='fa')
             ).add_to(m)
 
-        for wp_id, wp_name, lat, lon, proj_id, symbol in waypoint_rows:
-            try:
-                latf = float(lat); lonf = float(lon)
-            except Exception:
-                continue
-            scope = 'Global' if proj_id is None else 'Project'
-            folium.Marker([latf, lonf], popup=f"Waypoint: {wp_name}<br>{scope}<br>Symbol: {symbol}",
-                          icon=folium.Icon(color='blue', icon=self._waypoint_icon_folium(symbol), prefix='fa')).add_to(m)
+    @staticmethod
+    def _haversine_m(lat1, lon1, lat2, lon2):
+        r = 6371000.0
+        p1 = math.radians(lat1)
+        p2 = math.radians(lat2)
+        dp = math.radians(lat2 - lat1)
+        dl = math.radians(lon2 - lon1)
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
+        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
-        folium.LayerControl(collapsed=False).add_to(m)
+    @staticmethod
+    def _parse_iso_utc(ts):
+        if not ts:
+            return None
+        txt = str(ts).strip()
+        if not txt:
+            return None
+        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
+        try:
+            return datetime.fromisoformat(txt)
+        except Exception:
+            return None
 
-        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
-        out.close()
-        m.save(out.name)
-        self._gps_folium_html_path = out.name
-        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
     def _chart_track_line_color(self, default_color, idx):
         mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
