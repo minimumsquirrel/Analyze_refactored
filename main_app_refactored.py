@@ -10511,6 +10511,15 @@ class MainWindow(
         self.chart_refresh_btn = QtWidgets.QPushButton("Refresh Chart")
         self.chart_refresh_btn.clicked.connect(self.refresh_chart_tracks)
         sidebar.addWidget(self.chart_refresh_btn)
+
+        self.chart_map_layer_combo = QtWidgets.QComboBox()
+        self.chart_map_layer_combo.addItems([
+            "Street Map",
+            "Bathymetry / Ocean",
+        ])
+        self.chart_map_layer_combo.currentIndexChanged.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(QtWidgets.QLabel("Map Layer"))
+        sidebar.addWidget(self.chart_map_layer_combo)
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -10754,7 +10763,24 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles='OpenStreetMap', control_scale=True)
+        layer_choice = (self.chart_map_layer_combo.currentText() if hasattr(self, 'chart_map_layer_combo') else 'Street Map')
+        if layer_choice == 'Bathymetry / Ocean':
+            m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+                attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
+                name='Bathymetry / Ocean',
+                overlay=False,
+                control=True,
+            ).add_to(m)
+            folium.TileLayer(
+                tiles='OpenStreetMap',
+                name='Street Map',
+                overlay=False,
+                control=True,
+            ).add_to(m)
+        else:
+            m = folium.Map(location=center, zoom_start=zoom, tiles='OpenStreetMap', control_scale=True)
 
         for tr in tracks:
             pts = list(zip(tr["lat"], tr["lon"]))
@@ -10773,6 +10799,8 @@ class MainWindow(
             if dt_utc:
                 lab += f"<br>{dt_utc}"
             folium.Marker([latf, lonf], popup=lab, icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
+
+        folium.LayerControl(collapsed=False).add_to(m)
 
         out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
         out.close()
