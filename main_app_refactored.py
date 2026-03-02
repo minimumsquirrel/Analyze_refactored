@@ -10976,6 +10976,15 @@ class MainWindow(
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
             return
+        if QtWidgets.QMessageBox.question(self, 'Delete Waypoints', f'Delete {len(ids)} selected waypoint(s)?') != QtWidgets.QMessageBox.Yes:
+            return
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        for wid in ids:
+            cur.execute('DELETE FROM map_waypoints WHERE id=?', (int(wid),))
+        conn.commit(); conn.close()
+        self.refresh_chart_waypoints()
+        self._plot_selected_gps_tracks()
 
         all_lat = []
         all_lon = []
