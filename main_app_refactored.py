@@ -10462,7 +10462,16 @@ class MainWindow(
         self.request_logs_refresh(immediate=True, refresh_filters=False)
 
     def setup_chart_tab(self):
-        layout = QtWidgets.QHBoxLayout(self.chart_tab)
+        root_layout = QtWidgets.QVBoxLayout(self.chart_tab)
+
+        # Restore a dedicated map tab inside Charting
+        self.chart_inner_tabs = QtWidgets.QTabWidget()
+        root_layout.addWidget(self.chart_inner_tabs)
+
+        self.chart_map_tab = QtWidgets.QWidget()
+        self.chart_inner_tabs.addTab(self.chart_map_tab, "Map")
+
+        layout = QtWidgets.QHBoxLayout(self.chart_map_tab)
 
         sidebar = QtWidgets.QVBoxLayout()
         sidebar.addWidget(QtWidgets.QLabel("GPS Tracks"))
