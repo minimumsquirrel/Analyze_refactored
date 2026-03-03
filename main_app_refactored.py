@@ -15258,28 +15258,8 @@ class MainWindow(
             folium.Marker([latf, lonf], popup=folium.Popup(popup_html, max_width=420),
                           icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
 
-    @staticmethod
-    def _haversine_m(lat1, lon1, lat2, lon2):
-        r = 6371000.0
-        p1 = math.radians(lat1)
-        p2 = math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * (math.sin(dl / 2.0) ** 2)
-        return 2 * r * math.asin(min(1.0, math.sqrt(a)))
-
-    @staticmethod
-    def _parse_iso_utc(ts):
-        if not ts:
-            return None
-        txt = str(ts).strip()
-        if not txt:
-            return None
-        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
-        try:
-            return datetime.fromisoformat(txt)
-        except Exception:
-            return None
+            folium.Marker([latf, lonf], popup=folium.Popup(popup_html, max_width=420),
+                          icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
 
         folium.LayerControl(collapsed=False).add_to(m)
         out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
@@ -15364,7 +15344,9 @@ class MainWindow(
             except Exception:
                 pass
 
-        use_web_map = bool(self.gps_map_view is not None and folium is not None)
+        # Stability guard: folium/webengine path has caused startup/tab freezes in field.
+        # Keep map rendering on stable PyQtGraph backend for chart tab interactions.
+        use_web_map = False
 
         if use_web_map:
             try:
