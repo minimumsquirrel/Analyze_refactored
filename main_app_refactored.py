@@ -14468,7 +14468,11 @@ class MainWindow(
         self.gps_map_stack = QtWidgets.QStackedWidget()
 
         self.gps_map_view = None
-        if QtWebEngineWidgets is not None and folium is not None:
+        # Stability/default behavior: keep chart map on PyQtGraph.
+        # WebEngine initialization on some Windows setups can fail due to
+        # locked GPUCache/permission issues and destabilize startup.
+        enable_webengine_map = False
+        if enable_webengine_map and QtWebEngineWidgets is not None and folium is not None:
             try:
                 self.gps_map_view = QtWebEngineWidgets.QWebEngineView()
                 self.gps_map_stack.addWidget(self.gps_map_view)
