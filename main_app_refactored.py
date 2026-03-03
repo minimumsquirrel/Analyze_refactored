@@ -15182,11 +15182,11 @@ class MainWindow(
         try:
             if qurl is None:
                 return
-            if qurl.scheme().lower() != 'ctdgraph':
+            scheme = (qurl.scheme() or '').lower()
+            host = (qurl.host() or '').lower()
+            if not (scheme in ('https', 'http') and host == 'ctdgraph.local'):
                 return
-            host = qurl.host() or ''
-            path = (qurl.path() or '').strip('/')
-            token = host or path
+            token = (qurl.path() or '').strip('/')
             ctd_id = int(token)
         except Exception:
             return
@@ -15366,7 +15366,7 @@ class MainWindow(
                     popup_html += f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
                     if full_graph_url:
                         popup_html += (
-                            f"<br><button onclick=\"window.location.href='ctdgraph://{int(ctd_id)}';return false;\" "
+                            f"<br><button onclick=\"window.location.href='https://ctdgraph.local/{int(ctd_id)}';return false;\" "
                             f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
                             f"Open Full CTD Graph</button>"
                         )
