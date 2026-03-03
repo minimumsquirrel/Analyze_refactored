@@ -49,12 +49,211 @@ class MeasurementToolsMixin:
     """Mixin class providing all Measurement Tools for self."""
 
     def depth_sounder_popup(self):
-        """Compatibility stub for the Depth Sounder Analysis tool entry."""
-        QtWidgets.QMessageBox.information(
-            self,
-            "Depth Sounder Analysis",
-            "Depth Sounder Analysis is not currently available in this refactored build."
+        """
+        Prompts for mode (single vs. batch), ping frequency, speed of sound,
+        then either measures one depth or scans and logs all depths.
+        """
+        from PyQt5 import QtWidgets
+        import numpy as np
+        from scipy.signal import butter, sosfiltfilt
+        from scipy.signal import hilbert, find_peaks
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "No file loaded.")
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Depth Sounder")
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        # 1) Mode
+        mode_grp = QtWidgets.QGroupBox("Mode")
+        mlay = QtWidgets.QHBoxLayout(mode_grp)
+        single_rb = QtWidgets.QRadioButton("Single Ping")
+        batch_rb = QtWidgets.QRadioButton("Scan Entire File")
+        single_rb.setChecked(True)
+        for w in (single_rb, batch_rb):
+            mlay.addWidget(w)
+        layout.addWidget(mode_grp)
+
+        # 2) Params
+        form = QtWidgets.QFormLayout()
+        freq_edit = QtWidgets.QLineEdit("172000")
+        speed_edit = QtWidgets.QLineEdit("1480")
+        depth_edit = QtWidgets.QLineEdit("")
+        for w in (freq_edit, speed_edit, depth_edit):
+            w.setFixedWidth(80)
+        form.addRow("Ping Centre Frequency (Hz):", freq_edit)
+        form.addRow("Speed of Sound (m/s):", speed_edit)
+        form.addRow("Hydrophone Depth (m):", depth_edit)
+        layout.addLayout(form)
+
+        # OK/Cancel
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        # parse
+        try:
+            center_hz = float(freq_edit.text())
+            sound_c = float(speed_edit.text())
+            hydro_depth = float(depth_edit.text() or 0.0)
+        except ValueError:
+            QtWidgets.QMessageBox.critical(self, "Error", "Invalid numeric values.")
+            return
+
+        # select data segment
+        if single_rb.isChecked():
+            if not getattr(self, "fft_mode", False) or self.last_region is None:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Single Ping",
+                    "Switch to FFT mode and select a region first.",
+                )
+                return
+            xmin, xmax = self.last_region
+            s0 = int(xmin * self.sample_rate)
+            s1 = int(xmax * self.sample_rate)
+            data_to_filter = self.full_data[s0:s1]
+            filter_offset = s0
+        else:
+            data_to_filter = self.full_data
+            filter_offset = 0
+
+        # design bandpass ±5 kHz
+        bw = 5000.0
+        nyq = self.sample_rate / 2.0
+        low_norm = (center_hz - bw) / nyq
+        high_norm = (center_hz + bw) / nyq
+
+        # clamp into (0,1) and ensure low < high
+        low_norm = max(low_norm, 1e-6)
+        high_norm = min(high_norm, 1.0 - 1e-6)
+        if low_norm >= high_norm:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Filter Error",
+                "Invalid bandpass settings: low ≥ high.\nAdjust ping centre or bandwidth.",
+            )
+            return
+
+        sos = butter(8, [low_norm, high_norm], btype="band", output="sos")
+        try:
+            filt = sosfiltfilt(sos, data_to_filter)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Filter Error", str(e))
+            return
+
+        # helper to detect ping+echo and compute depth
+        def _detect_depth(seg):
+            env = np.abs(hilbert(seg))
+            peaks, props = find_peaks(env, height=env.max() * 0.3)
+            if len(peaks) < 2:
+                return None
+            t0_rel = peaks[0] / self.sample_rate
+            echoes = [p for p in peaks[1:] if (p / self.sample_rate - t0_rel) > 0.05]
+            if not echoes:
+                return None
+            t1_rel = echoes[0] / self.sample_rate
+            raw_d = (t1_rel - t0_rel) * sound_c / 2.0
+            return t0_rel, t1_rel, raw_d
+
+        # single-ping case
+        if single_rb.isChecked():
+            out = _detect_depth(filt)
+            if not out:
+                QtWidgets.QMessageBox.information(self, "No Echo", "Could not find ping+echo.")
+                return
+            t0_rel, t1_rel, depth_raw = out
+            t0 = filter_offset / self.sample_rate + t0_rel
+            t1 = filter_offset / self.sample_rate + t1_rel
+            depth_adj = depth_raw + hydro_depth
+
+            QtWidgets.QMessageBox.information(
+                self,
+                "Depth Result",
+                f"Ping @ {t0:.3f}s, Echo @ {t1:.3f}s\n"
+                f"Raw depth: {depth_raw:.2f} m\n"
+                f"+ hydrophone offset: {depth_adj:.2f} m",
+            )
+
+            log_measurement(
+                self.file_name,
+                "Depth Sounder",
+                center_hz,
+                t0,
+                t1,
+                (t1 - t0),
+                0.0,
+                0.0,
+                0.0,
+                False,
+                "",
+                misc=str(depth_adj),
+            )
+
+        # batch scanning
+        else:
+            win = int(self.sample_rate * 2.0)
+            hop = int(self.sample_rate * 1.0)
+            results = []
+            total = len(data_to_filter)
+            for start in range(0, total - win, hop):
+                seg = filt[start:start + win]
+                out = _detect_depth(seg)
+                if out:
+                    t0_rel, t1_rel, depth_raw = out
+                    t0 = (filter_offset + start) / self.sample_rate + t0_rel
+                    t1 = (filter_offset + start) / self.sample_rate + t1_rel
+                    results.append((t0, t1, depth_raw + hydro_depth))
+
+            if not results:
+                QtWidgets.QMessageBox.information(self, "No Depths", "No valid echoes found.")
+                return
+
+            # show batch results
+            dlg2 = QtWidgets.QDialog(self)
+            dlg2.setWindowTitle("Batch Depth Results")
+            v2 = QtWidgets.QVBoxLayout(dlg2)
+            lines = "\n".join(f"{t0:.2f}s→{t1:.2f}s: {d:.2f} m" for t0, t1, d in results)
+            txt = QtWidgets.QPlainTextEdit(f"Found {len(results)} depths:\n\n{lines}")
+            txt.setReadOnly(True)
+            v2.addWidget(txt)
+
+            btns2 = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            )
+            btns2.accepted.connect(dlg2.accept)
+            btns2.rejected.connect(dlg2.reject)
+            v2.addWidget(btns2)
+
+            if dlg2.exec_() == QtWidgets.QDialog.Accepted:
+                for t0, t1, d in results:
+                    log_measurement(
+                        self.file_name,
+                        "Depth Sounder",
+                        center_hz,
+                        t0,
+                        t1,
+                        (t1 - t0),
+                        0.0,
+                        0.0,
+                        0.0,
+                        False,
+                        "",
+                        misc=str(d),
+                    )
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Logged",
+                    f"Logged {len(results)} entr{'y' if len(results) == 1 else 'ies'}.",
+                )
 
     def find_peaks_analysis(self):
         if self.full_data is None:
