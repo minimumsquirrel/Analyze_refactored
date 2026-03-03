@@ -48,6 +48,14 @@ from shared import (
 class MeasurementToolsMixin:
     """Mixin class providing all Measurement Tools for self."""
 
+    def depth_sounder_popup(self):
+        """Compatibility stub for the Depth Sounder Analysis tool entry."""
+        QtWidgets.QMessageBox.information(
+            self,
+            "Depth Sounder Analysis",
+            "Depth Sounder Analysis is not currently available in this refactored build."
+        )
+
     def find_peaks_analysis(self):
         if self.full_data is None:
             QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
@@ -3452,10 +3460,6 @@ class MeasurementToolsMixin:
         import sqlite3, csv, os, math
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        try:
-            from analyze_qt import DB_FILENAME
-        except Exception:
-            DB_FILENAME = None
 
         if getattr(self, "full_data", None) is None:
             QtWidgets.QMessageBox.warning(self, "No file", "Load a WAV file first.")
@@ -4453,7 +4457,6 @@ class MeasurementToolsMixin:
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         from scipy.signal import savgol_filter
-        from analyze_qt import DB_FILENAME
 
         # Dialog setup
         dlg = QtWidgets.QDialog(self)
