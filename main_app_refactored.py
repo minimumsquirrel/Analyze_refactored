@@ -15138,13 +15138,14 @@ class MainWindow(
         if ideal_depth is not None:
             for ax in (axT, axS, axC):
                 ax.axhline(ideal_depth, color='#FF5D73', ls='--', lw=1.2)
-            axC.text(0.02, 0.04, f'Ideal deployment depth: {ideal_depth:.1f} m',
-                     color='#FFB3C1', transform=axC.transAxes, fontsize=9, ha='left', va='bottom')
 
         title = f"{prof.get('name') or ('CTD %s' % ctd_id)}"
         if prof.get('dt_utc'):
             title += f"  ({prof.get('dt_utc')})"
         fig.suptitle(title, color='white', fontsize=11)
+        if ideal_depth is not None:
+            fig.text(0.5, 0.915, f'Ideal deployment depth: {ideal_depth:.1f} m',
+                     color='#FFB3C1', fontsize=9, ha='center', va='center')
         fig.tight_layout(rect=[0, 0, 1, 0.95])
 
         import io
@@ -15260,13 +15261,14 @@ class MainWindow(
         if ideal_depth is not None:
             for ax in (axT, axS, axC):
                 ax.axhline(ideal_depth, color='#FF5D73', ls='--', lw=1.2)
-            axC.text(0.02, 0.04, f'Ideal deployment depth: {ideal_depth:.1f} m',
-                     color='#FFB3C1', transform=axC.transAxes, fontsize=10, ha='left', va='bottom')
 
         title = prof.get('name') or ('CTD %s' % ctd_id)
         if prof.get('dt_utc'):
             title += f"  ({prof.get('dt_utc')})"
         fig.suptitle(title, color='white', fontsize=12)
+        if ideal_depth is not None:
+            fig.text(0.5, 0.92, f'Ideal deployment depth: {ideal_depth:.1f} m',
+                     color='#FFB3C1', fontsize=10, ha='center', va='center')
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         canvas.draw()
 
