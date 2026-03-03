@@ -15265,7 +15265,8 @@ class MainWindow(
                     popup_html += f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
                     if full_graph_url:
                         popup_html += (
-                            f"<br><button onclick=\"window.open('{full_graph_url}','_blank','width=1100,height=760,resizable=yes,scrollbars=yes');return false;\" "
+                            # Use same-view navigation for embedded QWebEngine reliability.
+                            f"<br><button onclick=\"window.location.href='{full_graph_url}';return false;\" "
                             f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
                             f"Open Full CTD Graph</button>"
                         )
