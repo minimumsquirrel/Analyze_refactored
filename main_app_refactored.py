@@ -14468,10 +14468,9 @@ class MainWindow(
         self.gps_map_stack = QtWidgets.QStackedWidget()
 
         self.gps_map_view = None
-        # Stability/default behavior: keep chart map on PyQtGraph.
-        # WebEngine initialization on some Windows setups can fail due to
-        # locked GPUCache/permission issues and destabilize startup.
-        enable_webengine_map = False
+        # Default to Folium/WebEngine when available; runtime fallback to
+        # PyQtGraph remains in _plot_selected_gps_tracks on render errors.
+        enable_webengine_map = True
         if enable_webengine_map and QtWebEngineWidgets is not None and folium is not None:
             try:
                 self.gps_map_view = QtWebEngineWidgets.QWebEngineView()
@@ -15348,9 +15347,7 @@ class MainWindow(
             except Exception:
                 pass
 
-        # Stability guard: folium/webengine path has caused startup/tab freezes in field.
-        # Keep map rendering on stable PyQtGraph backend for chart tab interactions.
-        use_web_map = False
+        use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             try:
