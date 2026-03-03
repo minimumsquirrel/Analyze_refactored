@@ -14473,6 +14473,19 @@ class MainWindow(
         enable_webengine_map = True
         if enable_webengine_map and QtWebEngineWidgets is not None and folium is not None:
             try:
+                # Force writable WebEngine cache/storage paths to avoid Windows
+                # profile/GPUCache permission failures in default python profile dir.
+                web_root = os.path.join(tempfile.gettempdir(), "analyze_qt_webengine")
+                web_cache = os.path.join(web_root, "cache")
+                web_storage = os.path.join(web_root, "storage")
+                os.makedirs(web_cache, exist_ok=True)
+                os.makedirs(web_storage, exist_ok=True)
+                try:
+                    profile = QtWebEngineWidgets.QWebEngineProfile.defaultProfile()
+                    profile.setCachePath(web_cache)
+                    profile.setPersistentStoragePath(web_storage)
+                except Exception:
+                    pass
                 self.gps_map_view = QtWebEngineWidgets.QWebEngineView()
                 self.gps_map_stack.addWidget(self.gps_map_view)
             except Exception:
