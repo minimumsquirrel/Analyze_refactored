@@ -1978,10 +1978,19 @@ class MainWindow(
 
         if hasattr(self, "matrix_proj_cb") and self.matrix_proj_cb is not None:
             try:
+                current = self.matrix_proj_cb.currentText()
                 self.matrix_proj_cb.blockSignals(True)
                 self.matrix_proj_cb.clear()
                 for n in names:
                     self.matrix_proj_cb.addItem(n)
+
+                preferred = current or getattr(self, "current_project_name", None) or ""
+                idx = self.matrix_proj_cb.findText(preferred)
+                if idx < 0 and names:
+                    idx = 0
+                if idx >= 0:
+                    self.matrix_proj_cb.setCurrentIndex(idx)
+
                 self.matrix_proj_cb.blockSignals(False)
             except RuntimeError:
                 self.matrix_proj_cb = None
@@ -3108,7 +3117,14 @@ class MainWindow(
             QtWidgets.QMessageBox.warning(self, "No Project", "Project selector is unavailable.")
             return
 
-        proj = proj_combo.currentText()
+        proj = proj_combo.currentText().strip()
+        if not proj:
+            proj = (getattr(self, "current_project_name", None) or "").strip()
+            if proj and hasattr(proj_combo, "findText"):
+                idx = proj_combo.findText(proj)
+                if idx >= 0:
+                    proj_combo.setCurrentIndex(idx)
+
         if not proj:
             QtWidgets.QMessageBox.warning(self, "No Project", "Select a project first.")
             return
