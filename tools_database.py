@@ -1112,27 +1112,30 @@ class DatabaseToolsMixin:
                                 pass
                     if vals:
                         arr = np.asarray(vals, dtype=float)
-                        # Frequency is usually positive and spans a wide range.
+                        # Frequency is usually positive, mostly monotonic in file order,
+                        # and tends to span a wider range than TVR values.
                         pos_ratio = float(np.mean(arr > 0))
                         spread = float((np.nanmax(arr) - np.nanmin(arr)) if arr.size else 0.0)
-                        freq_score = pos_ratio * 10.0 + spread
+                        if arr.size > 1:
+                            monotonic_ratio = float(np.mean(np.diff(arr) >= 0))
+                        else:
+                            monotonic_ratio = 0.0
+                        freq_score = (pos_ratio * 100.0) + (monotonic_ratio * 50.0) + spread
                         numeric_cols.append((ci, len(vals), freq_score))
 
                 if len(numeric_cols) < 2:
                     raise ValueError("Could not identify Frequency/TVR columns in CSV.")
 
-                # Pick two most data-rich columns first.
+                # Prefer columns with most numeric values, then best frequency score.
                 numeric_cols.sort(key=lambda t: (t[1], t[2]), reverse=True)
-                top_two = numeric_cols[:2]
-
                 if freq_idx is None:
-                    freq_idx = max(top_two, key=lambda t: t[2])[0]
+                    freq_idx = max(numeric_cols, key=lambda t: (t[1], t[2]))[0]
+
                 if tvr_idx is None:
-                    remaining = [t for t in top_two if t[0] != freq_idx]
-                    if not remaining:
-                        remaining = [t for t in numeric_cols if t[0] != freq_idx]
+                    remaining = [t for t in numeric_cols if t[0] != freq_idx]
                     if not remaining:
                         raise ValueError("Could not identify Frequency/TVR columns in CSV.")
+                    # TVR column: still numeric-rich, but does not need freq-like score.
                     tvr_idx = max(remaining, key=lambda t: t[1])[0]
 
             freqs, tvals = [], []
@@ -1572,8 +1575,8 @@ class DatabaseToolsMixin:
         else:
             redraw()  # ensure empty plot still initializes
 
-        # Open full screen (not just maximized) for better large-curve workflow.
-        dlg.showFullScreen()
+        # Open maximized so it fills the screen but keeps window controls.
+        dlg.showMaximized()
         dlg.exec_()
         conn.close()
 
