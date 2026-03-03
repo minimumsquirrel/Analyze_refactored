@@ -989,6 +989,9 @@ class DatabaseToolsMixin:
         btn_fit    = QtWidgets.QPushButton("Fit Data")
         btn_reset  = QtWidgets.QPushButton("Reset")
 
+        log_x_cb = QtWidgets.QCheckBox("Log X")
+        log_x_cb.setChecked(True)
+
         # Color + Save
         color_cb = QtWidgets.QComboBox(); color_cb.addItems(list(color_options.keys()))
         save_png = QtWidgets.QPushButton("Save Graph…")
@@ -1000,6 +1003,7 @@ class DatabaseToolsMixin:
         pc.addWidget(QtWidgets.QLabel("Y max (dB):")); pc.addWidget(y_max)
         pc.addSpacing(12)
         pc.addWidget(btn_apply); pc.addWidget(btn_fit); pc.addWidget(btn_reset)
+        pc.addWidget(log_x_cb)
         pc.addStretch()
         pc.addWidget(QtWidgets.QLabel("Line Color:")); pc.addWidget(color_cb)
         pc.addWidget(save_png)
@@ -1306,8 +1310,8 @@ class DatabaseToolsMixin:
                     overlay_colors[name] = col
                 ax.plot(fx, vy, "--", color=col, alpha=0.95, label=name)
 
-            # Scales: standard TVR view: log X, linear Y
-            ax.set_xscale("log")
+            # Scales: optional log X, linear Y
+            ax.set_xscale("log" if log_x_cb.isChecked() else "linear")
             ax.set_yscale("linear")
 
             # Axis limits
@@ -1334,6 +1338,7 @@ class DatabaseToolsMixin:
         cb.currentTextChanged.connect(lambda n: (load_curve_by_name(n), ov_cb.setCurrentIndex(-1)))
         table.itemChanged.connect(lambda *_: (fit_data_limits() if auto_fit else None, redraw()))
         color_cb.currentIndexChanged.connect(lambda *_: (_reseed_overlay_colors(), redraw()))
+        log_x_cb.stateChanged.connect(lambda *_: redraw())
 
         # Axis buttons
         btn_fit.clicked.connect(lambda: (fit_data_limits(), redraw()))
@@ -1379,7 +1384,11 @@ class DatabaseToolsMixin:
             new_names = [r[0] for r in cur.fetchall()]
             cb.blockSignals(True); cb.clear(); cb.addItems(new_names); cb.blockSignals(False)
             ov_cb.clear(); ov_cb.addItems(new_names)
-            cb.setCurrentText(cname.strip())
+            imported_name = cname.strip()
+            cb.setCurrentText(imported_name)
+            # Force immediate refresh even if currentTextChanged is not emitted.
+            load_curve_by_name(imported_name)
+            ov_cb.setCurrentIndex(-1)
         btn_import.clicked.connect(do_import)
 
         # Save
@@ -1549,7 +1558,7 @@ class DatabaseToolsMixin:
                     style = "-" if name == "__main__" else "--"
                     lw = 2 if name == "__main__" else 1.8
                     ax2.plot(fx, vy, style, lw=lw, color=col if name != "__main__" else None)
-                ax2.set_xscale("log"); ax2.set_yscale("linear")
+                ax2.set_xscale("log" if log_x_cb.isChecked() else "linear"); ax2.set_yscale("linear")
                 ax2.set_xlim(max(0.01, xmin), xmax)
                 ax2.set_ylim(ymin, ymax)
                 ax2.set_xlabel("Frequency (Hz)")
