@@ -112,7 +112,6 @@ class DatabaseToolsMixin:
         """
         from PyQt5 import QtWidgets, QtCore
         import sqlite3, datetime
-        from analyze_qt import DB_FILENAME
 
         # 1) Open DB
         conn = sqlite3.connect(DB_FILENAME)
@@ -378,7 +377,6 @@ class DatabaseToolsMixin:
         """
         from PyQt5 import QtWidgets
         import sqlite3, shutil, os
-        from analyze_qt import DB_FILENAME
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Database Maintenance")
@@ -423,7 +421,6 @@ class DatabaseToolsMixin:
         import sqlite3, datetime as dt, itertools
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
-        from analyze_qt import DB_FILENAME
 
         # Setup dialog and layout
         dlg = QtWidgets.QDialog(self)
@@ -618,7 +615,6 @@ class DatabaseToolsMixin:
         """
         from PyQt5 import QtWidgets, QtCore
         import sqlite3
-        from analyze_qt import DB_FILENAME
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Annotate Measurements")
@@ -746,7 +742,6 @@ class DatabaseToolsMixin:
         """
         from PyQt5 import QtWidgets, QtCore
         import sqlite3
-        from analyze_qt import DB_FILENAME
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Annotate SPL Calculations")
