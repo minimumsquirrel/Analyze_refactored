@@ -48,6 +48,14 @@ from shared import (
 class MeasurementToolsMixin:
     """Mixin class providing all Measurement Tools for self."""
 
+    def depth_sounder_popup(self):
+        """Compatibility stub for the Depth Sounder Analysis tool entry."""
+        QtWidgets.QMessageBox.information(
+            self,
+            "Depth Sounder Analysis",
+            "Depth Sounder Analysis is not currently available in this refactored build."
+        )
+
     def find_peaks_analysis(self):
         if self.full_data is None:
             QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
