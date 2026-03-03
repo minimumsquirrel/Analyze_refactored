@@ -48,6 +48,213 @@ from shared import (
 class MeasurementToolsMixin:
     """Mixin class providing all Measurement Tools for self."""
 
+    def depth_sounder_popup(self):
+        """
+        Prompts for mode (single vs. batch), ping frequency, speed of sound,
+        then either measures one depth or scans and logs all depths.
+        """
+        from PyQt5 import QtWidgets
+        import numpy as np
+        from scipy.signal import butter, sosfiltfilt
+        from scipy.signal import hilbert, find_peaks
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "No file loaded.")
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Depth Sounder")
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        # 1) Mode
+        mode_grp = QtWidgets.QGroupBox("Mode")
+        mlay = QtWidgets.QHBoxLayout(mode_grp)
+        single_rb = QtWidgets.QRadioButton("Single Ping")
+        batch_rb = QtWidgets.QRadioButton("Scan Entire File")
+        single_rb.setChecked(True)
+        for w in (single_rb, batch_rb):
+            mlay.addWidget(w)
+        layout.addWidget(mode_grp)
+
+        # 2) Params
+        form = QtWidgets.QFormLayout()
+        freq_edit = QtWidgets.QLineEdit("172000")
+        speed_edit = QtWidgets.QLineEdit("1480")
+        depth_edit = QtWidgets.QLineEdit("")
+        for w in (freq_edit, speed_edit, depth_edit):
+            w.setFixedWidth(80)
+        form.addRow("Ping Centre Frequency (Hz):", freq_edit)
+        form.addRow("Speed of Sound (m/s):", speed_edit)
+        form.addRow("Hydrophone Depth (m):", depth_edit)
+        layout.addLayout(form)
+
+        # OK/Cancel
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        # parse
+        try:
+            center_hz = float(freq_edit.text())
+            sound_c = float(speed_edit.text())
+            hydro_depth = float(depth_edit.text() or 0.0)
+        except ValueError:
+            QtWidgets.QMessageBox.critical(self, "Error", "Invalid numeric values.")
+            return
+
+        # select data segment
+        if single_rb.isChecked():
+            if not getattr(self, "fft_mode", False) or self.last_region is None:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Single Ping",
+                    "Switch to FFT mode and select a region first.",
+                )
+                return
+            xmin, xmax = self.last_region
+            s0 = int(xmin * self.sample_rate)
+            s1 = int(xmax * self.sample_rate)
+            data_to_filter = self.full_data[s0:s1]
+            filter_offset = s0
+        else:
+            data_to_filter = self.full_data
+            filter_offset = 0
+
+        # design bandpass ±5 kHz
+        bw = 5000.0
+        nyq = self.sample_rate / 2.0
+        low_norm = (center_hz - bw) / nyq
+        high_norm = (center_hz + bw) / nyq
+
+        # clamp into (0,1) and ensure low < high
+        low_norm = max(low_norm, 1e-6)
+        high_norm = min(high_norm, 1.0 - 1e-6)
+        if low_norm >= high_norm:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Filter Error",
+                "Invalid bandpass settings: low ≥ high.\nAdjust ping centre or bandwidth.",
+            )
+            return
+
+        sos = butter(8, [low_norm, high_norm], btype="band", output="sos")
+        try:
+            filt = sosfiltfilt(sos, data_to_filter)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Filter Error", str(e))
+            return
+
+        # helper to detect ping+echo and compute depth
+        def _detect_depth(seg):
+            env = np.abs(hilbert(seg))
+            peaks, props = find_peaks(env, height=env.max() * 0.3)
+            if len(peaks) < 2:
+                return None
+            t0_rel = peaks[0] / self.sample_rate
+            echoes = [p for p in peaks[1:] if (p / self.sample_rate - t0_rel) > 0.05]
+            if not echoes:
+                return None
+            t1_rel = echoes[0] / self.sample_rate
+            raw_d = (t1_rel - t0_rel) * sound_c / 2.0
+            return t0_rel, t1_rel, raw_d
+
+        # single-ping case
+        if single_rb.isChecked():
+            out = _detect_depth(filt)
+            if not out:
+                QtWidgets.QMessageBox.information(self, "No Echo", "Could not find ping+echo.")
+                return
+            t0_rel, t1_rel, depth_raw = out
+            t0 = filter_offset / self.sample_rate + t0_rel
+            t1 = filter_offset / self.sample_rate + t1_rel
+            depth_adj = depth_raw + hydro_depth
+
+            QtWidgets.QMessageBox.information(
+                self,
+                "Depth Result",
+                f"Ping @ {t0:.3f}s, Echo @ {t1:.3f}s\n"
+                f"Raw depth: {depth_raw:.2f} m\n"
+                f"+ hydrophone offset: {depth_adj:.2f} m",
+            )
+
+            log_measurement(
+                self.file_name,
+                "Depth Sounder",
+                center_hz,
+                t0,
+                t1,
+                (t1 - t0),
+                0.0,
+                0.0,
+                0.0,
+                False,
+                "",
+                misc=str(depth_adj),
+            )
+
+        # batch scanning
+        else:
+            win = int(self.sample_rate * 2.0)
+            hop = int(self.sample_rate * 1.0)
+            results = []
+            total = len(data_to_filter)
+            for start in range(0, total - win, hop):
+                seg = filt[start:start + win]
+                out = _detect_depth(seg)
+                if out:
+                    t0_rel, t1_rel, depth_raw = out
+                    t0 = (filter_offset + start) / self.sample_rate + t0_rel
+                    t1 = (filter_offset + start) / self.sample_rate + t1_rel
+                    results.append((t0, t1, depth_raw + hydro_depth))
+
+            if not results:
+                QtWidgets.QMessageBox.information(self, "No Depths", "No valid echoes found.")
+                return
+
+            # show batch results
+            dlg2 = QtWidgets.QDialog(self)
+            dlg2.setWindowTitle("Batch Depth Results")
+            v2 = QtWidgets.QVBoxLayout(dlg2)
+            lines = "\n".join(f"{t0:.2f}s→{t1:.2f}s: {d:.2f} m" for t0, t1, d in results)
+            txt = QtWidgets.QPlainTextEdit(f"Found {len(results)} depths:\n\n{lines}")
+            txt.setReadOnly(True)
+            v2.addWidget(txt)
+
+            btns2 = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            )
+            btns2.accepted.connect(dlg2.accept)
+            btns2.rejected.connect(dlg2.reject)
+            v2.addWidget(btns2)
+
+            if dlg2.exec_() == QtWidgets.QDialog.Accepted:
+                for t0, t1, d in results:
+                    log_measurement(
+                        self.file_name,
+                        "Depth Sounder",
+                        center_hz,
+                        t0,
+                        t1,
+                        (t1 - t0),
+                        0.0,
+                        0.0,
+                        0.0,
+                        False,
+                        "",
+                        misc=str(d),
+                    )
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Logged",
+                    f"Logged {len(results)} entr{'y' if len(results) == 1 else 'ies'}.",
+                )
+
     def find_peaks_analysis(self):
         if self.full_data is None:
             QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
@@ -868,6 +1075,102 @@ class MeasurementToolsMixin:
         # ──────────────────────────────────────────────────────────────────────────────
     # 3) Octave-Band Analysis
     # ──────────────────────────────────────────────────────────────────────────────
+
+
+    def crest_factor_popup(self):
+        """Compute crest factor (peak/RMS) for selected channels."""
+        import numpy as np
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
+            return
+        if not getattr(self, "sample_rate", 0):
+            QtWidgets.QMessageBox.critical(self, "Error", "Sample rate is invalid.")
+            return
+
+        # Choose analysis scope
+        use_region = bool(getattr(self, "fft_mode", False) and getattr(self, "last_region", None) is not None)
+        scope = "Selected FFT Region" if use_region else "Entire File"
+
+        data = np.asarray(self.full_data)
+        if data.ndim == 1:
+            data2d = data[:, None]
+        else:
+            data2d = data
+
+        if use_region:
+            xmin, xmax = self.last_region
+            s0 = max(0, int(xmin * self.sample_rate))
+            s1 = min(data2d.shape[0], int(xmax * self.sample_rate))
+            if s1 <= s0:
+                QtWidgets.QMessageBox.warning(self, "Crest Factor", "Selected FFT region is empty.")
+                return
+            seg = data2d[s0:s1, :]
+            t0 = s0 / float(self.sample_rate)
+            t1 = s1 / float(self.sample_rate)
+        else:
+            seg = data2d
+            t0 = 0.0
+            t1 = data2d.shape[0] / float(self.sample_rate)
+
+        # Determine channels (prefer selected channels when available)
+        try:
+            selected = list(self.selected_channel_indices()) if hasattr(self, "selected_channel_indices") else []
+        except Exception:
+            selected = []
+        if not selected:
+            selected = list(range(seg.shape[1]))
+
+        rows = []
+        for ch in selected:
+            if ch < 0 or ch >= seg.shape[1]:
+                continue
+            x = seg[:, ch].astype(float)
+            if x.size == 0:
+                continue
+            peak = float(np.max(np.abs(x)))
+            rms = float(np.sqrt(np.mean(np.square(x))))
+            if rms <= 0:
+                crest = float("nan")
+                crest_db = float("nan")
+            else:
+                crest = peak / rms
+                crest_db = 20.0 * np.log10(max(crest, 1e-12))
+            rows.append((ch + 1, peak, rms, crest, crest_db))
+
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Crest Factor", "No valid channel data to analyze.")
+            return
+
+        text_lines = [f"Scope: {scope} ({t0:.3f}s - {t1:.3f}s)", ""]
+        for ch, peak, rms, crest, crest_db in rows:
+            text_lines.append(
+                f"Ch {ch}: Peak={peak:.6g}, RMS={rms:.6g}, Crest={crest:.4f}, Crest(dB)={crest_db:.3f}"
+            )
+
+        QtWidgets.QMessageBox.information(self, "Crest Factor Results", "\n".join(text_lines))
+
+        # Log per-channel crest factor as measured_voltage
+        base_name = self.file_name or "(unknown)"
+        for ch, peak, rms, crest, crest_db in rows:
+            fname = base_name if seg.shape[1] == 1 else f"{base_name}_ch{ch}"
+            try:
+                log_measurement(
+                    fname,
+                    "Crest Factor",
+                    0.0,
+                    t0,
+                    t1,
+                    (t1 - t0),
+                    peak,
+                    0.0,
+                    float(crest),
+                    False,
+                    "",
+                    misc=f"crest_db={crest_db:.3f},rms={rms:.6g}",
+                )
+            except Exception:
+                pass
 
     def octave_band_analysis_popup(self):
         """
@@ -3452,10 +3755,6 @@ class MeasurementToolsMixin:
         import sqlite3, csv, os, math
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        try:
-            from analyze_qt import DB_FILENAME
-        except Exception:
-            DB_FILENAME = None
 
         if getattr(self, "full_data", None) is None:
             QtWidgets.QMessageBox.warning(self, "No file", "Load a WAV file first.")
@@ -4453,7 +4752,6 @@ class MeasurementToolsMixin:
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         from scipy.signal import savgol_filter
-        from analyze_qt import DB_FILENAME
 
         # Dialog setup
         dlg = QtWidgets.QDialog(self)
@@ -5982,5 +6280,4 @@ class MeasurementToolsMixin:
         btn_keep.clicked.connect(keep_action)
         btn_discard.clicked.connect(dlg2.reject)
         dlg2.exec_()
-
 
