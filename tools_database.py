@@ -894,8 +894,16 @@ class DatabaseToolsMixin:
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("TVR Curve Manager")
-        dlg.setWindowState(QtCore.Qt.WindowMaximized)
         dlg.setStyleSheet("background-color: #19232D; color: white;")
+
+        # Open larger by default while keeping normal window controls.
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            dlg.resize(int(avail.width() * 0.92), int(avail.height() * 0.92))
+        else:
+            dlg.resize(1400, 900)
+
         layout = QtWidgets.QVBoxLayout(dlg)
 
         # --- DB bootstrap + names
