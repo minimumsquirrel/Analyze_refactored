@@ -1076,6 +1076,102 @@ class MeasurementToolsMixin:
     # 3) Octave-Band Analysis
     # ──────────────────────────────────────────────────────────────────────────────
 
+
+    def crest_factor_popup(self):
+        """Compute crest factor (peak/RMS) for selected channels."""
+        import numpy as np
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
+            return
+        if not getattr(self, "sample_rate", 0):
+            QtWidgets.QMessageBox.critical(self, "Error", "Sample rate is invalid.")
+            return
+
+        # Choose analysis scope
+        use_region = bool(getattr(self, "fft_mode", False) and getattr(self, "last_region", None) is not None)
+        scope = "Selected FFT Region" if use_region else "Entire File"
+
+        data = np.asarray(self.full_data)
+        if data.ndim == 1:
+            data2d = data[:, None]
+        else:
+            data2d = data
+
+        if use_region:
+            xmin, xmax = self.last_region
+            s0 = max(0, int(xmin * self.sample_rate))
+            s1 = min(data2d.shape[0], int(xmax * self.sample_rate))
+            if s1 <= s0:
+                QtWidgets.QMessageBox.warning(self, "Crest Factor", "Selected FFT region is empty.")
+                return
+            seg = data2d[s0:s1, :]
+            t0 = s0 / float(self.sample_rate)
+            t1 = s1 / float(self.sample_rate)
+        else:
+            seg = data2d
+            t0 = 0.0
+            t1 = data2d.shape[0] / float(self.sample_rate)
+
+        # Determine channels (prefer selected channels when available)
+        try:
+            selected = list(self.selected_channel_indices()) if hasattr(self, "selected_channel_indices") else []
+        except Exception:
+            selected = []
+        if not selected:
+            selected = list(range(seg.shape[1]))
+
+        rows = []
+        for ch in selected:
+            if ch < 0 or ch >= seg.shape[1]:
+                continue
+            x = seg[:, ch].astype(float)
+            if x.size == 0:
+                continue
+            peak = float(np.max(np.abs(x)))
+            rms = float(np.sqrt(np.mean(np.square(x))))
+            if rms <= 0:
+                crest = float("nan")
+                crest_db = float("nan")
+            else:
+                crest = peak / rms
+                crest_db = 20.0 * np.log10(max(crest, 1e-12))
+            rows.append((ch + 1, peak, rms, crest, crest_db))
+
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Crest Factor", "No valid channel data to analyze.")
+            return
+
+        text_lines = [f"Scope: {scope} ({t0:.3f}s - {t1:.3f}s)", ""]
+        for ch, peak, rms, crest, crest_db in rows:
+            text_lines.append(
+                f"Ch {ch}: Peak={peak:.6g}, RMS={rms:.6g}, Crest={crest:.4f}, Crest(dB)={crest_db:.3f}"
+            )
+
+        QtWidgets.QMessageBox.information(self, "Crest Factor Results", "\n".join(text_lines))
+
+        # Log per-channel crest factor as measured_voltage
+        base_name = self.file_name or "(unknown)"
+        for ch, peak, rms, crest, crest_db in rows:
+            fname = base_name if seg.shape[1] == 1 else f"{base_name}_ch{ch}"
+            try:
+                log_measurement(
+                    fname,
+                    "Crest Factor",
+                    0.0,
+                    t0,
+                    t1,
+                    (t1 - t0),
+                    peak,
+                    0.0,
+                    float(crest),
+                    False,
+                    "",
+                    misc=f"crest_db={crest_db:.3f},rms={rms:.6g}",
+                )
+            except Exception:
+                pass
+
     def octave_band_analysis_popup(self):
         """
         Octave-Band Analysis (multi-channel, project-aware).
@@ -6184,5 +6280,4 @@ class MeasurementToolsMixin:
         btn_keep.clicked.connect(keep_action)
         btn_discard.clicked.connect(dlg2.reject)
         dlg2.exec_()
-
 
