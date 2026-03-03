@@ -1099,21 +1099,44 @@ class DatabaseToolsMixin:
                 data = rows
 
             if freq_idx is None or tvr_idx is None:
-                # fallback: most numeric two cols
+                # fallback: infer numeric columns and choose likely frequency vs TVR
                 max_cols = max(len(r) for r in data) if data else 0
-                counts = []
+                numeric_cols = []
                 for ci in range(max_cols):
-                    cnt = 0
+                    vals = []
                     for r in data:
                         if ci < len(r):
-                            try: float(r[ci]); cnt += 1
-                            except Exception: pass
-                    counts.append((cnt, ci))
-                counts.sort(reverse=True)
-                if len(counts) < 2 or counts[0][0]==0 or counts[1][0]==0:
+                            try:
+                                vals.append(float(r[ci]))
+                            except Exception:
+                                pass
+                    if vals:
+                        arr = np.asarray(vals, dtype=float)
+                        # Frequency is usually positive, mostly monotonic in file order,
+                        # and tends to span a wider range than TVR values.
+                        pos_ratio = float(np.mean(arr > 0))
+                        spread = float((np.nanmax(arr) - np.nanmin(arr)) if arr.size else 0.0)
+                        if arr.size > 1:
+                            monotonic_ratio = float(np.mean(np.diff(arr) >= 0))
+                        else:
+                            monotonic_ratio = 0.0
+                        freq_score = (pos_ratio * 100.0) + (monotonic_ratio * 50.0) + spread
+                        numeric_cols.append((ci, len(vals), freq_score))
+
+                if len(numeric_cols) < 2:
                     raise ValueError("Could not identify Frequency/TVR columns in CSV.")
-                if freq_idx is None: freq_idx = counts[0][1]
-                if tvr_idx  is None: tvr_idx  = counts[1][1]
+
+                # Prefer columns with most numeric values, then best frequency score.
+                numeric_cols.sort(key=lambda t: (t[1], t[2]), reverse=True)
+                if freq_idx is None:
+                    freq_idx = max(numeric_cols, key=lambda t: (t[1], t[2]))[0]
+
+                if tvr_idx is None:
+                    remaining = [t for t in numeric_cols if t[0] != freq_idx]
+                    if not remaining:
+                        raise ValueError("Could not identify Frequency/TVR columns in CSV.")
+                    # TVR column: still numeric-rich, but does not need freq-like score.
+                    tvr_idx = max(remaining, key=lambda t: t[1])[0]
 
             freqs, tvals = [], []
             for r in data:
@@ -1552,6 +1575,8 @@ class DatabaseToolsMixin:
         else:
             redraw()  # ensure empty plot still initializes
 
+        # Open maximized so it fills the screen but keeps window controls.
+        dlg.showMaximized()
         dlg.exec_()
         conn.close()
 
@@ -1575,8 +1600,7 @@ class DatabaseToolsMixin:
         import sqlite3, ast, json
         import numpy as np
         import pandas as pd
-        from functools import partial
-        from PyQt5 import QtWidgets, QtCore
+        from PyQt5 import QtWidgets, QtCore, QtGui
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
@@ -1604,6 +1628,32 @@ class DatabaseToolsMixin:
         # --- load curve names ---
         cur.execute("SELECT curve_name FROM hydrophone_curves ORDER BY curve_name")
         names = [r[0] for r in cur.fetchall()]
+
+        # --- parsed-curve cache (avoids repeated DB fetch + JSON parsing) ---
+        curve_data_cache = {}
+
+        def get_curve_data(name):
+            if not name:
+                return None
+            cached = curve_data_cache.get(name)
+            if cached is not None:
+                return cached
+
+            row = cur.execute(
+                "SELECT min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves WHERE curve_name=?",
+                (name,)
+            ).fetchone()
+            if not row or not row[2]:
+                return None
+
+            minf, maxf, sj = row
+            arr = np.array(
+                ast.literal_eval(sj) if sj.strip().startswith('[') else json.loads(sj),
+                float
+            )
+            data = (minf, maxf, arr)
+            curve_data_cache[name] = data
+            return data
 
         # --- state & caches ---
         overlays = []
@@ -1715,19 +1765,13 @@ class DatabaseToolsMixin:
                 interval_texts.clear()
                 interval_dots.clear()
 
-                row = cur.execute(
-                    "SELECT min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves WHERE curve_name=?",
-                    (name,)
-                ).fetchone()
-                if not row or not row[2]:
+                curve_data = get_curve_data(name)
+                if not curve_data:
                     return
 
-                minf, maxf, sj = row
-                arr = np.array(
-                    ast.literal_eval(sj) if sj.strip().startswith('[') else json.loads(sj),
-                    float
-                )
+                minf, maxf, arr = curve_data
                 freqs = safe_freqs(minf, maxf, arr.size)
+                table.setUpdatesEnabled(False)
                 table.setRowCount(len(freqs))
 
                 for i, (f, v) in enumerate(zip(freqs, arr)):
@@ -1740,16 +1784,13 @@ class DatabaseToolsMixin:
                     it2.setForeground(QtCore.Qt.white)
                     table.setItem(i, 1, it2)
 
-                    btn = QtWidgets.QPushButton("del")
-                    btn.setStyleSheet("background-color:#9B30FF;color:white;padding:2px;border-radius:2px;")
-                    btn.clicked.connect(partial(
-                        lambda b: (
-                            table.removeRow(table.indexAt(b.mapTo(table, QtCore.QPoint(0, 0))).row()),
-                            update_timer.start()
-                        ), btn
-                    ))
-                    table.setCellWidget(i, 2, btn)
+                    del_item = QtWidgets.QTableWidgetItem("✕")
+                    del_item.setFlags((del_item.flags() & ~QtCore.Qt.ItemIsEditable) | QtCore.Qt.ItemIsEnabled)
+                    del_item.setForeground(QtGui.QColor("#FF6B6B"))
+                    del_item.setTextAlignment(QtCore.Qt.AlignCenter)
+                    table.setItem(i, 2, del_item)
 
+                table.setUpdatesEnabled(True)
                 table.resizeColumnsToContents()
             finally:
                 table.blockSignals(False)
@@ -1776,16 +1817,11 @@ class DatabaseToolsMixin:
                 overlays[:] = [it.text() for it in lw.selectedItems()]
                 overlay_cache.clear()
                 for nm in overlays:
-                    row = cur.execute(
-                        "SELECT min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves WHERE curve_name=?",
-                        (nm,)
-                    ).fetchone()
-                    if row and row[2]:
-                        arr = np.array(
-                            ast.literal_eval(row[2]) if row[2].strip().startswith('[') else json.loads(row[2]),
-                            float
-                        )
-                        overlay_cache[nm] = (safe_freqs(row[0], row[1], arr.size), arr)
+                    curve_data = get_curve_data(nm)
+                    if not curve_data:
+                        continue
+                    minf, maxf, arr = curve_data
+                    overlay_cache[nm] = (safe_freqs(minf, maxf, arr.size), arr)
                 update_timer.start()
 
         # --- interval labeling ---
@@ -1828,6 +1864,7 @@ class DatabaseToolsMixin:
                 (min(freqs), max(freqs), json.dumps(sens), name)
             )
             conn.commit()
+            curve_data_cache.pop(name, None)
             QtWidgets.QMessageBox.information(dlg, 'Saved', 'Changes saved.')
 
         def delete_db_curve():
@@ -1840,6 +1877,7 @@ class DatabaseToolsMixin:
                 return
             cur.execute("DELETE FROM hydrophone_curves WHERE curve_name=?", (name,))
             conn.commit()
+            curve_data_cache.pop(name, None)
             idx = curve_cb.findText(name)
             if idx >= 0:
                 curve_cb.removeItem(idx)
@@ -1851,17 +1889,10 @@ class DatabaseToolsMixin:
                 return
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 for nm in [curve_cb.currentText()] + overlays:
-                    row = cur.execute(
-                        "SELECT min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves WHERE curve_name=?",
-                        (nm,)
-                    ).fetchone()
-                    if not row:
+                    curve_data = get_curve_data(nm)
+                    if not curve_data:
                         continue
-                    minf, maxf, sj = row
-                    arr = np.array(
-                        ast.literal_eval(sj) if sj.strip().startswith('[') else json.loads(sj),
-                        float
-                    )
+                    minf, maxf, arr = curve_data
                     freqs = safe_freqs(minf, maxf, arr.size)
                     df = pd.DataFrame({
                         'Frequency (Hz)': freqs,
@@ -1886,17 +1917,11 @@ class DatabaseToolsMixin:
             tmp_fig.patch.set_facecolor(bg)
 
             for idx, nm in enumerate([curve_cb.currentText()] + overlays):
-                row = cur.execute(
-                    "SELECT min_frequency, max_frequency, sensitivity_json FROM hydrophone_curves WHERE curve_name=?",
-                    (nm,)
-                ).fetchone()
-                if not row:
+                curve_data = get_curve_data(nm)
+                if not curve_data:
                     continue
-                arr = np.array(
-                    ast.literal_eval(row[2]) if row[2].strip().startswith('[') else json.loads(row[2]),
-                    float
-                )
-                freqs = safe_freqs(row[0], row[1], arr.size)
+                minf, maxf, arr = curve_data
+                freqs = safe_freqs(minf, maxf, arr.size)
                 style = '-' if idx == 0 else '--'
                 tmp_ax.plot(freqs, arr, style, color=plot_c)
 
@@ -1916,6 +1941,13 @@ class DatabaseToolsMixin:
         btn_label.clicked.connect(label_intervals)
         btn_clear_int.clicked.connect(lambda: (interval_texts.clear(), interval_dots.clear(), update_timer.start()))
         table.itemChanged.connect(lambda _: update_timer.start())
+
+        def on_table_cell_clicked(row, column):
+            if column == 2 and row >= 0:
+                table.removeRow(row)
+                update_timer.start()
+
+        table.cellClicked.connect(on_table_cell_clicked)
 
         # --- bottom buttons ---
         bot = QtWidgets.QHBoxLayout()
