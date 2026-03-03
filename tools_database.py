@@ -1587,6 +1587,8 @@ class DatabaseToolsMixin:
         else:
             redraw()  # ensure empty plot still initializes
 
+        # Open maximized so it fills the screen but keeps window controls.
+        dlg.showMaximized()
         dlg.exec_()
         conn.close()
 
