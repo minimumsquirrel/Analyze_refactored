@@ -15163,12 +15163,10 @@ class MainWindow(
         if self.gps_map_view is None or folium is None:
             return
 
-        # Always initialize bounds lists here so startup/empty states cannot raise NameError.
-        all_lat = []
-        all_lon = []
+        all_lat, all_lon = [], []
         for tr in tracks:
-            all_lat.extend(tr["lat"])
-            all_lon.extend(tr["lon"])
+            all_lat.extend(tr.get("lat", []))
+            all_lon.extend(tr.get("lon", []))
         for _, _, lat, lon, _ in ctd_rows:
             try:
                 all_lat.append(float(lat)); all_lon.append(float(lon))
@@ -15183,6 +15181,11 @@ class MainWindow(
         total_track_points = sum(len(tr.get("lat", [])) for tr in tracks)
         folium_fast_mode = (total_track_points > 12000) or (len(tracks) > 3) or (len(ctd_rows) > 8)
 
+        # Defensive guard against any partial-render state/regression where these vars
+        # are missing at runtime (seen in field traces on startup chart tab open).
+        all_lat = all_lat if 'all_lat' in locals() else []
+        all_lon = all_lon if 'all_lon' in locals() else []
+
         if all_lat and all_lon:
             center = [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
             zoom = 11
@@ -15190,55 +15193,39 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-    @staticmethod
-    def _parse_iso_utc(ts):
-        if not ts:
-            return None
-        txt = str(ts).strip()
-        if not txt:
-            return None
-        txt = txt.replace('Z', '+00:00') if txt.endswith('Z') else txt
-        try:
-            return datetime.fromisoformat(txt)
-        except Exception:
-            return None
+        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
+        folium.TileLayer(tiles='OpenStreetMap', name='Street Map', overlay=False, control=True).add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri', name='Aerial', overlay=False, control=True,
+        ).add_to(m)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+            attr='Tiles © Esri — GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org',
+            name='Bathymetry / Ocean', overlay=False, control=True,
+        ).add_to(m)
 
         for tr in tracks:
-            pts = list(zip(tr["lat"], tr["lon"]))
+            pts = list(zip(tr.get("lat", []), tr.get("lon", [])))
             if not pts:
                 continue
             if len(pts) > 5000:
                 step = max(1, len(pts) // 5000)
                 pts = pts[::step]
-                if pts[-1] != (tr["lat"][-1], tr["lon"][-1]):
-                    pts.append((tr["lat"][-1], tr["lon"][-1]))
-            folium.PolyLine(pts, color=tr["color"], weight=3, opacity=0.9, tooltip=tr["name"]).add_to(m)
-            folium.CircleMarker(pts[0], radius=4, color=tr["color"], fill=True, fill_opacity=1.0,
-                                tooltip=f'{tr["name"]} start').add_to(m)
+            folium.PolyLine(pts, color=tr.get("color", '#03DFE2'), weight=3, opacity=0.9, tooltip=tr.get("name", 'Track')).add_to(m)
+            folium.CircleMarker(pts[0], radius=4, color=tr.get("color", '#03DFE2'), fill=True, fill_opacity=1.0,
+                                tooltip=f"{tr.get('name', 'Track')} start").add_to(m)
+
             detailed = tr.get('points') or []
             if (not folium_fast_mode) and detailed:
                 marker_step = max(1, len(detailed) // 200)
-            else:
-                marker_step = 0
-            for pidx in (range(0, len(detailed), marker_step) if marker_step else []):
-                ts, plat, plon = detailed[pidx]
-                speed_kn = None
-                if pidx > 0:
-                    pts_prev = detailed[pidx - 1]
-                    t0 = self._parse_iso_utc(pts_prev[0])
-                    t1 = self._parse_iso_utc(ts)
-                    if t0 is not None and t1 is not None:
-                        dt = (t1 - t0).total_seconds()
-                        if dt > 0:
-                            dist_m = self._haversine_m(pts_prev[1], pts_prev[2], plat, plon)
-                            speed_kn = (dist_m / dt) * 1.9438444924406
-                popup = f"<b>{tr['name']}</b><br>Point: {pidx}<br>Lat: {plat:.6f}<br>Lon: {plon:.6f}"
-                if ts:
-                    popup += f"<br>UTC: {ts}"
-                if speed_kn is not None and math.isfinite(speed_kn):
-                    popup += f"<br>Speed (kn): {speed_kn:.2f}"
-                folium.CircleMarker([plat, plon], radius=3, color=tr["color"], fill=True, fill_opacity=0.85,
-                                    popup=folium.Popup(popup, max_width=320)).add_to(m)
+                for pidx in range(0, len(detailed), marker_step):
+                    ts, plat, plon = detailed[pidx]
+                    popup = f"<b>{tr.get('name','Track')}</b><br>Point: {pidx}<br>Lat: {plat:.6f}<br>Lon: {plon:.6f}"
+                    if ts:
+                        popup += f"<br>UTC: {ts}"
+                    folium.CircleMarker([plat, plon], radius=3, color=tr.get("color", '#03DFE2'), fill=True,
+                                        fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)).add_to(m)
 
         enable_ctd_popup_graphs = (len(ctd_rows) <= 5) and (not folium_fast_mode)
         for ctd_id, name, lat, lon, dt_utc in ctd_rows:
@@ -15246,34 +15233,30 @@ class MainWindow(
                 latf = float(lat); lonf = float(lon)
             except Exception:
                 continue
-            title = name or ('Cast %s' % ctd_id)
-            if enable_ctd_popup_graphs:
-                img_uri, ideal_depth, full_graph_url = self._get_ctd_plot_artifacts_cached(int(ctd_id))
-            else:
-                img_uri, ideal_depth, full_graph_url = (None, None, None)
-            popup_html = f"<b>CTD: {title}</b>"
+            popup_html = f"<b>CTD: {name or ('Cast %s' % ctd_id)}</b>"
             if dt_utc:
                 popup_html += f"<br>{dt_utc}"
             popup_html += f"<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
-            if ideal_depth is not None:
-                popup_html += f"<br><b>Ideal deployment depth:</b> {ideal_depth:.1f} m"
-            if not enable_ctd_popup_graphs:
+            if enable_ctd_popup_graphs:
+                try:
+                    img_uri, ideal_depth, full_graph_url = self._get_ctd_plot_artifacts_cached(int(ctd_id))
+                except Exception:
+                    img_uri, ideal_depth, full_graph_url = (None, None, None)
+                if ideal_depth is not None:
+                    popup_html += f"<br><b>Ideal deployment depth:</b> {ideal_depth:.1f} m"
+                if img_uri:
+                    popup_html += f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
+                    if full_graph_url:
+                        popup_html += (
+                            f"<br><button onclick=\"window.open('{full_graph_url}','_blank','width=1100,height=760,resizable=yes,scrollbars=yes');return false;\" "
+                            f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
+                            f"Open Full CTD Graph</button>"
+                        )
+            else:
                 popup_html += "<br><i>CTD graph preview disabled for performance in large map view.</i>"
-            if img_uri:
-                popup_html += (
-                    f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
-                )
-                if full_graph_url:
-                    popup_html += (
-                        f"<br><button onclick=\"window.open('{full_graph_url}','_blank','width=1100,height=760,resizable=yes,scrollbars=yes');return false;\" "
-                        f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
-                        f"Open Full CTD Graph</button>"
-                    )
-            folium.Marker(
-                [latf, lonf],
-                popup=folium.Popup(popup_html, max_width=420),
-                icon=folium.Icon(color='orange', icon='tint', prefix='fa')
-            ).add_to(m)
+
+            folium.Marker([latf, lonf], popup=folium.Popup(popup_html, max_width=420),
+                          icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
 
     @staticmethod
     def _haversine_m(lat1, lon1, lat2, lon2):
@@ -15297,6 +15280,13 @@ class MainWindow(
             return datetime.fromisoformat(txt)
         except Exception:
             return None
+
+        folium.LayerControl(collapsed=False).add_to(m)
+        out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
+        out.close()
+        m.save(out.name)
+        self._gps_folium_html_path = out.name
+        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
 
     def _chart_track_line_color(self, default_color, idx):
