@@ -14488,6 +14488,10 @@ class MainWindow(
                     pass
                 self.gps_map_view = QtWebEngineWidgets.QWebEngineView()
                 self.gps_map_stack.addWidget(self.gps_map_view)
+                try:
+                    self.gps_map_view.urlChanged.connect(self._on_chart_web_map_url_changed)
+                except Exception:
+                    pass
             except Exception:
                 self.gps_map_view = None
 
@@ -15174,6 +15178,103 @@ class MainWindow(
         cache[ctd_id] = art
         return art
 
+    def _on_chart_web_map_url_changed(self, qurl):
+        try:
+            if qurl is None:
+                return
+            if qurl.scheme().lower() != 'ctdgraph':
+                return
+            host = qurl.host() or ''
+            path = (qurl.path() or '').strip('/')
+            token = host or path
+            ctd_id = int(token)
+        except Exception:
+            return
+
+        try:
+            self._show_ctd_graph_popup(ctd_id)
+        except Exception:
+            pass
+
+        # restore map after handling custom action URL
+        try:
+            if getattr(self, '_gps_folium_html_path', None):
+                self.gps_map_view.setUrl(QUrl.fromLocalFile(self._gps_folium_html_path))
+        except Exception:
+            pass
+
+    def _show_ctd_graph_popup(self, ctd_id):
+        prof = self._load_ctd_profile_for_map(ctd_id)
+        if not prof:
+            QtWidgets.QMessageBox.information(self, "CTD Graph", "No CTD profile data available for this cast.")
+            return
+
+        depth = np.asarray(prof.get('depth_m') if prof.get('depth_m') is not None else [], dtype=float)
+        if depth.size == 0:
+            QtWidgets.QMessageBox.information(self, "CTD Graph", "CTD cast has no depth profile.")
+            return
+
+        temp = prof.get('temp_c')
+        sal = prof.get('sal_psu')
+        c_ms = prof.get('c_ms')
+        ideal_depth = self._ideal_deployment_depth_from_profile(depth, c_ms)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(f"CTD Graph — {prof.get('name') or ('Cast %s' % ctd_id)}")
+        dlg.resize(1100, 700)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        fig = Figure(facecolor="#19232D")
+        canvas = FigureCanvas(fig)
+        layout.addWidget(canvas, 1)
+
+        axT = fig.add_subplot(1, 3, 1)
+        axS = fig.add_subplot(1, 3, 2)
+        axC = fig.add_subplot(1, 3, 3)
+        for ax in (axT, axS, axC):
+            ax.set_facecolor('#19232D')
+            for sp in ax.spines.values():
+                sp.set_color('white')
+            ax.tick_params(colors='white')
+            ax.grid(True, ls='--', alpha=0.35, color='gray')
+            ax.invert_yaxis()
+            ax.set_ylabel('Depth (m)', color='white')
+
+        axT.set_title('Temperature', color='white')
+        axS.set_title('Salinity', color='white')
+        axC.set_title('Sound Speed', color='white')
+        axT.set_xlabel('°C', color='white')
+        axS.set_xlabel('PSU', color='white')
+        axC.set_xlabel('m/s', color='white')
+
+        if temp is not None and len(temp) > 0:
+            n = min(len(depth), len(temp))
+            axT.plot(np.asarray(temp[:n], dtype=float), depth[:n], color=getattr(self, 'graph_color', '#33C3F0'), lw=1.8)
+        if sal is not None and len(sal) > 0:
+            n = min(len(depth), len(sal))
+            axS.plot(np.asarray(sal[:n], dtype=float), depth[:n], color='#FFD166', lw=1.8)
+        if c_ms is not None and len(c_ms) > 0:
+            n = min(len(depth), len(c_ms))
+            axC.plot(np.asarray(c_ms[:n], dtype=float), depth[:n], color='#6EEB83', lw=2.0)
+
+        if ideal_depth is not None:
+            for ax in (axT, axS, axC):
+                ax.axhline(ideal_depth, color='#FF5D73', ls='--', lw=1.2)
+            axC.text(0.02, 0.04, f'Ideal deployment depth: {ideal_depth:.1f} m',
+                     color='#FFB3C1', transform=axC.transAxes, fontsize=10, ha='left', va='bottom')
+
+        title = prof.get('name') or ('CTD %s' % ctd_id)
+        if prof.get('dt_utc'):
+            title += f"  ({prof.get('dt_utc')})"
+        fig.suptitle(title, color='white', fontsize=12)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        canvas.draw()
+
+        close_btn = QtWidgets.QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn, 0, Qt.AlignRight)
+        dlg.exec_()
+
 
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
         if self.gps_map_view is None or folium is None:
@@ -15265,8 +15366,7 @@ class MainWindow(
                     popup_html += f"<br><img src='{img_uri}' style='width:280px;max-width:95%;border:1px solid #888;border-radius:4px;'>"
                     if full_graph_url:
                         popup_html += (
-                            # Use same-view navigation for embedded QWebEngine reliability.
-                            f"<br><button onclick=\"window.location.href='{full_graph_url}';return false;\" "
+                            f"<br><button onclick=\"window.location.href='ctdgraph://{int(ctd_id)}';return false;\" "
                             f"style='display:inline-block;margin-top:6px;padding:4px 8px;background:#1f4e79;color:#fff;border:0;border-radius:4px;cursor:pointer;'>"
                             f"Open Full CTD Graph</button>"
                         )
