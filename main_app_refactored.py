@@ -15336,15 +15336,31 @@ class MainWindow(
                                 tooltip=f"{tr.get('name', 'Track')} start").add_to(m)
 
             detailed = tr.get('points') or []
-            if (not folium_fast_mode) and detailed:
-                marker_step = max(1, len(detailed) // 200)
+            if detailed:
+                # Always keep clickable track-point popups; thin more aggressively in fast mode.
+                marker_cap = 80 if folium_fast_mode else 250
+                marker_step = max(1, len(detailed) // marker_cap)
                 for pidx in range(0, len(detailed), marker_step):
                     ts, plat, plon = detailed[pidx]
+                    speed_kn = None
+                    if pidx > 0:
+                        ts_prev, plat_prev, plon_prev = detailed[pidx - 1]
+                        t0 = self._parse_iso_utc(ts_prev)
+                        t1 = self._parse_iso_utc(ts)
+                        if t0 is not None and t1 is not None:
+                            dt_s = (t1 - t0).total_seconds()
+                            if dt_s > 0:
+                                dist_m = self._haversine_m(float(plat_prev), float(plon_prev), float(plat), float(plon))
+                                speed_kn = (dist_m / dt_s) * 1.9438444924406
                     popup = f"<b>{tr.get('name','Track')}</b><br>Point: {pidx}<br>Lat: {plat:.6f}<br>Lon: {plon:.6f}"
                     if ts:
                         popup += f"<br>UTC: {ts}"
-                    folium.CircleMarker([plat, plon], radius=3, color=tr.get("color", '#03DFE2'), fill=True,
-                                        fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)).add_to(m)
+                    if speed_kn is not None and math.isfinite(speed_kn):
+                        popup += f"<br>Speed (kn): {speed_kn:.2f}"
+                    folium.CircleMarker(
+                        [plat, plon], radius=3, color=tr.get("color", '#03DFE2'), fill=True,
+                        fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)
+                    ).add_to(m)
 
         # Always provide CTD preview graph popups (user-facing requirement).
         enable_ctd_popup_graphs = True
