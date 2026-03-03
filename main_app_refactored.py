@@ -3097,7 +3097,18 @@ class MainWindow(
         cur = self.conn.cursor()
         
         # 1. Get all files associated with the current project
-        proj = self.proj_cb.currentText()
+        proj_combo = None
+        if hasattr(self, "matrix_proj_cb") and self.matrix_proj_cb is not None:
+            proj_combo = self.matrix_proj_cb
+        elif hasattr(self, "proj_cb") and self.proj_cb is not None:
+            # Fallback for older code paths where only proj_cb exists.
+            proj_combo = self.proj_cb
+
+        if proj_combo is None:
+            QtWidgets.QMessageBox.warning(self, "No Project", "Project selector is unavailable.")
+            return
+
+        proj = proj_combo.currentText()
         if not proj:
             QtWidgets.QMessageBox.warning(self, "No Project", "Select a project first.")
             return
