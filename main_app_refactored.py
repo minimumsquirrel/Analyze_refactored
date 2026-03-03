@@ -15243,7 +15243,8 @@ class MainWindow(
                     folium.CircleMarker([plat, plon], radius=3, color=tr.get("color", '#03DFE2'), fill=True,
                                         fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)).add_to(m)
 
-        enable_ctd_popup_graphs = (len(ctd_rows) <= 5) and (not folium_fast_mode)
+        # Always provide CTD preview graph popups (user-facing requirement).
+        enable_ctd_popup_graphs = True
         for ctd_id, name, lat, lon, dt_utc in ctd_rows:
             try:
                 latf = float(lat); lonf = float(lon)
@@ -15269,7 +15270,7 @@ class MainWindow(
                             f"Open Full CTD Graph</button>"
                         )
             else:
-                popup_html += "<br><i>CTD graph preview disabled for performance in large map view.</i>"
+                popup_html += "<br><i>CTD graph preview unavailable for this cast.</i>"
 
             folium.Marker([latf, lonf], popup=folium.Popup(popup_html, max_width=420),
                           icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
