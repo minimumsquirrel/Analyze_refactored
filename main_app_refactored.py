@@ -1978,10 +1978,19 @@ class MainWindow(
 
         if hasattr(self, "matrix_proj_cb") and self.matrix_proj_cb is not None:
             try:
+                current = self.matrix_proj_cb.currentText()
                 self.matrix_proj_cb.blockSignals(True)
                 self.matrix_proj_cb.clear()
                 for n in names:
                     self.matrix_proj_cb.addItem(n)
+
+                preferred = current or getattr(self, "current_project_name", None) or ""
+                idx = self.matrix_proj_cb.findText(preferred)
+                if idx < 0 and names:
+                    idx = 0
+                if idx >= 0:
+                    self.matrix_proj_cb.setCurrentIndex(idx)
+
                 self.matrix_proj_cb.blockSignals(False)
             except RuntimeError:
                 self.matrix_proj_cb = None
@@ -3097,7 +3106,25 @@ class MainWindow(
         cur = self.conn.cursor()
         
         # 1. Get all files associated with the current project
-        proj = self.proj_cb.currentText()
+        proj_combo = None
+        if hasattr(self, "matrix_proj_cb") and self.matrix_proj_cb is not None:
+            proj_combo = self.matrix_proj_cb
+        elif hasattr(self, "proj_cb") and self.proj_cb is not None:
+            # Fallback for older code paths where only proj_cb exists.
+            proj_combo = self.proj_cb
+
+        if proj_combo is None:
+            QtWidgets.QMessageBox.warning(self, "No Project", "Project selector is unavailable.")
+            return
+
+        proj = proj_combo.currentText().strip()
+        if not proj:
+            proj = (getattr(self, "current_project_name", None) or "").strip()
+            if proj and hasattr(proj_combo, "findText"):
+                idx = proj_combo.findText(proj)
+                if idx >= 0:
+                    proj_combo.setCurrentIndex(idx)
+
         if not proj:
             QtWidgets.QMessageBox.warning(self, "No Project", "Select a project first.")
             return
@@ -8692,6 +8719,10 @@ class MainWindow(
                 self.recurrence_periodicity_popup()
             elif tool=="Dominant Frequencies Over Time":
                 self.analyze_dominant_frequencies_popup()
+            elif tool=="Exceedance Curves Lx":
+                self.exceedance_curves_popup()
+            elif tool=="LTSA + PSD Percentiles":
+                self.ltsa_psd_popup()
             
 
         elif category == "Modelling & Plotting Tools":
