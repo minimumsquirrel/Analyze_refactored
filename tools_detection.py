@@ -116,7 +116,7 @@ class DetectionToolsMixin:
 
         # Find peaks within quefrency window
         mask = (q >= min_q) & (q <= max_q)
-        idxs, props = find_peaks(cep[mask], height=thresh)
+        idxs, props = sp_find_peaks(cep[mask], height=thresh)
         real_idxs = np.where(mask)[0][idxs]
         delays = q[real_idxs]
         heights = cep[real_idxs]
@@ -430,7 +430,7 @@ class DetectionToolsMixin:
         if not ok: return
 
         min_spacing = win_len  # seconds between pulses
-        pulse_peaks, _ = find_peaks(corr_full, height=pulse_thresh, distance=int(min_spacing * sr))
+        pulse_peaks, _ = sp_find_peaks(corr_full, height=pulse_thresh, distance=int(min_spacing * sr))
         pulse_times = times_full[pulse_peaks]
 
         # Create screenshot directory
@@ -456,7 +456,7 @@ class DetectionToolsMixin:
             seg_times = np.arange(len(seg_corr)) / sr + pt + win_len
 
             echo_thresh = np.max(seg_corr) * 0.5
-            echo_peaks, _ = find_peaks(seg_corr, height=echo_thresh)
+            echo_peaks, _ = sp_find_peaks(seg_corr, height=echo_thresh)
 
             echoes = []
             for ep in echo_peaks:

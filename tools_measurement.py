@@ -48,6 +48,213 @@ from shared import (
 class MeasurementToolsMixin:
     """Mixin class providing all Measurement Tools for self."""
 
+    def depth_sounder_popup(self):
+        """
+        Prompts for mode (single vs. batch), ping frequency, speed of sound,
+        then either measures one depth or scans and logs all depths.
+        """
+        from PyQt5 import QtWidgets
+        import numpy as np
+        from scipy.signal import butter, sosfiltfilt
+        from scipy.signal import hilbert, find_peaks
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "No file loaded.")
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Depth Sounder")
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        # 1) Mode
+        mode_grp = QtWidgets.QGroupBox("Mode")
+        mlay = QtWidgets.QHBoxLayout(mode_grp)
+        single_rb = QtWidgets.QRadioButton("Single Ping")
+        batch_rb = QtWidgets.QRadioButton("Scan Entire File")
+        single_rb.setChecked(True)
+        for w in (single_rb, batch_rb):
+            mlay.addWidget(w)
+        layout.addWidget(mode_grp)
+
+        # 2) Params
+        form = QtWidgets.QFormLayout()
+        freq_edit = QtWidgets.QLineEdit("172000")
+        speed_edit = QtWidgets.QLineEdit("1480")
+        depth_edit = QtWidgets.QLineEdit("")
+        for w in (freq_edit, speed_edit, depth_edit):
+            w.setFixedWidth(80)
+        form.addRow("Ping Centre Frequency (Hz):", freq_edit)
+        form.addRow("Speed of Sound (m/s):", speed_edit)
+        form.addRow("Hydrophone Depth (m):", depth_edit)
+        layout.addLayout(form)
+
+        # OK/Cancel
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        # parse
+        try:
+            center_hz = float(freq_edit.text())
+            sound_c = float(speed_edit.text())
+            hydro_depth = float(depth_edit.text() or 0.0)
+        except ValueError:
+            QtWidgets.QMessageBox.critical(self, "Error", "Invalid numeric values.")
+            return
+
+        # select data segment
+        if single_rb.isChecked():
+            if not getattr(self, "fft_mode", False) or self.last_region is None:
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Single Ping",
+                    "Switch to FFT mode and select a region first.",
+                )
+                return
+            xmin, xmax = self.last_region
+            s0 = int(xmin * self.sample_rate)
+            s1 = int(xmax * self.sample_rate)
+            data_to_filter = self.full_data[s0:s1]
+            filter_offset = s0
+        else:
+            data_to_filter = self.full_data
+            filter_offset = 0
+
+        # design bandpass ±5 kHz
+        bw = 5000.0
+        nyq = self.sample_rate / 2.0
+        low_norm = (center_hz - bw) / nyq
+        high_norm = (center_hz + bw) / nyq
+
+        # clamp into (0,1) and ensure low < high
+        low_norm = max(low_norm, 1e-6)
+        high_norm = min(high_norm, 1.0 - 1e-6)
+        if low_norm >= high_norm:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Filter Error",
+                "Invalid bandpass settings: low ≥ high.\nAdjust ping centre or bandwidth.",
+            )
+            return
+
+        sos = butter(8, [low_norm, high_norm], btype="band", output="sos")
+        try:
+            filt = sosfiltfilt(sos, data_to_filter)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Filter Error", str(e))
+            return
+
+        # helper to detect ping+echo and compute depth
+        def _detect_depth(seg):
+            env = np.abs(hilbert(seg))
+            peaks, props = find_peaks(env, height=env.max() * 0.3)
+            if len(peaks) < 2:
+                return None
+            t0_rel = peaks[0] / self.sample_rate
+            echoes = [p for p in peaks[1:] if (p / self.sample_rate - t0_rel) > 0.05]
+            if not echoes:
+                return None
+            t1_rel = echoes[0] / self.sample_rate
+            raw_d = (t1_rel - t0_rel) * sound_c / 2.0
+            return t0_rel, t1_rel, raw_d
+
+        # single-ping case
+        if single_rb.isChecked():
+            out = _detect_depth(filt)
+            if not out:
+                QtWidgets.QMessageBox.information(self, "No Echo", "Could not find ping+echo.")
+                return
+            t0_rel, t1_rel, depth_raw = out
+            t0 = filter_offset / self.sample_rate + t0_rel
+            t1 = filter_offset / self.sample_rate + t1_rel
+            depth_adj = depth_raw + hydro_depth
+
+            QtWidgets.QMessageBox.information(
+                self,
+                "Depth Result",
+                f"Ping @ {t0:.3f}s, Echo @ {t1:.3f}s\n"
+                f"Raw depth: {depth_raw:.2f} m\n"
+                f"+ hydrophone offset: {depth_adj:.2f} m",
+            )
+
+            log_measurement(
+                self.file_name,
+                "Depth Sounder",
+                center_hz,
+                t0,
+                t1,
+                (t1 - t0),
+                0.0,
+                0.0,
+                0.0,
+                False,
+                "",
+                misc=str(depth_adj),
+            )
+
+        # batch scanning
+        else:
+            win = int(self.sample_rate * 2.0)
+            hop = int(self.sample_rate * 1.0)
+            results = []
+            total = len(data_to_filter)
+            for start in range(0, total - win, hop):
+                seg = filt[start:start + win]
+                out = _detect_depth(seg)
+                if out:
+                    t0_rel, t1_rel, depth_raw = out
+                    t0 = (filter_offset + start) / self.sample_rate + t0_rel
+                    t1 = (filter_offset + start) / self.sample_rate + t1_rel
+                    results.append((t0, t1, depth_raw + hydro_depth))
+
+            if not results:
+                QtWidgets.QMessageBox.information(self, "No Depths", "No valid echoes found.")
+                return
+
+            # show batch results
+            dlg2 = QtWidgets.QDialog(self)
+            dlg2.setWindowTitle("Batch Depth Results")
+            v2 = QtWidgets.QVBoxLayout(dlg2)
+            lines = "\n".join(f"{t0:.2f}s→{t1:.2f}s: {d:.2f} m" for t0, t1, d in results)
+            txt = QtWidgets.QPlainTextEdit(f"Found {len(results)} depths:\n\n{lines}")
+            txt.setReadOnly(True)
+            v2.addWidget(txt)
+
+            btns2 = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            )
+            btns2.accepted.connect(dlg2.accept)
+            btns2.rejected.connect(dlg2.reject)
+            v2.addWidget(btns2)
+
+            if dlg2.exec_() == QtWidgets.QDialog.Accepted:
+                for t0, t1, d in results:
+                    log_measurement(
+                        self.file_name,
+                        "Depth Sounder",
+                        center_hz,
+                        t0,
+                        t1,
+                        (t1 - t0),
+                        0.0,
+                        0.0,
+                        0.0,
+                        False,
+                        "",
+                        misc=str(d),
+                    )
+                QtWidgets.QMessageBox.information(
+                    self,
+                    "Logged",
+                    f"Logged {len(results)} entr{'y' if len(results) == 1 else 'ies'}.",
+                )
+
     def find_peaks_analysis(self):
         if self.full_data is None:
             QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
@@ -868,6 +1075,102 @@ class MeasurementToolsMixin:
         # ──────────────────────────────────────────────────────────────────────────────
     # 3) Octave-Band Analysis
     # ──────────────────────────────────────────────────────────────────────────────
+
+
+    def crest_factor_popup(self):
+        """Compute crest factor (peak/RMS) for selected channels."""
+        import numpy as np
+
+        if self.full_data is None:
+            QtWidgets.QMessageBox.critical(self, "Error", "Load a WAV file first.")
+            return
+        if not getattr(self, "sample_rate", 0):
+            QtWidgets.QMessageBox.critical(self, "Error", "Sample rate is invalid.")
+            return
+
+        # Choose analysis scope
+        use_region = bool(getattr(self, "fft_mode", False) and getattr(self, "last_region", None) is not None)
+        scope = "Selected FFT Region" if use_region else "Entire File"
+
+        data = np.asarray(self.full_data)
+        if data.ndim == 1:
+            data2d = data[:, None]
+        else:
+            data2d = data
+
+        if use_region:
+            xmin, xmax = self.last_region
+            s0 = max(0, int(xmin * self.sample_rate))
+            s1 = min(data2d.shape[0], int(xmax * self.sample_rate))
+            if s1 <= s0:
+                QtWidgets.QMessageBox.warning(self, "Crest Factor", "Selected FFT region is empty.")
+                return
+            seg = data2d[s0:s1, :]
+            t0 = s0 / float(self.sample_rate)
+            t1 = s1 / float(self.sample_rate)
+        else:
+            seg = data2d
+            t0 = 0.0
+            t1 = data2d.shape[0] / float(self.sample_rate)
+
+        # Determine channels (prefer selected channels when available)
+        try:
+            selected = list(self.selected_channel_indices()) if hasattr(self, "selected_channel_indices") else []
+        except Exception:
+            selected = []
+        if not selected:
+            selected = list(range(seg.shape[1]))
+
+        rows = []
+        for ch in selected:
+            if ch < 0 or ch >= seg.shape[1]:
+                continue
+            x = seg[:, ch].astype(float)
+            if x.size == 0:
+                continue
+            peak = float(np.max(np.abs(x)))
+            rms = float(np.sqrt(np.mean(np.square(x))))
+            if rms <= 0:
+                crest = float("nan")
+                crest_db = float("nan")
+            else:
+                crest = peak / rms
+                crest_db = 20.0 * np.log10(max(crest, 1e-12))
+            rows.append((ch + 1, peak, rms, crest, crest_db))
+
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Crest Factor", "No valid channel data to analyze.")
+            return
+
+        text_lines = [f"Scope: {scope} ({t0:.3f}s - {t1:.3f}s)", ""]
+        for ch, peak, rms, crest, crest_db in rows:
+            text_lines.append(
+                f"Ch {ch}: Peak={peak:.6g}, RMS={rms:.6g}, Crest={crest:.4f}, Crest(dB)={crest_db:.3f}"
+            )
+
+        QtWidgets.QMessageBox.information(self, "Crest Factor Results", "\n".join(text_lines))
+
+        # Log per-channel crest factor as measured_voltage
+        base_name = self.file_name or "(unknown)"
+        for ch, peak, rms, crest, crest_db in rows:
+            fname = base_name if seg.shape[1] == 1 else f"{base_name}_ch{ch}"
+            try:
+                log_measurement(
+                    fname,
+                    "Crest Factor",
+                    0.0,
+                    t0,
+                    t1,
+                    (t1 - t0),
+                    peak,
+                    0.0,
+                    float(crest),
+                    False,
+                    "",
+                    misc=f"crest_db={crest_db:.3f},rms={rms:.6g}",
+                )
+            except Exception:
+                pass
 
     def octave_band_analysis_popup(self):
         """
@@ -3452,10 +3755,6 @@ class MeasurementToolsMixin:
         import sqlite3, csv, os, math
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        try:
-            from analyze_qt import DB_FILENAME
-        except Exception:
-            DB_FILENAME = None
 
         if getattr(self, "full_data", None) is None:
             QtWidgets.QMessageBox.warning(self, "No file", "Load a WAV file first.")
@@ -3883,253 +4182,480 @@ class MeasurementToolsMixin:
 
 
     def exceedance_curves_popup(self):
+        """
+        Exceedance (Lx) Curves:
+        - Source = DB (spl_calculations) or WAV (windowed VRMS)
+        - WAV mode UI appears only when selected; prompts to load WAV if needed
+        - Optional band-pass (WAV mode)
+        - Weighted by duration (DB: window_length; WAV: hop seconds)
+        - Plot exceedance CDF and mark L10/L50/L90
+        - User limits (dB): show % time and total exceeded time
+        - Export CSV/PNG; optional DB log of summary
+        """
         from PyQt5 import QtWidgets, QtCore
-        import numpy as np
-        from matplotlib.figure import Figure
+        import numpy as np, sqlite3, csv, os
+        from scipy.signal import butter, sosfiltfilt, get_window
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
 
-        if getattr(self, "full_data", None) is None:
-            QtWidgets.QMessageBox.warning(self, "No file", "Load a WAV file first.")
-            return
-
-        fs = float(getattr(self, "sample_rate", 0) or 0)
-        if fs <= 0:
-            QtWidgets.QMessageBox.warning(self, "Invalid sample rate", "Sample rate not available.")
-            return
-
-        # ---- Dialog shell -------------------------------------------------
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Exceedance Curves (Lx)")
-        dlg.setStyleSheet("background:#19232D; color:white;")
         dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowMaximized)
+        dlg.setStyleSheet("background:#19232D; color:white;")
         vbox = QtWidgets.QVBoxLayout(dlg)
-        vbox.setContentsMargins(10, 10, 10, 10)
-        vbox.setSpacing(8)
+        vbox.setContentsMargins(8, 8, 8, 8)
+        vbox.setSpacing(6)
 
-        # ---- Controls ------------------------------------------------------
-        ctl = QtWidgets.QHBoxLayout()
+        # ── Top filter bar (compact) ───────────────────────────────────────────
+        bar = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(bar)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
 
-        def _num(txt, w=90):
-            e = QtWidgets.QLineEdit(txt)
-            e.setFixedWidth(w)
-            e.setStyleSheet("color:white;")
-            return e
+        # Source
+        src_lbl = QtWidgets.QLabel("Source:")
+        db_rb = QtWidgets.QRadioButton("DB")
+        wav_rb = QtWidgets.QRadioButton("WAV")
+        db_rb.setChecked(True)
+        src_box = QtWidgets.QHBoxLayout(); src_box.setSpacing(8)
+        src_w = QtWidgets.QWidget(); src_w.setLayout(src_box)
+        src_box.addWidget(db_rb); src_box.addWidget(wav_rb)
+        grid.addWidget(src_lbl, 0, 0)
+        grid.addWidget(src_w, 0, 1)
 
-        ctl.addWidget(QtWidgets.QLabel("Window (s):"))
-        win_edit = _num("1.0", 80)
-        ctl.addWidget(win_edit)
+        # DB controls (same row)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT DISTINCT file_name FROM spl_calculations ORDER BY file_name")
+            files = [r[0] for r in cur.fetchall()]
+        except sqlite3.Error:
+            files = []
+        db_file_lbl = QtWidgets.QLabel("File:")
+        db_file_cb = QtWidgets.QComboBox(); db_file_cb.addItems(files); db_file_cb.setMinimumWidth(200)
 
-        ctl.addWidget(QtWidgets.QLabel("Overlap (%):"))
-        ovl_edit = _num("50", 60)
-        ctl.addWidget(ovl_edit)
+        db_curve_lbl = QtWidgets.QLabel("Hydrophone Curve:")
+        db_curve_cb = QtWidgets.QComboBox(); db_curve_cb.addItem(""); db_curve_cb.setMinimumWidth(180)
 
-        ctl.addWidget(QtWidgets.QLabel("Metric:"))
-        metric_cb = QtWidgets.QComboBox()
-        metric_cb.addItems(["RMS", "Peak"])
-        ctl.addWidget(metric_cb)
+        def upd_methods():
+            db_curve_cb.blockSignals(True)
+            db_curve_cb.clear(); db_curve_cb.addItem("")
+            fn = db_file_cb.currentText()
+            if fn:
+                try:
+                    cur.execute("""SELECT DISTINCT hydrophone_curve
+                                FROM spl_calculations
+                                WHERE file_name=? ORDER BY hydrophone_curve""", (fn,))
+                    rows = [r[0] or "" for r in cur.fetchall()]
+                except sqlite3.Error:
+                    rows = []
+                for r in rows:
+                    if r and db_curve_cb.findText(r) < 0:
+                        db_curve_cb.addItem(r)
+            db_curve_cb.blockSignals(False)
+        upd_methods()
+        db_file_cb.currentTextChanged.connect(upd_methods)
 
-        ctl.addWidget(QtWidgets.QLabel("Lx values (% exceed):"))
-        lx_edit = _num("10,50,90", 110)
-        ctl.addWidget(lx_edit)
+        grid.addWidget(db_file_lbl, 0, 2)
+        grid.addWidget(db_file_cb, 0, 3)
+        grid.addWidget(db_curve_lbl, 0, 4)
+        grid.addWidget(db_curve_cb, 0, 5)
 
-        annotate_cb = QtWidgets.QCheckBox("Annotate Lx")
-        annotate_cb.setChecked(True)
-        ctl.addWidget(annotate_cb)
+        # Frequency range (DB mode)
+        db_fr_lbl = QtWidgets.QLabel("Freq Range (Hz):")
+        db_fmin = QtWidgets.QLineEdit("")
+        db_fmax = QtWidgets.QLineEdit("")
+        for w in (db_fmin, db_fmax):
+            w.setFixedWidth(90)
+            w.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
+        db_fr = QtWidgets.QHBoxLayout()
+        db_fr.setContentsMargins(0, 0, 0, 0)
+        db_fr.setSpacing(6)
+
+        db_frw = QtWidgets.QWidget()
+        db_frw.setLayout(db_fr)
+        db_frw.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+        db_fr.addWidget(db_fmin)
+        db_fr.addWidget(QtWidgets.QLabel("to"))
+        db_fr.addWidget(db_fmax)
+
+        grid.addWidget(db_fr_lbl, 0, 6)
+        grid.addWidget(db_frw, 0, 7, alignment=QtCore.Qt.AlignLeft)
+
+        # Limits + Weighting (same line)
+        lim_lbl = QtWidgets.QLabel("Limits (dB):")
+        limit_edit = QtWidgets.QLineEdit("120"); limit_edit.setPlaceholderText("e.g., 120, 160"); limit_edit.setFixedWidth(180)
+        weight_cb = QtWidgets.QCheckBox("Weight by duration"); weight_cb.setChecked(True)
+        grid.addWidget(lim_lbl, 0, 8)
+        grid.addWidget(limit_edit, 0, 9)
+        grid.addWidget(weight_cb, 0, 10)
+
+        # ── WAV controls (row 2) — hidden in DB mode ───────────────────────────
+        wav_file_lbl = QtWidgets.QLabel("WAV File: <none>"); wav_file_lbl.setStyleSheet("color:#bbb;")
+        wav_pick_btn = QtWidgets.QPushButton("Change…"); wav_pick_btn.setStyleSheet("background:#3E6C8A; color:white; padding:4px 8px; border-radius:4px;")
+
+        win_lbl = QtWidgets.QLabel("Window (s):")
+        win_edit = QtWidgets.QLineEdit("1.0"); win_edit.setFixedWidth(80)
+        hop_lbl = QtWidgets.QLabel("Hop (s):")
+        hop_edit = QtWidgets.QLineEdit("0.5"); hop_edit.setFixedWidth(80)
+
+        mode_lbl = QtWidgets.QLabel("Mode:")
+        mode_cb = QtWidgets.QComboBox(); mode_cb.addItems(["Full-band VRMS", "Band-limited (Butter)"])
+
+        band_lbl = QtWidgets.QLabel("Band (Hz):")
+        bl_f1 = QtWidgets.QLineEdit("20"); bl_f1.setFixedWidth(90)
+        bl_f2 = QtWidgets.QLineEdit("20000"); bl_f2.setFixedWidth(90)
+        band_row = QtWidgets.QHBoxLayout(); band_row.setSpacing(6)
+        band_w = QtWidgets.QWidget(); band_w.setLayout(band_row)
+        band_row.addWidget(bl_f1); band_row.addWidget(QtWidgets.QLabel("to")); band_row.addWidget(bl_f2)
+
+        # place in grid row 1 (second row visually)
+        grid.addWidget(wav_file_lbl, 1, 0, 1, 2)
+        grid.addWidget(wav_pick_btn, 1, 2)
+        grid.addWidget(win_lbl, 1, 3); grid.addWidget(win_edit, 1, 4)
+        grid.addWidget(hop_lbl, 1, 5); grid.addWidget(hop_edit, 1, 6)
+        grid.addWidget(mode_lbl, 1, 7); grid.addWidget(mode_cb, 1, 8)
+        grid.addWidget(band_lbl, 1, 9); grid.addWidget(band_w, 1, 10)
+
+        # Compute on far right
         compute_btn = QtWidgets.QPushButton("Compute")
-        compute_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
-        ctl.addWidget(compute_btn)
-        ctl.addStretch()
-        vbox.addLayout(ctl)
+        compute_btn.setStyleSheet("background:#3E6C8A; color:white; padding:6px 10px; border-radius:4px;")
+        grid.addWidget(compute_btn, 1, 11, alignment=QtCore.Qt.AlignRight)
 
-        # ---- Figure --------------------------------------------------------
+        vbox.addWidget(bar)
+
+        db_widgets = [db_file_lbl, db_file_cb, db_curve_lbl, db_curve_cb, db_fr_lbl, db_frw]
+        wav_widgets = [wav_file_lbl, wav_pick_btn, win_lbl, win_edit, hop_lbl, hop_edit, mode_lbl, mode_cb, band_lbl, band_w]
+
+        def set_visible(widgets, vis: bool):
+            for w in widgets:
+                w.setVisible(vis)
+
+        def ensure_wav_loaded():
+            cur_name = getattr(self, "file_name", None)
+            if self.full_data is not None and cur_name:
+                wav_file_lbl.setText(f"WAV File: {cur_name}")
+                return True
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(dlg, "Select WAV File", "", "WAV Files (*.wav)")
+            if not path:
+                QtWidgets.QMessageBox.information(dlg, "Cancelled", "No WAV selected; staying in DB mode.")
+                db_rb.setChecked(True)
+                return False
+            try:
+                if hasattr(self, "load_wav_file"):
+                    self.load_wav_file(path)
+                else:
+                    from scipy.io import wavfile
+                    fs, data = wavfile.read(path)
+                    self.sample_rate = fs
+                    self.full_data = data
+                    self.original_dtype = data.dtype
+                    self.current_file_path = path
+                    self.file_name = os.path.basename(path)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Load Error", f"Failed to load WAV:\n{e}")
+                db_rb.setChecked(True)
+                return False
+            wav_file_lbl.setText(f"WAV File: {self.file_name}")
+            return True
+
+        def apply_src_state():
+            db_mode = db_rb.isChecked()
+            set_visible(db_widgets, db_mode)
+            set_visible(wav_widgets, not db_mode)
+            if not db_mode:
+                ensure_wav_loaded()
+
+        db_rb.toggled.connect(apply_src_state)
+        wav_rb.toggled.connect(apply_src_state)
+        apply_src_state()
+
+        wav_pick_btn.clicked.connect(lambda: ensure_wav_loaded())
+
+        # ── Splitter: small table + large plot ─────────────────────────────────
+        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        split.setHandleWidth(6)
+
+        table = QtWidgets.QTableWidget(4, 2)
+        table.setHorizontalHeaderLabels(["Metric", "Value"])
+        table.setVerticalHeaderLabels(["L10 (dB)", "L50 (dB)", "L90 (dB)", "Aggregate"])
+        table.setStyleSheet(
+            "QTableWidget{background:#19232D;color:white;gridline-color:#444;}"
+            "QHeaderView::section{background:#19232D;color:white;border:none;}"
+        )
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setMaximumWidth(300)
+        split.addWidget(table)
+
         fig = Figure(facecolor="#19232D")
         ax = fig.add_subplot(111)
         ax.set_facecolor("#19232D")
         ax.tick_params(colors="white")
-        for s in ax.spines.values():
-            s.set_color("white")
+        for sp in ax.spines.values():
+            sp.set_color("white")
         canvas = FigureCanvas(fig)
-        vbox.addWidget(canvas, 1)
+        canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        split.addWidget(canvas)
 
-        # ---- Lx summary ----------------------------------------------------
-        summary = QtWidgets.QTextEdit()
-        summary.setReadOnly(True)
-        summary.setStyleSheet("background:#111; color:#DDE;")
-        summary.setFixedHeight(90)
-        vbox.addWidget(summary)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 7)
+        vbox.addWidget(split, 1)
 
-        # ---- Bottom actions ------------------------------------------------
-        btm = QtWidgets.QHBoxLayout()
-        save_img = QtWidgets.QPushButton("Save Image")
-        save_img.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
-        save_csv = QtWidgets.QPushButton("Export CSV")
-        save_csv.setStyleSheet("background:#3E6C8A;color:white;padding:6px 10px;border-radius:4px;")
-        btm.addStretch()
-        btm.addWidget(save_img)
-        btm.addWidget(save_csv)
-        vbox.addLayout(btm)
+        # ── Bottom buttons ─────────────────────────────────────────────────────
+        btns = QtWidgets.QHBoxLayout()
+        export_csv_btn = QtWidgets.QPushButton("Export CSV")
+        save_png_btn = QtWidgets.QPushButton("Save Plot")
+        log_btn = QtWidgets.QPushButton("Log Summary")
+        close_btn = QtWidgets.QPushButton("Close")
+        for b in (export_csv_btn, save_png_btn, log_btn, close_btn):
+            b.setStyleSheet("background:#3E6C8A; color:white; padding:6px 10px; border-radius:4px;")
+        btns.addStretch(); btns.addWidget(export_csv_btn); btns.addWidget(save_png_btn)
+        btns.addWidget(log_btn); btns.addWidget(close_btn)
+        vbox.addLayout(btns)
 
-        # ---- Storage -------------------------------------------------------
-        _curve_data = None  # dict: name -> {"exceed_pct", "levels_db", "lx"}
+        # ── Helpers ────────────────────────────────────────────────────────────
+        def weighted_ecdf_sorted(x, w):
+            x = np.asarray(x, float); w = np.asarray(w, float)
+            m = np.isfinite(x) & np.isfinite(w) & (w >= 0)
+            x = x[m]; w = w[m]
+            if x.size == 0:
+                return None
+            order = np.argsort(x, kind="mergesort")
+            xs = x[order]; ws = w[order]
+            cw = np.cumsum(ws)
+            tot = cw[-1]
+            if tot <= 0:
+                return None
+            ecdf_w = cw / tot
+            exceed = 100.0 * (1.0 - ecdf_w)
+            return xs, exceed, ws, cw
 
-        def _to_float(sig):
-            sig = np.asarray(sig)
-            if np.issubdtype(sig.dtype, np.integer):
-                mx = float(np.iinfo(sig.dtype).max) or 1.0
-                return sig.astype(np.float64) / mx
-            return sig.astype(np.float64)
+        def weighted_quantile(xs, ws_sorted, cw_sorted, q):
+            target = q * cw_sorted[-1]
+            idx = int(np.searchsorted(cw_sorted, target, side="left"))
+            idx = max(0, min(idx, len(xs) - 1))
+            return float(xs[idx])
 
-        def _parse_lx():
-            try:
-                vals = [float(v.strip()) for v in lx_edit.text().split(",") if v.strip()]
-                vals = [v for v in vals if 0 <= v <= 100]
-                return vals if vals else [10.0, 50.0, 90.0]
-            except Exception:
-                return [10.0, 50.0, 90.0]
-
-        def _collect_channels():
-            X = np.asarray(self.full_data)
-            if X.ndim == 1:
-                return [(X, "Ch 1")]
-            idxs = _selected_channel_indices(self)
-            names = getattr(self, "channel_names", [])
-            out = []
-            for ch in idxs:
-                label = names[ch] if ch < len(names) else f"Ch {ch+1}"
-                out.append((X[:, ch], label))
-            return out
-
-        def _window_levels(sig, win_s, ovl_pct, metric):
-            n = len(sig)
-            win = max(1, int(round(win_s * fs)))
-            if win > n:
-                win = n
-            hop = max(1, int(round(win * (1.0 - ovl_pct / 100.0))))
-            levels = []
-            for start in range(0, n - win + 1, hop):
-                seg = sig[start:start + win]
-                if metric == "Peak":
-                    val = float(np.max(np.abs(seg))) if seg.size else 0.0
-                else:
-                    val = float(np.sqrt(np.mean(seg ** 2))) if seg.size else 0.0
-                levels.append(val)
-            if not levels:
-                if metric == "Peak":
-                    val = float(np.max(np.abs(sig))) if sig.size else 0.0
-                else:
-                    val = float(np.sqrt(np.mean(sig ** 2))) if sig.size else 0.0
-                levels = [val]
-            levels = np.asarray(levels)
-            return 20.0 * np.log10(np.maximum(levels, 1e-12))
-
-        def _plot():
-            nonlocal _curve_data
-            try:
-                win_s = float(win_edit.text())
-                ovl_pct = float(ovl_edit.text())
-            except Exception:
-                QtWidgets.QMessageBox.warning(dlg, "Params", "Window/overlap must be numeric.")
-                return
-            if win_s <= 0:
-                QtWidgets.QMessageBox.warning(dlg, "Params", "Window must be > 0.")
-                return
-            ovl_pct = float(np.clip(ovl_pct, 0.0, 95.0))
-
-            metric = metric_cb.currentText()
-            lx_vals = _parse_lx()
-
-            channels = _collect_channels()
-            if not channels:
-                QtWidgets.QMessageBox.warning(dlg, "Channels", "No channels available.")
-                return
-
-            ax.clear()
-            ax.set_facecolor("#19232D")
-            ax.tick_params(colors="white")
-            for s in ax.spines.values():
-                s.set_color("white")
-
-            palettes = ["#33C3F0", "#6EEB83", "#FF5964", "#FFD166", "#C792EA", "#4DD0E1"]
-            _curve_data = {}
-            summary_lines = []
-
-            for idx, (sig, name) in enumerate(channels):
-                levels_db = _window_levels(_to_float(sig), win_s, ovl_pct, metric)
-                levels_sorted = np.sort(levels_db)[::-1]
-                exceed_pct = 100.0 * (np.arange(1, len(levels_sorted) + 1) / len(levels_sorted))
-
-                lx = {}
-                for l in lx_vals:
-                    lx[l] = float(np.percentile(levels_db, 100.0 - l))
-
-                color = palettes[idx % len(palettes)]
-                ax.plot(exceed_pct, levels_sorted, lw=2, color=color, label=name)
-
-                if annotate_cb.isChecked():
-                    for l in lx_vals:
-                        ax.scatter([l], [lx[l]], color=color, s=22, zorder=5)
-                        ax.text(l, lx[l], f" L{int(l)}", color=color, fontsize=8, va="bottom", ha="left")
-
-                summary = ", ".join([f"L{int(l)}={lx[l]:.2f} dB" for l in lx_vals])
-                summary_lines.append(f"{name}: {summary}")
-                _curve_data[name] = {
-                    "exceed_pct": exceed_pct,
-                    "levels_db": levels_sorted,
-                    "lx": lx,
-                }
-
-            ax.set_xlabel("Percent Exceedance (%)", color="white")
-            ax.set_ylabel("Level (dB re 1)", color="white")
+        def plot_exceedance(x_sorted, exceed_pct, Ls, units):
+            ax.clear(); ax.set_facecolor("#19232D"); ax.tick_params(colors="white")
+            for sp in ax.spines.values():
+                sp.set_color("white")
+            color = getattr(self, 'graph_color', '#33C3F0')
+            ax.plot(x_sorted, exceed_pct, lw=2.2, color=color)
+            L10, L50, L90 = Ls
+            for val, lab, ypos in [(L10, "L10", 70), (L50, "L50", 50), (L90, "L90", 30)]:
+                ax.axvline(val, color="gray", ls="--", lw=1)
+                ax.text(val, ypos, f"{lab}={val:.1f} {units}", color="white",
+                        rotation=90, va="center", ha="right", fontsize=9,
+                        bbox=dict(facecolor="#00000066", edgecolor="none", pad=2))
+            ax.set_xlabel(f"Level ({units})", color="white")
+            ax.set_ylabel("Exceedance (%)", color="white")
             ax.grid(True, ls="--", alpha=0.35, color="gray")
-            ax.legend(facecolor="#222", edgecolor="#444", labelcolor="white")
-            ax.set_xlim(0, 100)
             canvas.draw()
 
-            summary.setPlainText("\n".join(summary_lines))
+        def update_table(L10, L50, L90, aggregate_value, weighted=True):
+            labels = ["L10 (dB)", "L50 (dB)", "L90 (dB)", "Total duration (s)" if weighted else "N windows"]
+            values = [f"{L10:.2f}", f"{L50:.2f}", f"{L90:.2f}", f"{aggregate_value:.2f}" if weighted else str(int(aggregate_value))]
+            for r, (lab, val) in enumerate(zip(labels, values)):
+                table.setItem(r, 0, QtWidgets.QTableWidgetItem(lab))
+                table.setItem(r, 1, QtWidgets.QTableWidgetItem(val))
+            table.resizeColumnsToContents()
 
-        def _export_img():
-            if not _curve_data:
-                QtWidgets.QMessageBox.information(dlg, "Nothing to save", "Compute curves first.")
+        cur_units = "dB"
+        cur_points = None
+        cur_summary = None
+        raw_levels = None
+        raw_weights = None
+
+        # ── Compute ────────────────────────────────────────────────────────────
+        def compute():
+            nonlocal cur_units, cur_points, cur_summary, raw_levels, raw_weights
+            try:
+                if db_rb.isChecked():
+                    q = ("SELECT target_frequency, spl, start_time, end_time, window_length "
+                         "FROM spl_calculations")
+                    where = []; args = []
+                    fn = db_file_cb.currentText().strip()
+                    hc = db_curve_cb.currentText().strip()
+                    if fn:
+                        where.append("file_name=?"); args.append(fn)
+                    if hc:
+                        where.append("hydrophone_curve=?"); args.append(hc)
+                    if db_fmin.text().strip():
+                        where.append("target_frequency>=?"); args.append(float(db_fmin.text()))
+                    if db_fmax.text().strip():
+                        where.append("target_frequency<=?"); args.append(float(db_fmax.text()))
+                    if where:
+                        q += " WHERE " + " AND ".join(where)
+                    cur.execute(q, tuple(args))
+                    rows = cur.fetchall()
+                    if not rows:
+                        QtWidgets.QMessageBox.information(dlg, "No Data", "No rows matched in spl_calculations.")
+                        return
+                    levels, weights = [], []
+                    for _, spl, st, et, wl in rows:
+                        if spl is None:
+                            continue
+                        levels.append(float(spl))
+                        if weight_cb.isChecked():
+                            if wl is not None and wl > 0:
+                                weights.append(float(wl))
+                            elif (st is not None) and (et is not None):
+                                weights.append(float(et) - float(st))
+                            else:
+                                weights.append(1.0)
+                        else:
+                            weights.append(1.0)
+                    raw_levels = np.array(levels, float)
+                    raw_weights = np.array(weights, float)
+                    cur_units = "dB re 1 µPa"
+
+                else:
+                    if not ensure_wav_loaded():
+                        return
+                    fs = float(self.sample_rate)
+                    win_s = float(win_edit.text()); hop_s = float(hop_edit.text())
+                    w = max(1, int(win_s * fs)); h = max(1, int(hop_s * fs))
+                    x = self.full_data.astype(np.float64)
+                    if x.ndim > 1:
+                        x = x.mean(axis=1)
+                    if mode_cb.currentText().startswith("Band"):
+                        f1 = float(bl_f1.text()); f2 = float(bl_f2.text())
+                        if not (0 < f1 < f2 < fs / 2):
+                            QtWidgets.QMessageBox.warning(dlg, "Band Error", "Check band limits and Nyquist.")
+                            return
+                        sos = butter(6, [f1 / (fs / 2), f2 / (fs / 2)], btype="band", output="sos")
+                        x = sosfiltfilt(sos, x, axis=0)
+                    N = len(x)
+                    vals = []
+                    win = get_window("hann", w, fftbins=True)
+                    norm = np.sqrt((win ** 2).mean())
+                    for start in range(0, N - w + 1, h):
+                        seg = x[start:start + w]
+                        vrms = np.sqrt(np.mean((seg * win) ** 2)) / (norm if norm > 0 else 1.0)
+                        vals.append(20 * np.log10(max(vrms, 1e-12)))
+                    if not vals:
+                        QtWidgets.QMessageBox.information(dlg, "No Windows", "Increase duration or reduce window.")
+                        return
+                    raw_levels = np.array(vals, float)
+                    raw_weights = (np.full_like(raw_levels, hop_s) if weight_cb.isChecked()
+                                   else np.ones_like(raw_levels))
+                    cur_units = "dB (relative)"
+
+                ecdf = weighted_ecdf_sorted(raw_levels, raw_weights)
+                if ecdf is None:
+                    QtWidgets.QMessageBox.information(dlg, "No Data", "No usable samples.")
+                    return
+                x_sorted, exceed_pct, ws_sorted, cw_sorted = ecdf
+
+                L10 = weighted_quantile(x_sorted, ws_sorted, cw_sorted, q=0.90)
+                L50 = weighted_quantile(x_sorted, ws_sorted, cw_sorted, q=0.50)
+                L90 = weighted_quantile(x_sorted, ws_sorted, cw_sorted, q=0.10)
+                aggregate = float(np.sum(raw_weights)) if weight_cb.isChecked() else int(raw_levels.size)
+
+                plot_exceedance(x_sorted, exceed_pct, (L10, L50, L90), cur_units)
+                update_table(L10, L50, L90, aggregate, weighted=weight_cb.isChecked())
+
+                limits_txt = limit_edit.text().strip()
+                if limits_txt:
+                    try:
+                        limits = [float(ss) for ss in limits_txt.split(",") if ss.strip()]
+                    except Exception:
+                        limits = []
+                    for L in limits:
+                        ax.axvline(L, color="#AAAAAA", ls=":", lw=1)
+                        ex_at_L = float(np.interp(L, x_sorted, exceed_pct))
+                        if weight_cb.isChecked():
+                            exceeded_time = float(np.sum(raw_weights[raw_levels > L]))
+                            lbl = f">{L:.1f} dB for {ex_at_L:.1f}% (~{exceeded_time:.1f} s)"
+                        else:
+                            exceeded_n = int(np.sum(raw_levels > L))
+                            lbl = f">{L:.1f} dB for {ex_at_L:.1f}% ({exceeded_n} windows)"
+                        ax.text(L, 5, lbl, color="white", rotation=90, va="bottom", ha="right",
+                                fontsize=9, bbox=dict(facecolor="#00000066", edgecolor="none", pad=2))
+                    canvas.draw()
+
+                cur_points = (x_sorted, exceed_pct)
+                cur_summary = (L10, L50, L90, aggregate)
+
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Error", str(e))
+
+        def export_csv():
+            if cur_points is None:
+                QtWidgets.QMessageBox.information(dlg, "Nothing to Export", "Compute first.")
                 return
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Exceedance Plot", "", "PNG (*.png);;JPEG (*.jpg)")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Exceedance CSV", "", "CSV Files (*.csv)")
+            if not path:
+                return
+            xvals, ex = cur_points
+            with open(path, "w", newline="") as fh:
+                wr = csv.writer(fh); wr.writerow(["Level_dB", "Exceedance_%"])
+                for xi, ei in zip(xvals, ex):
+                    wr.writerow([xi, ei])
+            QtWidgets.QMessageBox.information(dlg, "Saved", f"CSV saved:\n{path}")
+        def save_png():
+            if cur_points is None:
+                QtWidgets.QMessageBox.information(dlg, "Nothing to Save", "Compute first.")
+                return
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Plot", "", "PNG Files (*.png);;JPEG Files (*.jpg)")
             if not path:
                 return
             fig.savefig(path, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight")
-
-        def _export_csv():
-            if not _curve_data:
-                QtWidgets.QMessageBox.information(dlg, "Nothing to export", "Compute curves first.")
+            QtWidgets.QMessageBox.information(dlg, "Saved", f"Plot saved:\n{path}")
+        def log_summary():
+            if cur_summary is None:
+                QtWidgets.QMessageBox.information(dlg, "Nothing to Log", "Compute first.")
                 return
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export Exceedance CSV", "", "CSV (*.csv)")
-            if not path:
-                return
-            names = list(_curve_data.keys())
-            base = _curve_data[names[0]]["exceed_pct"]
-            max_len = max(len(_curve_data[n]["levels_db"]) for n in names)
-            import csv
-            with open(path, "w", newline="") as fh:
-                w = csv.writer(fh)
-                w.writerow(["Exceedance_%"] + [f"{n}_Level_dB" for n in names])
-                for i in range(max_len):
-                    ex = base[i] if i < len(base) else ""
-                    row = [f"{ex:.6f}" if ex != "" else ""]
-                    for n in names:
-                        levels = _curve_data[n]["levels_db"]
-                        row.append(f"{levels[i]:.6f}" if i < len(levels) else "")
-                    w.writerow(row)
+            L10, L50, L90, aggregate = cur_summary
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS exceedance_summaries(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source TEXT,
+                        file_name TEXT,
+                        band_low REAL,
+                        band_high REAL,
+                        unit TEXT,
+                        L10 REAL, L50 REAL, L90 REAL,
+                        aggregate REAL,
+                        weighted INTEGER,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                if db_rb.isChecked():
+                    src = "DB"
+                    fn = db_file_cb.currentText() or ""
+                    b1 = float(db_fmin.text()) if db_fmin.text().strip() else None
+                    b2 = float(db_fmax.text()) if db_fmax.text().strip() else None
+                else:
+                    src = "WAV"
+                    fn = getattr(self, "file_name", "")
+                    if mode_cb.currentText().startswith("Band"):
+                        b1 = float(bl_f1.text()); b2 = float(bl_f2.text())
+                    else:
+                        b1 = b2 = None
+                cur.execute(
+                    "INSERT INTO exceedance_summaries(source,file_name,band_low,band_high,unit,L10,L50,L90,aggregate,weighted) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (src, fn, b1, b2, cur_units, float(L10), float(L50), float(L90),
+                     float(aggregate), int(weight_cb.isChecked()))
+                )
+                conn.commit()
+                QtWidgets.QMessageBox.information(dlg, "Logged", "Exceedance summary saved.")
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "DB Error", str(e))
 
-        compute_btn.clicked.connect(_plot)
-        save_img.clicked.connect(_export_img)
-        save_csv.clicked.connect(_export_csv)
+        compute_btn.clicked.connect(compute)
+        export_csv_btn.clicked.connect(export_csv)
+        save_png_btn.clicked.connect(save_png)
+        log_btn.clicked.connect(log_summary)
+        close_btn.clicked.connect(dlg.accept)
 
-        for w in (win_edit, ovl_edit, lx_edit):
-            w.editingFinished.connect(_plot)
-        metric_cb.currentIndexChanged.connect(_plot)
-        annotate_cb.stateChanged.connect(_plot)
-
-        _plot()
         dlg.exec_()
+        conn.close()
 
 
 
@@ -4453,7 +4979,6 @@ class MeasurementToolsMixin:
         from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         from scipy.signal import savgol_filter
-        from analyze_qt import DB_FILENAME
 
         # Dialog setup
         dlg = QtWidgets.QDialog(self)
@@ -5982,5 +6507,3 @@ class MeasurementToolsMixin:
         btn_keep.clicked.connect(keep_action)
         btn_discard.clicked.connect(dlg2.reject)
         dlg2.exec_()
-
-

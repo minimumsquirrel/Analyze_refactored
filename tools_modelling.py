@@ -66,7 +66,6 @@ class ModellingToolsMixin:
         # --- DB setup ----------------------------------------------------------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
                 return DB_FILENAME
             except Exception:
                 return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
@@ -2056,11 +2055,7 @@ class ModellingToolsMixin:
                 return DB_FILENAME  # noqa: F821
             except Exception:
                 pass
-            try:
-                from analyze_qt import DB_FILENAME as OLD
-                return OLD
-            except Exception:
-                return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
+            return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
 
         # ------------------------------------------------------------
         # Colors / palette
@@ -3909,7 +3904,6 @@ class ModellingToolsMixin:
         # -------- DB helpers (load saved CTDs) ----------
         def _db_path():
             try:
-                from analyze_qt import DB_FILENAME
                 return DB_FILENAME
             except Exception:
                 return os.path.join(os.path.abspath(os.getcwd()), "analyze_qt.db")
