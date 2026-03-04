@@ -8719,6 +8719,10 @@ class MainWindow(
                 self.recurrence_periodicity_popup()
             elif tool=="Dominant Frequencies Over Time":
                 self.analyze_dominant_frequencies_popup()
+            elif tool=="Exceedance Curves Lx":
+                self.exceedance_curves_popup()
+            elif tool=="LTSA + PSD Percentiles":
+                self.ltsa_psd_popup()
             
 
         elif category == "Modelling & Plotting Tools":
