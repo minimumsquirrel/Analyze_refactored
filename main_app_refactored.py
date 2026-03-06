@@ -133,6 +133,7 @@ from tools_measurement import MeasurementToolsMixin
 from tools_modelling import ModellingToolsMixin
 from tools_detection import DetectionToolsMixin
 from tools_database import DatabaseToolsMixin
+from tools_difar import DifarToolsMixin
 # ───────────────────────────────────────────────────────────────────────────
 
 
@@ -1038,6 +1039,7 @@ class MainWindow(
     ModellingToolsMixin,
     DetectionToolsMixin,
     DatabaseToolsMixin,
+    DifarToolsMixin,
 ):
 
 
@@ -3147,7 +3149,7 @@ class MainWindow(
             "Slope De-Clipper", "Find Peaks", "Short-Time RMS", "Crest Factor", "Octave-Band Analysis",
             "SNR Estimator", "LFM Analysis", "LFM Batch Analysis", "HFM Analysis", "Multi Frequency Analysis",
             "SPL Transmit Analysis", "Hydrophone Calibration", "Duty Cycle Analysis",
-            "Active Sonar", "Cepstrum Analysis", "Event Clustering"
+            "Active Sonar", "Cepstrum Analysis", "Event Clustering", "DIFAR Processing"
         ]
 
 
@@ -8610,7 +8612,8 @@ class MainWindow(
             self.tool_combo.addItems([
                 "Active Sonar",
                 "Cepstrum Analysis",
-                "Event Clustering"
+                "Event Clustering",
+                "DIFAR Processing"
             ])
 
         else:  # "Database Tools"
@@ -8746,6 +8749,8 @@ class MainWindow(
                 self.cepstrum_analysis()
             elif tool == "Event Clustering":
                 self.automated_event_clustering_popup()
+            elif tool == "DIFAR Processing":
+                self.difar_processing_popup()
             
 
         elif category == "Database Tools":
@@ -15309,7 +15314,7 @@ class MainWindow(
         dlg.exec_()
 
 
-    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows):
+    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, difar_overlay=None):
         if self.gps_map_view is None or folium is None:
             return
 
@@ -15428,6 +15433,83 @@ class MainWindow(
             folium.Marker([latf, lonf], popup=folium.Popup(popup_html, max_width=420),
                           icon=folium.Icon(color='orange', icon='tint', prefix='fa')).add_to(m)
 
+
+        # DIFAR overlay (sensor marker + decimated rays)
+        ov = difar_overlay or getattr(self, "_difar_chart_overlay", None)
+        if ov:
+            try:
+                slat = float(ov.get("sensor_lat")); slon = float(ov.get("sensor_lon"))
+
+                def _as_float_list(v):
+                    if v is None:
+                        return []
+                    try:
+                        return [float(x) for x in list(v)]
+                    except Exception:
+                        return []
+
+                lat2 = _as_float_list(ov.get("lat2"))
+                lon2 = _as_float_list(ov.get("lon2"))
+                tseries = _as_float_list(ov.get("time_s"))
+                bseries = _as_float_list(ov.get("bearing_true_deg"))
+
+                def _ray_color(i, n):
+                    if n <= 1:
+                        return '#3A86FF'
+                    u = float(i) / float(max(1, n - 1))
+                    # blue -> cyan -> green -> yellow -> red
+                    stops = [
+                        (0.00, (58, 134, 255)),
+                        (0.25, (0, 210, 255)),
+                        (0.50, (80, 220, 100)),
+                        (0.75, (255, 200, 0)),
+                        (1.00, (255, 80, 80)),
+                    ]
+                    for j in range(len(stops) - 1):
+                        a0, c0 = stops[j]
+                        a1, c1 = stops[j + 1]
+                        if u <= a1:
+                            w = (u - a0) / max(1e-12, (a1 - a0))
+                            r = int(c0[0] + (c1[0] - c0[0]) * w)
+                            g = int(c0[1] + (c1[1] - c0[1]) * w)
+                            b = int(c0[2] + (c1[2] - c0[2]) * w)
+                            return f'#{r:02X}{g:02X}{b:02X}'
+                    return '#FF5050'
+
+                latest_b = bseries[-1] if bseries else None
+                latest_t = tseries[-1] if tseries else None
+                if latest_b is not None:
+                    ang = float(latest_b % 360.0)
+                    popup_html = (
+                        f"<b>{str(ov.get('label', 'DIFAR Sensor'))}</b><br>"
+                        f"Latest bearing: <b>{ang:.1f}°</b>"
+                        + (f"<br>t={latest_t:.1f}s" if latest_t is not None else "")
+                        + f"<br>Rays: {len(lat2)}"
+                        + f"<br><svg width='120' height='120' viewBox='0 0 120 120'>"
+                        + f"<circle cx='60' cy='60' r='48' fill='none' stroke='#7A4CFA' stroke-width='2'/>"
+                        + f"<line x1='60' y1='60' x2='{60 + 42*math.sin(math.radians(ang)):.1f}' y2='{60 - 42*math.cos(math.radians(ang)):.1f}' stroke='#C77DFF' stroke-width='3'/>"
+                        + "<text x='60' y='16' text-anchor='middle' font-size='10'>N</text>"
+                        + "</svg>"
+                    )
+                else:
+                    popup_html = str(ov.get("label", "DIFAR Sensor"))
+
+                folium.Marker(
+                    [slat, slon],
+                    popup=folium.Popup(popup_html, max_width=360),
+                    icon=folium.Icon(color='purple', icon='bullseye', prefix='fa')
+                ).add_to(m)
+
+                for i, (la, lo) in enumerate(zip(lat2, lon2)):
+                    tip = f"DIFAR ray {i}"
+                    if i < len(tseries):
+                        tip += f"  t={float(tseries[i]):.1f}s"
+                    if i < len(bseries):
+                        tip += f"  bearing={float(bseries[i]):.1f}°"
+                    folium.PolyLine([(slat, slon), (la, lo)], color=_ray_color(i, len(lat2)), weight=2, opacity=0.9, tooltip=tip).add_to(m)
+            except Exception:
+                pass
+
         folium.LayerControl(collapsed=False).add_to(m)
         out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
         out.close()
@@ -15511,11 +15593,21 @@ class MainWindow(
             except Exception:
                 pass
 
+        difar_overlay = getattr(self, "_difar_chart_overlay", None)
+
+        if difar_overlay:
+            try:
+                all_lon.append(float(difar_overlay.get("sensor_lon"))); all_lat.append(float(difar_overlay.get("sensor_lat")))
+                all_lon.extend([float(v) for v in (difar_overlay.get("lon2") or [])])
+                all_lat.extend([float(v) for v in (difar_overlay.get("lat2") or [])])
+            except Exception:
+                pass
+
         use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             try:
-                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows)
+                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlay)
                 if hasattr(self, 'gps_map_stack'):
                     self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 if hasattr(self, 'gps_cursor_label'):
@@ -15562,6 +15654,54 @@ class MainWindow(
                                    symbolBrush=pg.mkBrush('#4DA3FF'), symbolPen=pg.mkPen('#1E3A5F', width=1),
                                    name=(f"Waypoint: {wp_name} ({scope})" if idx == 0 else None))
 
+
+            if difar_overlay:
+                try:
+                    slat = float(difar_overlay.get("sensor_lat")); slon = float(difar_overlay.get("sensor_lon"))
+                    self.gps_plot.plot([slon], [slat], pen=None, symbol='star', symbolSize=12,
+                                       symbolBrush=pg.mkBrush('#C77DFF'), symbolPen=pg.mkPen('#4B1D7A', width=1.2),
+                                       name="DIFAR Sensor")
+                    try:
+                        lat2 = [float(v) for v in list(difar_overlay.get("lat2"))] if difar_overlay.get("lat2") is not None else []
+                    except Exception:
+                        lat2 = []
+                    try:
+                        lon2 = [float(v) for v in list(difar_overlay.get("lon2"))] if difar_overlay.get("lon2") is not None else []
+                    except Exception:
+                        lon2 = []
+                    def _ray_rgb(i, n):
+                        if n <= 1:
+                            return (58, 134, 255)
+                        u = float(i) / float(max(1, n - 1))
+                        stops = [
+                            (0.00, (58, 134, 255)),
+                            (0.25, (0, 210, 255)),
+                            (0.50, (80, 220, 100)),
+                            (0.75, (255, 200, 0)),
+                            (1.00, (255, 80, 80)),
+                        ]
+                        for j in range(len(stops) - 1):
+                            a0, c0 = stops[j]
+                            a1, c1 = stops[j + 1]
+                            if u <= a1:
+                                w = (u - a0) / max(1e-12, (a1 - a0))
+                                return (
+                                    int(c0[0] + (c1[0] - c0[0]) * w),
+                                    int(c0[1] + (c1[1] - c0[1]) * w),
+                                    int(c0[2] + (c1[2] - c0[2]) * w),
+                                )
+                        return (255, 80, 80)
+
+                    for i, (la, lo) in enumerate(zip(lat2, lon2)):
+                        try:
+                            la = float(la); lo = float(lo)
+                        except Exception:
+                            continue
+                        self.gps_plot.plot([slon, lo], [slat, la], pen=pg.mkPen(_ray_rgb(i, len(lat2)), width=1.5),
+                                           name=("DIFAR Rays" if i == 0 else None))
+                except Exception:
+                    pass
+
             if all_lon and all_lat:
                 self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
                 self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
@@ -15571,8 +15711,9 @@ class MainWindow(
             return
 
         backend = 'Folium' if use_web_map else 'PyQtGraph'
+        difar_n = len((difar_overlay or {}).get('time_s', [])) if difar_overlay else 0
         self.gps_info_label.setText(
-            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}"
+            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}"
         )
 
 
