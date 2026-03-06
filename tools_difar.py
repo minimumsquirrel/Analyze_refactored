@@ -2,8 +2,9 @@
 """DIFAR tools mixin for MainWindow integration."""
 
 import os
+import json
 import sqlite3
-from datetime import timezone
+from datetime import timezone, datetime
 
 from PyQt5 import QtWidgets, QtCore
 
@@ -21,6 +22,30 @@ from difar_core import (
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
 
+    @staticmethod
+    def _ensure_difar_results_table(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                wav_path TEXT,
+                calibration_name TEXT,
+                start_time_utc TEXT,
+                omni_channel INTEGER,
+                x_channel INTEGER,
+                y_channel INTEGER,
+                z_channel INTEGER,
+                compass_path TEXT,
+                sensor_lat REAL,
+                sensor_lon REAL,
+                result_json TEXT
+            )
+            """
+        )
+        conn.commit()
+
     def difar_processing_popup(self):
         """Popup for calibration import and DIFAR processing run."""
         dlg = QtWidgets.QDialog(self)
@@ -33,7 +58,7 @@ class DifarToolsMixin:
             "DIFAR workflow:\n"
             "1) Import calibration CSV to DB (frequency,x,y,z,omni + phase columns).\n"
             "2) Select WAV + calibration + channel mapping + start UTC + optional compass CSV.\n"
-            "3) Run bearing extraction, optional CSV export, and optional Chart overlay."
+            "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
         )
         help_lbl.setWordWrap(True)
         layout.addWidget(help_lbl)
@@ -109,6 +134,10 @@ class DifarToolsMixin:
         show_on_chart_chk = QtWidgets.QCheckBox("Show DIFAR rays on Chart tab")
         show_on_chart_chk.setChecked(True)
         proc_form.addRow("", show_on_chart_chk)
+
+        save_db_chk = QtWidgets.QCheckBox("Save analyzed DIFAR output to database")
+        save_db_chk.setChecked(True)
+        proc_form.addRow("", save_db_chk)
 
         run_btn = QtWidgets.QPushButton("Run DIFAR Processing")
         proc_form.addRow("", run_btn)
@@ -253,6 +282,45 @@ class DifarToolsMixin:
                 out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                 if export_path:
                     out.appendPlainText(f"Saved CSV: {export_path}")
+
+                if save_db_chk.isChecked():
+                    serializable = {}
+                    for k, v in result.items():
+                        try:
+                            serializable[k] = [float(x) if hasattr(x, '__float__') else str(x) for x in list(v)]
+                        except Exception:
+                            serializable[k] = str(v)
+
+                    conn = sqlite3.connect(DB_FILENAME)
+                    self._ensure_difar_results_table(conn)
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        INSERT INTO difar_results (
+                            created_utc, wav_path, calibration_name, start_time_utc,
+                            omni_channel, x_channel, y_channel, z_channel,
+                            compass_path, sensor_lat, sensor_lon, result_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            datetime.now(timezone.utc).isoformat(),
+                            wav_path,
+                            cal_name,
+                            dt.isoformat(),
+                            int(omni_spin.value()) - 1,
+                            int(x_spin.value()) - 1,
+                            int(y_spin.value()) - 1,
+                            (None if z_spin.value() <= 0 else int(z_spin.value()) - 1),
+                            (compass_path or None),
+                            (float(lat_edit.text()) if lat_edit.text().strip() else None),
+                            (float(lon_edit.text()) if lon_edit.text().strip() else None),
+                            json.dumps(serializable),
+                        ),
+                    )
+                    run_id = cur.lastrowid
+                    conn.commit()
+                    conn.close()
+                    out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
 
                 lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
                 if lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result:

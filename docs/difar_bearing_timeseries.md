@@ -30,6 +30,8 @@ For each frame of audio:
 - `intensity_pressure_db_re_1_Pa` (if OMNI is calibrated)
 
 ## Import calibration CSV into database
+Processed DIFAR outputs can also be persisted to SQLite table `difar_results` from the popup.
+
 You can import calibration sets directly to SQLite using:
 - `import_difar_calibration_csv_to_db(db_path, csv_path, calibration_name)`
 - `load_difar_calibration_from_db(db_path, calibration_name)`

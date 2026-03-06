@@ -108,6 +108,7 @@ Add in three places:
 
 Follow existing app conventions:
 - Save generated artifacts into project subfolders (`analysis/` style flow).
+- Save each analyzed DIFAR run (metadata + time-series JSON) to database table `difar_results`.
 - Log summary metrics to database with method name `DIFAR Processing`.
 - Store minimal reproducibility metadata with exports:
   - wav start datetime (UTC)
