@@ -164,3 +164,13 @@ The DIFAR popup should expose:
 
 When rendering DIFAR rays on the Chart map, colour rays by time order
 (early blue to late red gradient) so temporal progression is visible on static maps.
+
+
+## 11) Project-scoped DIFAR ray persistence
+Persist rendered map rays in a dedicated table (for example `difar_map_rays`) with:
+- `project_id` (scope to active project)
+- `run_id` (optional link to `difar_results`)
+- sensor location + serialized ray arrays (`lat2/lon2/time/bearing`)
+
+Then expose a Chart-tab checkbox (e.g., **Show DIFAR Rays**) so users can toggle
+project DIFAR overlays on/off without re-running analysis.

@@ -14484,6 +14484,11 @@ class MainWindow(
         self.chart_interactive_mode_cb.toggled.connect(self._plot_selected_gps_tracks)
         sidebar.addWidget(self.chart_interactive_mode_cb)
 
+        self.chart_show_difar_cb = QtWidgets.QCheckBox("Show DIFAR Rays")
+        self.chart_show_difar_cb.setChecked(True)
+        self.chart_show_difar_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_show_difar_cb)
+
         sidebar.addWidget(QtWidgets.QLabel("Waypoints"))
         self.waypoint_list = QtWidgets.QListWidget()
         self.waypoint_list.setMinimumHeight(120)
@@ -15435,8 +15440,17 @@ class MainWindow(
 
 
         # DIFAR overlay (sensor marker + decimated rays)
-        ov = difar_overlay or getattr(self, "_difar_chart_overlay", None)
-        if ov:
+        overlays = []
+        if isinstance(difar_overlay, list):
+            overlays = [ov for ov in difar_overlay if isinstance(ov, dict)]
+        elif isinstance(difar_overlay, dict):
+            overlays = [difar_overlay]
+        else:
+            ov0 = getattr(self, "_difar_chart_overlay", None)
+            if isinstance(ov0, dict):
+                overlays = [ov0]
+
+        for ov in overlays:
             try:
                 slat = float(ov.get("sensor_lat")); slon = float(ov.get("sensor_lon"))
 
@@ -15551,6 +15565,83 @@ class MainWindow(
             return None
 
 
+    def _ensure_difar_rays_table(self):
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_map_rays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                project_id INTEGER,
+                run_id INTEGER,
+                label TEXT,
+                sensor_lat REAL,
+                sensor_lon REAL,
+                lat2_json TEXT,
+                lon2_json TEXT,
+                time_s_json TEXT,
+                bearing_true_deg_json TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_map_rays_project ON difar_map_rays(project_id, created_utc)")
+        conn.commit(); conn.close()
+
+    @staticmethod
+    def _decode_json_float_list(raw):
+        if raw in (None, ""):
+            return []
+        try:
+            vals = json.loads(raw)
+        except Exception:
+            return []
+        out = []
+        for v in (vals or []):
+            try:
+                out.append(float(v))
+            except Exception:
+                continue
+        return out
+
+    def _fetch_difar_overlays_for_chart(self):
+        pid = getattr(self, 'current_project_id', None)
+        self._ensure_difar_rays_table()
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, created_utc, label, sensor_lat, sensor_lon,
+                   lat2_json, lon2_json, time_s_json, bearing_true_deg_json
+            FROM difar_map_rays
+            WHERE (project_id IS NULL AND ? IS NULL) OR project_id = ?
+            ORDER BY created_utc ASC, id ASC
+            """,
+            (pid, pid),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        overlays = []
+        for rid, created_utc, label, slat, slon, lat2j, lon2j, timej, bearj in rows:
+            try:
+                sensor_lat = float(slat)
+                sensor_lon = float(slon)
+            except Exception:
+                continue
+            overlays.append({
+                "id": int(rid),
+                "created_utc": created_utc,
+                "label": label or f"DIFAR Rays {rid}",
+                "sensor_lat": sensor_lat,
+                "sensor_lon": sensor_lon,
+                "lat2": self._decode_json_float_list(lat2j),
+                "lon2": self._decode_json_float_list(lon2j),
+                "time_s": self._decode_json_float_list(timej),
+                "bearing_true_deg": self._decode_json_float_list(bearj),
+            })
+        return overlays
+
+
 
     def _plot_selected_gps_tracks(self):
         selected = [i.data(QtCore.Qt.UserRole) for i in self.gps_track_list.selectedItems()] if hasattr(self, 'gps_track_list') else []
@@ -15593,9 +15684,17 @@ class MainWindow(
             except Exception:
                 pass
 
-        difar_overlay = getattr(self, "_difar_chart_overlay", None)
+        difar_overlays = []
+        if not hasattr(self, 'chart_show_difar_cb') or self.chart_show_difar_cb.isChecked():
+            try:
+                difar_overlays.extend(self._fetch_difar_overlays_for_chart())
+            except Exception:
+                pass
+            transient = getattr(self, "_difar_chart_overlay", None)
+            if transient:
+                difar_overlays.append(transient)
 
-        if difar_overlay:
+        for difar_overlay in difar_overlays:
             try:
                 all_lon.append(float(difar_overlay.get("sensor_lon"))); all_lat.append(float(difar_overlay.get("sensor_lat")))
                 all_lon.extend([float(v) for v in (difar_overlay.get("lon2") or [])])
@@ -15607,7 +15706,7 @@ class MainWindow(
 
         if use_web_map:
             try:
-                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlay)
+                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlays)
                 if hasattr(self, 'gps_map_stack'):
                     self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 if hasattr(self, 'gps_cursor_label'):
@@ -15655,7 +15754,7 @@ class MainWindow(
                                    name=(f"Waypoint: {wp_name} ({scope})" if idx == 0 else None))
 
 
-            if difar_overlay:
+            for difar_overlay in difar_overlays:
                 try:
                     slat = float(difar_overlay.get("sensor_lat")); slon = float(difar_overlay.get("sensor_lon"))
                     self.gps_plot.plot([slon], [slat], pen=None, symbol='star', symbolSize=12,
@@ -15711,7 +15810,7 @@ class MainWindow(
             return
 
         backend = 'Folium' if use_web_map else 'PyQtGraph'
-        difar_n = len((difar_overlay or {}).get('time_s', [])) if difar_overlay else 0
+        difar_n = sum(len((ov or {}).get('time_s', [])) for ov in difar_overlays)
         self.gps_info_label.setText(
             f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}"
         )

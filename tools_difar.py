@@ -46,6 +46,29 @@ class DifarToolsMixin:
         )
         conn.commit()
 
+    @staticmethod
+    def _ensure_difar_rays_table(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_map_rays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                project_id INTEGER,
+                run_id INTEGER,
+                label TEXT,
+                sensor_lat REAL,
+                sensor_lon REAL,
+                lat2_json TEXT,
+                lon2_json TEXT,
+                time_s_json TEXT,
+                bearing_true_deg_json TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_map_rays_project ON difar_map_rays(project_id, created_utc)")
+        conn.commit()
+
     def _difar_calibration_import_dialog(self, parent=None, on_imported=None):
         dlg = QtWidgets.QDialog(parent or self)
         dlg.setWindowTitle("DIFAR Calibration Import")
@@ -356,6 +379,7 @@ class DifarToolsMixin:
                 if export_path:
                     out.appendPlainText(f"Saved CSV: {export_path}")
 
+                run_id = None
                 if save_db_chk.isChecked():
                     serializable = {}
                     for k, v in result.items():
@@ -409,6 +433,38 @@ class DifarToolsMixin:
                     out.appendPlainText(
                         f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
                     )
+
+                    project_id = getattr(self, "current_project_id", None)
+                    try:
+                        conn = sqlite3.connect(DB_FILENAME)
+                        self._ensure_difar_rays_table(conn)
+                        cur = conn.cursor()
+                        cur.execute(
+                            """
+                            INSERT INTO difar_map_rays (
+                                created_utc, project_id, run_id, label,
+                                sensor_lat, sensor_lon,
+                                lat2_json, lon2_json, time_s_json, bearing_true_deg_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                datetime.now(timezone.utc).isoformat(),
+                                (int(project_id) if project_id is not None else None),
+                                run_id,
+                                f"DIFAR: {os.path.basename(wav_path)}",
+                                float(lat),
+                                float(lon),
+                                json.dumps([float(v) for v in list(rays.get("lat2") or [])]),
+                                json.dumps([float(v) for v in list(rays.get("lon2") or [])]),
+                                json.dumps([float(v) for v in list(rays.get("time_s") or [])]),
+                                json.dumps([float(v) for v in list(rays.get("bearing_true_deg") or [])]),
+                            ),
+                        )
+                        ray_id = cur.lastrowid
+                        conn.commit(); conn.close()
+                        out.appendPlainText(f"Saved DIFAR rays to DB (difar_map_rays.id={ray_id}, project_id={project_id}).")
+                    except Exception as e:
+                        out.appendPlainText(f"Warning: could not save rays to DB: {e}")
 
                     if show_on_chart_chk.isChecked():
                         self._difar_chart_overlay = {

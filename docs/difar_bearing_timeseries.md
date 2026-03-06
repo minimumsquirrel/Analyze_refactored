@@ -109,3 +109,12 @@ paired left/right lines on straight tracks.
 The tool now includes **Resolve ±180° ambiguity by continuity** to select the
 orientation (bearing or bearing+180) that is most consistent with the previous
 frame.
+
+
+## Project-scoped ray storage and map visibility
+Processed DIFAR ray overlays are persisted in SQLite table `difar_map_rays`
+(project-scoped via `project_id`, plus optional `run_id` reference).
+
+In the Chart tab, **Show DIFAR Rays** controls whether saved DIFAR rays are rendered.
+When enabled, the map loads saved rays for the active project and draws sensor marker(s)
+plus time-coloured rays.
