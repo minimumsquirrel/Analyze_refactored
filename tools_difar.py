@@ -185,7 +185,7 @@ class DifarToolsMixin:
 
         pal = dlg.palette()
         gui_bg = pal.color(QtGui.QPalette.Window).name()
-        gui_panel_bg = pal.color(QtGui.QPalette.Base).name()
+        gui_panel_bg = gui_bg
         gui_fg = pal.color(QtGui.QPalette.WindowText).name()
         gui_grid = pal.color(QtGui.QPalette.Mid).name()
 
@@ -337,6 +337,10 @@ class DifarToolsMixin:
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
             cal_fig = Figure(figsize=(5.4, 7.0), facecolor=gui_bg)
             cal_canvas = FigureCanvas(cal_fig)
+            try:
+                cal_canvas.setStyleSheet(f"background-color: {gui_bg};")
+            except Exception:
+                pass
             cal_ax_motion = cal_fig.add_subplot(2, 1, 1)
             cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
             right_layout.addWidget(cal_canvas, stretch=1)
