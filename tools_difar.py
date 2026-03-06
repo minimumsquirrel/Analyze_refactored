@@ -32,7 +32,7 @@ class DifarToolsMixin:
         help_lbl = QtWidgets.QLabel(
             "DIFAR workflow:\n"
             "1) Import calibration CSV to DB (frequency,x,y,z,omni + phase columns).\n"
-            "2) Select WAV + calibration + start UTC + optional compass CSV.\n"
+            "2) Select WAV + calibration + channel mapping + start UTC + optional compass CSV.\n"
             "3) Run bearing extraction and optional CSV export."
         )
         help_lbl.setWordWrap(True)
@@ -71,6 +71,16 @@ class DifarToolsMixin:
 
         cal_combo = QtWidgets.QComboBox()
         proc_form.addRow("Calibration Set:", cal_combo)
+
+        # User channel mapping (1-based indices in UI)
+        ch_row = QtWidgets.QHBoxLayout()
+        omni_spin = QtWidgets.QSpinBox(); omni_spin.setMinimum(1); omni_spin.setMaximum(256); omni_spin.setValue(1); omni_spin.setPrefix("OMNI ")
+        x_spin = QtWidgets.QSpinBox(); x_spin.setMinimum(1); x_spin.setMaximum(256); x_spin.setValue(2); x_spin.setPrefix("X ")
+        y_spin = QtWidgets.QSpinBox(); y_spin.setMinimum(1); y_spin.setMaximum(256); y_spin.setValue(3); y_spin.setPrefix("Y ")
+        z_spin = QtWidgets.QSpinBox(); z_spin.setMinimum(0); z_spin.setMaximum(256); z_spin.setValue(4); z_spin.setSpecialValueText("Z unused")
+        ch_row.addWidget(omni_spin); ch_row.addWidget(x_spin); ch_row.addWidget(y_spin); ch_row.addWidget(z_spin)
+        ch_w = QtWidgets.QWidget(); ch_w.setLayout(ch_row)
+        proc_form.addRow("Channel Mapping:", ch_w)
 
         start_dt = QtWidgets.QDateTimeEdit()
         start_dt.setCalendarPopup(True)
@@ -211,7 +221,14 @@ class DifarToolsMixin:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
 
+                z_val = int(z_spin.value())
+                z_idx = None if z_val <= 0 else (z_val - 1)
+
                 cfg = DifarConfig(
+                    omni_channel=int(omni_spin.value()) - 1,
+                    x_channel=int(x_spin.value()) - 1,
+                    y_channel=int(y_spin.value()) - 1,
+                    z_channel=z_idx,
                     calibration=cal,
                     compass=compass,
                     start_time_utc=dt,
@@ -226,6 +243,9 @@ class DifarToolsMixin:
                 n_frames = len(result.get("time_s", []))
                 out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)}")
                 out.appendPlainText(f"Frames: {n_frames}")
+                out.appendPlainText(
+                    f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value()>0 else 'unused')}"
+                )
                 out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                 if export_path:
                     out.appendPlainText(f"Saved CSV: {export_path}")

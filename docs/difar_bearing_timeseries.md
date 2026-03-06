@@ -47,6 +47,15 @@ is pressure sensitivity, and phase columns are in degrees.
 The phase responses are used during processing to apply first-order
 phase correction (at the analysis band center) before bearing estimation.
 
+
+## Channel mapping in the app
+The DIFAR popup now lets you assign file channel numbers to `OMNI`, `X`, `Y`, and optional `Z`
+so files that are not in a fixed 1/2/3/4 order can still be processed correctly.
+
+- Mapping inputs are **1-based** in the UI (human-friendly).
+- Internally they are converted to 0-based indices for processing.
+- Set `Z` to `unused` when your file has no Z channel.
+
 ## Compass reference for true north
 Provide compass heading so bearings are map-referenced:
 - Heading is degrees clockwise from true north.

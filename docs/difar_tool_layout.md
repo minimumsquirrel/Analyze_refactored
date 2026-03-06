@@ -69,7 +69,7 @@ Then the mixin becomes UI + I/O glue only.
 Use a 3-panel workflow:
 
 1. **Input panel**
-   - Channel selector
+   - Channel selector with explicit channel-number mapping (OMNI/X/Y/Z)
    - Time window (start/end)
    - WAV start datetime (UTC, date + time) for GPS/ship-track alignment
    - Calibration CSV import (supports `x/y phase` + `z phase` file style) to DB
