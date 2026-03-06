@@ -4,6 +4,7 @@
 import os
 import json
 import sqlite3
+import inspect
 from datetime import timezone, datetime
 
 from PyQt5 import QtWidgets, QtCore
@@ -21,6 +22,43 @@ from difar_core import (
 
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
+
+
+    @staticmethod
+    def _make_difar_config_compat(**kwargs):
+        """Build DifarConfig while tolerating older/newer parameter names."""
+        params = set(inspect.signature(DifarConfig).parameters.keys())
+
+        # Name compatibility across evolving difar_core versions.
+        aliases = {
+            "bearing_offset_deg": ["bearing_offset"],
+            "min_directional_percentile": ["directional_gate_percentile", "directional_percentile_gate"],
+            "bearing_smooth_frames": ["smooth_frames", "bearing_smoothing_frames"],
+            "resolve_180_ambiguity": ["resolve_180", "resolve_left_right_ambiguity"],
+            "swap_xy": ["swap_channels_xy"],
+            "invert_x": ["flip_x"],
+            "invert_y": ["flip_y"],
+        }
+
+        selected = {}
+
+        # Direct-match keys first.
+        for k, v in kwargs.items():
+            if k in params:
+                selected[k] = v
+
+        # If canonical key isn't supported, try aliases accepted by this DifarConfig.
+        for canonical, alts in aliases.items():
+            if canonical in kwargs:
+                if canonical in params:
+                    selected[canonical] = kwargs[canonical]
+                else:
+                    for alt in alts:
+                        if alt in params:
+                            selected[alt] = kwargs[canonical]
+                            break
+
+        return DifarConfig(**selected)
 
     @staticmethod
     def _ensure_difar_results_table(conn):
@@ -343,7 +381,7 @@ class DifarToolsMixin:
                 z_val = int(z_spin.value())
                 z_idx = None if z_val <= 0 else (z_val - 1)
 
-                cfg = DifarConfig(
+                cfg = self._make_difar_config_compat(
                     omni_channel=int(omni_spin.value()) - 1,
                     x_channel=int(x_spin.value()) - 1,
                     y_channel=int(y_spin.value()) - 1,
