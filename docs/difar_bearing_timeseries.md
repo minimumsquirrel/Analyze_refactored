@@ -106,9 +106,12 @@ If bearings are consistently offset or unstable on straight tracks, use the DIFA
 A common DIFAR artifact is a ±180° directional ambiguity, which can appear as
 paired left/right lines on straight tracks.
 
-The tool now includes **Resolve ±180° ambiguity by continuity** to select the
-orientation (bearing or bearing+180) that is most consistent with the previous
-frame.
+The tool now includes **Resolve ±180° ambiguity** with optional
+**OMNI + phase disambiguation**.
+
+When enabled, the solver first uses an active-intensity proxy from
+phase-corrected OMNI×X and OMNI×Y to pick between bearing and bearing+180,
+then applies continuity against the previous frame as a fallback stabilizer.
 
 
 ## Project-scoped ray storage and map visibility

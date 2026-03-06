@@ -109,7 +109,10 @@ class DifarConfig:
         bearing_smooth_frames: Optional moving-average smoothing window in frames
             (applied circularly to sensor bearing).
         resolve_180_ambiguity: If True, choose between bearing and bearing+180
-            based on continuity with previous frame (helps avoid left/right flips).
+            using configured ambiguity rules.
+        use_omni_for_ambiguity: If True, use active-intensity proxy from
+            OMNI*X and OMNI*Y inside each frame to resolve ±180 before
+            continuity fallback.
     """
 
     omni_channel: int = 0
@@ -131,6 +134,7 @@ class DifarConfig:
     min_directional_percentile: float = 0.0
     bearing_smooth_frames: int = 1
     resolve_180_ambiguity: bool = True
+    use_omni_for_ambiguity: bool = False
 
 
 def _normalize_start_time_utc(start_time_utc: Optional[datetime]) -> Optional[datetime]:
@@ -453,6 +457,10 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         bearing_sensor_deg, conf = _weighted_circular_mean_deg(inst_theta, mag, eps=cfg.eps)
         bearing_sensor_deg = (bearing_sensor_deg + float(cfg.bearing_offset_deg)) % 360.0
         if bool(cfg.resolve_180_ambiguity):
+            if bool(cfg.use_omni_for_ambiguity):
+                bearing_sensor_deg = _resolve_180_by_omni_active_intensity(
+                    bearing_sensor_deg, om_f, x_f, y_f, eps=cfg.eps
+                )
             prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
             bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
 
@@ -763,3 +771,30 @@ def bearing_series_static_map_vectors(
         "time_s": t[idx],
         "bearing_true_deg": b[idx],
     }
+
+def _resolve_180_by_omni_active_intensity(
+    curr_deg: float,
+    omni_frame: np.ndarray,
+    x_frame: np.ndarray,
+    y_frame: np.ndarray,
+    eps: float = 1e-12,
+) -> float:
+    """Resolve ±180 using an active-intensity proxy from OMNI and particle motion.
+
+    Computes frame-wise components Ix=mean(omni*x), Iy=mean(omni*y), and
+    chooses between `curr_deg` and `curr_deg+180` that best matches the
+    resulting direction atan2(Iy, Ix). If intensity vector is too weak, keeps
+    current bearing unchanged.
+    """
+    ix = float(np.mean(omni_frame * x_frame))
+    iy = float(np.mean(omni_frame * y_frame))
+    mag = float(np.hypot(ix, iy))
+    if mag <= eps:
+        return float(curr_deg % 360.0)
+
+    intensity_dir = float((np.rad2deg(np.arctan2(iy, ix)) + 360.0) % 360.0)
+    alt = (float(curr_deg) + 180.0) % 360.0
+    d0 = _ang_diff_deg(curr_deg, intensity_dir)
+    d1 = _ang_diff_deg(alt, intensity_dir)
+    return float((curr_deg % 360.0) if d0 <= d1 else alt)
+

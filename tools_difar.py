@@ -183,11 +183,10 @@ class DifarToolsMixin:
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
-        pal = dlg.palette()
-        gui_bg = pal.color(QtGui.QPalette.Window).name()
-        gui_panel_bg = gui_bg
-        gui_fg = pal.color(QtGui.QPalette.WindowText).name()
-        gui_grid = pal.color(QtGui.QPalette.Mid).name()
+        gui_bg = "#19232d"
+        gui_panel_bg = "#19232d"
+        gui_fg = "#DDDDDD"
+        gui_grid = "#666666"
 
         content_row = QtWidgets.QHBoxLayout()
         layout.addLayout(content_row, stretch=1)
@@ -266,9 +265,13 @@ class DifarToolsMixin:
         smooth_spin = QtWidgets.QSpinBox(); smooth_spin.setRange(1, 99); smooth_spin.setValue(5)
         proc_form.addRow("Bearing Smooth Frames:", smooth_spin)
 
-        ambig_chk = QtWidgets.QCheckBox("Resolve ±180° ambiguity by continuity")
+        ambig_chk = QtWidgets.QCheckBox("Resolve ±180° ambiguity")
         ambig_chk.setChecked(True)
         proc_form.addRow("", ambig_chk)
+
+        omni_ambig_chk = QtWidgets.QCheckBox("Use OMNI + phase for ±180 disambiguation")
+        omni_ambig_chk.setChecked(True)
+        proc_form.addRow("", omni_ambig_chk)
 
         start_dt = QtWidgets.QDateTimeEdit()
         start_dt.setCalendarPopup(True)
@@ -335,10 +338,10 @@ class DifarToolsMixin:
         try:
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            cal_fig = Figure(figsize=(5.4, 7.0), facecolor=gui_bg)
+            cal_fig = Figure(figsize=(5.4, 7.0), facecolor="#19232d")
             cal_canvas = FigureCanvas(cal_fig)
             try:
-                cal_canvas.setStyleSheet(f"background-color: {gui_bg};")
+                cal_canvas.setStyleSheet("background-color: #19232d;")
             except Exception:
                 pass
             cal_ax_motion = cal_fig.add_subplot(2, 1, 1)
@@ -364,14 +367,14 @@ class DifarToolsMixin:
             return out_cols
 
         def _style_cal_axes(ax):
-            ax.set_facecolor(gui_panel_bg)
-            ax.grid(True, color=gui_grid, alpha=0.35)
-            ax.tick_params(colors=gui_fg)
+            ax.set_facecolor("#19232d")
+            ax.grid(True, alpha=0.25)
+            ax.tick_params(colors="#DDDDDD")
             for sp in ax.spines.values():
-                sp.set_color(gui_grid)
-            ax.xaxis.label.set_color(gui_fg)
-            ax.yaxis.label.set_color(gui_fg)
-            ax.title.set_color(gui_fg)
+                sp.set_color("#666666")
+            ax.xaxis.label.set_color("#DDDDDD")
+            ax.yaxis.label.set_color("#DDDDDD")
+            ax.title.set_color("#DDDDDD")
 
         def _update_calibration_plots(*_args):
             if cal_canvas is None or cal_fig is None:
@@ -412,13 +415,13 @@ class DifarToolsMixin:
             if plotted_motion:
                 cal_ax_motion.legend(loc="best", framealpha=0.35)
             else:
-                cal_ax_motion.text(0.5, 0.5, "No X/Y/Z data", ha="center", va="center", transform=cal_ax_motion.transAxes, color=gui_fg)
+                cal_ax_motion.text(0.5, 0.5, "No X/Y/Z data", ha="center", va="center", transform=cal_ax_motion.transAxes, color="#DDDDDD")
 
             if getattr(cal, "omni", None) is not None:
                 cal_ax_omni.plot(cal.omni.freq_hz, cal.omni.sensitivity_db, color=cols[3], linewidth=2.2, label="OMNI")
                 cal_ax_omni.legend(loc="best", framealpha=0.35)
             else:
-                cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color=gui_fg)
+                cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#DDDDDD")
 
             cal_fig.tight_layout(pad=1.2)
             cal_plot_status.setText(f"Calibration preview: {cal_name}")
@@ -523,6 +526,7 @@ class DifarToolsMixin:
                     min_directional_percentile=float(gate_spin.value()),
                     bearing_smooth_frames=int(smooth_spin.value()),
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
+                    use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
                 )
 
                 result = process_wav_to_bearing_time_series(
@@ -538,7 +542,7 @@ class DifarToolsMixin:
                     f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
                 )
                 out.appendPlainText(
-                    f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()}"
+                    f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
                 )
                 out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                 if export_path:
