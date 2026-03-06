@@ -150,3 +150,10 @@ For static maps (non-animated), show bearing-vs-time by:
 - Color gradient or periodic labels to encode time progression
 
 This keeps one map frame readable while still conveying time sequence.
+
+
+## Current implementation note
+
+The DIFAR popup should expose both:
+- Calibration import controls, and
+- Processing-run controls (WAV input, calibration selection, start UTC, optional compass CSV, optional output CSV, optional sensor lat/lon for static rays).
