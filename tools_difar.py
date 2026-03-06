@@ -7,7 +7,7 @@ import sqlite3
 import inspect
 from datetime import timezone, datetime
 
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 
 from shared import DB_FILENAME
 from difar_core import (
@@ -183,6 +183,12 @@ class DifarToolsMixin:
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
+        pal = dlg.palette()
+        gui_bg = pal.color(QtGui.QPalette.Window).name()
+        gui_panel_bg = pal.color(QtGui.QPalette.Base).name()
+        gui_fg = pal.color(QtGui.QPalette.WindowText).name()
+        gui_grid = pal.color(QtGui.QPalette.Mid).name()
+
         content_row = QtWidgets.QHBoxLayout()
         layout.addLayout(content_row, stretch=1)
 
@@ -329,7 +335,7 @@ class DifarToolsMixin:
         try:
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            cal_fig = Figure(figsize=(5.4, 7.0), facecolor="#111111")
+            cal_fig = Figure(figsize=(5.4, 7.0), facecolor=gui_bg)
             cal_canvas = FigureCanvas(cal_fig)
             cal_ax_motion = cal_fig.add_subplot(2, 1, 1)
             cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
@@ -354,14 +360,14 @@ class DifarToolsMixin:
             return out_cols
 
         def _style_cal_axes(ax):
-            ax.set_facecolor("#0D0D0D")
-            ax.grid(True, alpha=0.25)
-            ax.tick_params(colors="#DDDDDD")
+            ax.set_facecolor(gui_panel_bg)
+            ax.grid(True, color=gui_grid, alpha=0.35)
+            ax.tick_params(colors=gui_fg)
             for sp in ax.spines.values():
-                sp.set_color("#666666")
-            ax.xaxis.label.set_color("#DDDDDD")
-            ax.yaxis.label.set_color("#DDDDDD")
-            ax.title.set_color("#DDDDDD")
+                sp.set_color(gui_grid)
+            ax.xaxis.label.set_color(gui_fg)
+            ax.yaxis.label.set_color(gui_fg)
+            ax.title.set_color(gui_fg)
 
         def _update_calibration_plots(*_args):
             if cal_canvas is None or cal_fig is None:
@@ -402,13 +408,13 @@ class DifarToolsMixin:
             if plotted_motion:
                 cal_ax_motion.legend(loc="best", framealpha=0.35)
             else:
-                cal_ax_motion.text(0.5, 0.5, "No X/Y/Z data", ha="center", va="center", transform=cal_ax_motion.transAxes, color="#BBBBBB")
+                cal_ax_motion.text(0.5, 0.5, "No X/Y/Z data", ha="center", va="center", transform=cal_ax_motion.transAxes, color=gui_fg)
 
             if getattr(cal, "omni", None) is not None:
                 cal_ax_omni.plot(cal.omni.freq_hz, cal.omni.sensitivity_db, color=cols[3], linewidth=2.2, label="OMNI")
                 cal_ax_omni.legend(loc="best", framealpha=0.35)
             else:
-                cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#BBBBBB")
+                cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color=gui_fg)
 
             cal_fig.tight_layout(pad=1.2)
             cal_plot_status.setText(f"Calibration preview: {cal_name}")
