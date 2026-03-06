@@ -15453,6 +15453,29 @@ class MainWindow(
                 tseries = _as_float_list(ov.get("time_s"))
                 bseries = _as_float_list(ov.get("bearing_true_deg"))
 
+                def _ray_color(i, n):
+                    if n <= 1:
+                        return '#3A86FF'
+                    u = float(i) / float(max(1, n - 1))
+                    # blue -> cyan -> green -> yellow -> red
+                    stops = [
+                        (0.00, (58, 134, 255)),
+                        (0.25, (0, 210, 255)),
+                        (0.50, (80, 220, 100)),
+                        (0.75, (255, 200, 0)),
+                        (1.00, (255, 80, 80)),
+                    ]
+                    for j in range(len(stops) - 1):
+                        a0, c0 = stops[j]
+                        a1, c1 = stops[j + 1]
+                        if u <= a1:
+                            w = (u - a0) / max(1e-12, (a1 - a0))
+                            r = int(c0[0] + (c1[0] - c0[0]) * w)
+                            g = int(c0[1] + (c1[1] - c0[1]) * w)
+                            b = int(c0[2] + (c1[2] - c0[2]) * w)
+                            return f'#{r:02X}{g:02X}{b:02X}'
+                    return '#FF5050'
+
                 latest_b = bseries[-1] if bseries else None
                 latest_t = tseries[-1] if tseries else None
                 if latest_b is not None:
@@ -15483,7 +15506,7 @@ class MainWindow(
                         tip += f"  t={float(tseries[i]):.1f}s"
                     if i < len(bseries):
                         tip += f"  bearing={float(bseries[i]):.1f}°"
-                    folium.PolyLine([(slat, slon), (la, lo)], color='#C77DFF', weight=2, opacity=0.9, tooltip=tip).add_to(m)
+                    folium.PolyLine([(slat, slon), (la, lo)], color=_ray_color(i, len(lat2)), weight=2, opacity=0.9, tooltip=tip).add_to(m)
             except Exception:
                 pass
 
@@ -15646,12 +15669,35 @@ class MainWindow(
                         lon2 = [float(v) for v in list(difar_overlay.get("lon2"))] if difar_overlay.get("lon2") is not None else []
                     except Exception:
                         lon2 = []
+                    def _ray_rgb(i, n):
+                        if n <= 1:
+                            return (58, 134, 255)
+                        u = float(i) / float(max(1, n - 1))
+                        stops = [
+                            (0.00, (58, 134, 255)),
+                            (0.25, (0, 210, 255)),
+                            (0.50, (80, 220, 100)),
+                            (0.75, (255, 200, 0)),
+                            (1.00, (255, 80, 80)),
+                        ]
+                        for j in range(len(stops) - 1):
+                            a0, c0 = stops[j]
+                            a1, c1 = stops[j + 1]
+                            if u <= a1:
+                                w = (u - a0) / max(1e-12, (a1 - a0))
+                                return (
+                                    int(c0[0] + (c1[0] - c0[0]) * w),
+                                    int(c0[1] + (c1[1] - c0[1]) * w),
+                                    int(c0[2] + (c1[2] - c0[2]) * w),
+                                )
+                        return (255, 80, 80)
+
                     for i, (la, lo) in enumerate(zip(lat2, lon2)):
                         try:
                             la = float(la); lo = float(lo)
                         except Exception:
                             continue
-                        self.gps_plot.plot([slon, lo], [slat, la], pen=pg.mkPen('#C77DFF', width=1.5),
+                        self.gps_plot.plot([slon, lo], [slat, la], pen=pg.mkPen(_ray_rgb(i, len(lat2)), width=1.5),
                                            name=("DIFAR Rays" if i == 0 else None))
                 except Exception:
                     pass

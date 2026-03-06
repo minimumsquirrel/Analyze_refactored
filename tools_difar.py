@@ -46,6 +46,74 @@ class DifarToolsMixin:
         )
         conn.commit()
 
+    def _difar_calibration_import_dialog(self, parent=None, on_imported=None):
+        dlg = QtWidgets.QDialog(parent or self)
+        dlg.setWindowTitle("DIFAR Calibration Import")
+        dlg.resize(620, 220)
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        form = QtWidgets.QFormLayout()
+        cal_name_edit = QtWidgets.QLineEdit()
+        cal_name_edit.setPlaceholderText("e.g., DIFAR_SN123_2026-01")
+        form.addRow("Calibration Name:", cal_name_edit)
+
+        cal_file_edit = QtWidgets.QLineEdit()
+        cal_browse_btn = QtWidgets.QPushButton("Browse CSV/TSV")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(cal_file_edit)
+        row.addWidget(cal_browse_btn)
+        row_w = QtWidgets.QWidget()
+        row_w.setLayout(row)
+        form.addRow("Calibration File:", row_w)
+
+        lay.addLayout(form)
+
+        out = QtWidgets.QPlainTextEdit()
+        out.setReadOnly(True)
+        out.setMaximumHeight(70)
+        lay.addWidget(out)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        import_btn = QtWidgets.QPushButton("Import")
+        close_btn = QtWidgets.QPushButton("Close")
+        btn_row.addWidget(import_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        def _browse():
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                dlg,
+                "Select DIFAR Calibration CSV",
+                "",
+                "CSV/TSV Files (*.csv *.tsv *.txt);;All Files (*)",
+            )
+            if path:
+                cal_file_edit.setText(path)
+
+        def _import():
+            name = cal_name_edit.text().strip()
+            path = cal_file_edit.text().strip()
+            if not name:
+                QtWidgets.QMessageBox.warning(dlg, "Missing Name", "Enter a calibration name.")
+                return
+            if not path or not os.path.isfile(path):
+                QtWidgets.QMessageBox.warning(dlg, "Missing File", "Select a valid calibration CSV/TSV file.")
+                return
+            try:
+                n = import_difar_calibration_csv_to_db(DB_FILENAME, path, name)
+                out.appendPlainText(f"Imported calibration '{name}' with {n} rows.")
+                if callable(on_imported):
+                    on_imported(name)
+            except Exception as e:
+                out.appendPlainText(f"Import failed: {e}")
+                QtWidgets.QMessageBox.critical(dlg, "Import Failed", str(e))
+
+        cal_browse_btn.clicked.connect(_browse)
+        import_btn.clicked.connect(_import)
+        close_btn.clicked.connect(dlg.accept)
+        dlg.exec_()
+
     def difar_processing_popup(self):
         """Popup for calibration import and DIFAR processing run."""
         dlg = QtWidgets.QDialog(self)
@@ -56,48 +124,43 @@ class DifarToolsMixin:
 
         help_lbl = QtWidgets.QLabel(
             "DIFAR workflow:\n"
-            "1) Import calibration CSV to DB (frequency,x,y,z,omni + phase columns).\n"
-            "2) Select WAV + calibration + channel mapping + start UTC + optional compass CSV.\n"
+            "1) Use Calibration Import button to add/update calibration sets.\n"
+            "2) Use loaded WAV automatically (or choose one when none loaded), set mapping/start UTC/compass.\n"
             "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
         )
         help_lbl.setWordWrap(True)
         layout.addWidget(help_lbl)
 
-        # --- Calibration import panel ---
-        import_box = QtWidgets.QGroupBox("Calibration Import")
-        import_form = QtWidgets.QFormLayout(import_box)
+        import_row = QtWidgets.QHBoxLayout()
+        import_btn = QtWidgets.QPushButton("Calibration Import...")
+        import_row.addWidget(import_btn)
+        import_row.addStretch(1)
+        layout.addLayout(import_row)
 
-        cal_name_edit = QtWidgets.QLineEdit()
-        cal_name_edit.setPlaceholderText("e.g., DIFAR_SN123_2026-01")
-        import_form.addRow("Calibration Name:", cal_name_edit)
-
-        cal_file_edit = QtWidgets.QLineEdit()
-        cal_browse_btn = QtWidgets.QPushButton("Browse CSV")
-        cal_file_row = QtWidgets.QHBoxLayout()
-        cal_file_row.addWidget(cal_file_edit)
-        cal_file_row.addWidget(cal_browse_btn)
-        cal_file_w = QtWidgets.QWidget(); cal_file_w.setLayout(cal_file_row)
-        import_form.addRow("Calibration CSV:", cal_file_w)
-
-        import_btn = QtWidgets.QPushButton("Import Calibration to DB")
-        import_form.addRow("", import_btn)
-
-        layout.addWidget(import_box)
-
-        # --- Processing panel ---
         proc_box = QtWidgets.QGroupBox("Processing Run")
         proc_form = QtWidgets.QFormLayout(proc_box)
 
+        loaded_wav = getattr(self, "current_file_path", None)
+        loaded_wav = loaded_wav if (loaded_wav and os.path.isfile(loaded_wav)) else None
+
         wav_edit = QtWidgets.QLineEdit()
         wav_browse = QtWidgets.QPushButton("Browse WAV")
-        wav_row = QtWidgets.QHBoxLayout(); wav_row.addWidget(wav_edit); wav_row.addWidget(wav_browse)
-        wav_w = QtWidgets.QWidget(); wav_w.setLayout(wav_row)
-        proc_form.addRow("Input WAV:", wav_w)
+        if loaded_wav:
+            wav_edit.setText(loaded_wav)
+            wav_info = QtWidgets.QLabel(f"Using loaded WAV: {os.path.basename(loaded_wav)}")
+            wav_info.setToolTip(loaded_wav)
+            proc_form.addRow("Input WAV:", wav_info)
+        else:
+            wav_row = QtWidgets.QHBoxLayout()
+            wav_row.addWidget(wav_edit)
+            wav_row.addWidget(wav_browse)
+            wav_w = QtWidgets.QWidget()
+            wav_w.setLayout(wav_row)
+            proc_form.addRow("Input WAV:", wav_w)
 
         cal_combo = QtWidgets.QComboBox()
         proc_form.addRow("Calibration Set:", cal_combo)
 
-        # User channel mapping (1-based indices in UI)
         ch_row = QtWidgets.QHBoxLayout()
         omni_spin = QtWidgets.QSpinBox(); omni_spin.setMinimum(1); omni_spin.setMaximum(256); omni_spin.setValue(1); omni_spin.setPrefix("OMNI ")
         x_spin = QtWidgets.QSpinBox(); x_spin.setMinimum(1); x_spin.setMaximum(256); x_spin.setValue(2); x_spin.setPrefix("X ")
@@ -171,22 +234,12 @@ class DifarToolsMixin:
                 if idx >= 0:
                     cal_combo.setCurrentIndex(idx)
 
-        def _browse_cal_csv():
-            path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                dlg,
-                "Select DIFAR Calibration CSV",
-                "",
-                "CSV/TSV Files (*.csv *.tsv *.txt);;All Files (*)"
-            )
-            if path:
-                cal_file_edit.setText(path)
-
         def _browse_wav():
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 dlg,
                 "Select DIFAR WAV",
                 "",
-                "WAV Files (*.wav);;All Files (*)"
+                "WAV Files (*.wav);;All Files (*)",
             )
             if path:
                 wav_edit.setText(path)
@@ -196,7 +249,7 @@ class DifarToolsMixin:
                 dlg,
                 "Select Compass CSV",
                 "",
-                "CSV/TSV Files (*.csv *.tsv *.txt);;All Files (*)"
+                "CSV/TSV Files (*.csv *.tsv *.txt);;All Files (*)",
             )
             if path:
                 compass_edit.setText(path)
@@ -206,30 +259,19 @@ class DifarToolsMixin:
                 dlg,
                 "Save DIFAR Output CSV",
                 "difar_bearing_timeseries.csv",
-                "CSV Files (*.csv)"
+                "CSV Files (*.csv)",
             )
             if path:
                 export_edit.setText(path)
 
-        def _import_calibration():
-            name = cal_name_edit.text().strip()
-            path = cal_file_edit.text().strip()
-            if not name:
-                QtWidgets.QMessageBox.warning(dlg, "Missing Name", "Enter a calibration name.")
-                return
-            if not path or not os.path.isfile(path):
-                QtWidgets.QMessageBox.warning(dlg, "Missing File", "Select a valid calibration CSV/TSV file.")
-                return
-            try:
-                n = import_difar_calibration_csv_to_db(DB_FILENAME, path, name)
-                out.appendPlainText(f"Imported calibration '{name}' with {n} rows.")
-                _refresh_calibration_list(select_name=name)
-            except Exception as e:
-                out.appendPlainText(f"Import failed: {e}")
-                QtWidgets.QMessageBox.critical(dlg, "Import Failed", str(e))
+        def _open_cal_import():
+            self._difar_calibration_import_dialog(
+                dlg,
+                on_imported=lambda nm: _refresh_calibration_list(select_name=nm),
+            )
 
         def _run_processing():
-            wav_path = wav_edit.text().strip()
+            wav_path = (loaded_wav or "").strip() or wav_edit.text().strip()
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
             compass_path = compass_edit.text().strip()
             export_path = export_edit.text().strip() or None
@@ -277,7 +319,7 @@ class DifarToolsMixin:
                 out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)}")
                 out.appendPlainText(f"Frames: {n_frames}")
                 out.appendPlainText(
-                    f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value()>0 else 'unused')}"
+                    f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
                 )
                 out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                 if export_path:
@@ -287,7 +329,7 @@ class DifarToolsMixin:
                     serializable = {}
                     for k, v in result.items():
                         try:
-                            serializable[k] = [float(x) if hasattr(x, '__float__') else str(x) for x in list(v)]
+                            serializable[k] = [float(x) if hasattr(x, "__float__") else str(x) for x in list(v)]
                         except Exception:
                             serializable[k] = str(v)
 
@@ -324,7 +366,8 @@ class DifarToolsMixin:
 
                 lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
                 if lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result:
-                    lat = float(lat_txt); lon = float(lon_txt)
+                    lat = float(lat_txt)
+                    lon = float(lon_txt)
                     rays = bearing_series_static_map_vectors(
                         sensor_lat=lat,
                         sensor_lon=lon,
@@ -332,7 +375,9 @@ class DifarToolsMixin:
                         time_s=result["time_s"],
                     )
                     out.appendPlainText(f"Static map rays prepared: {len(rays['time_s'])}")
-                    out.appendPlainText(f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}")
+                    out.appendPlainText(
+                        f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
+                    )
 
                     if show_on_chart_chk.isChecked():
                         self._difar_chart_overlay = {
@@ -355,11 +400,10 @@ class DifarToolsMixin:
                 out.appendPlainText(f"Run failed: {e}")
                 QtWidgets.QMessageBox.critical(dlg, "Run Failed", str(e))
 
-        cal_browse_btn.clicked.connect(_browse_cal_csv)
+        import_btn.clicked.connect(_open_cal_import)
         wav_browse.clicked.connect(_browse_wav)
         compass_browse.clicked.connect(_browse_compass)
         export_browse.clicked.connect(_browse_export)
-        import_btn.clicked.connect(_import_calibration)
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
 

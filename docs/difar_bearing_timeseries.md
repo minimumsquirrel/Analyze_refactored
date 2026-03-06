@@ -71,13 +71,14 @@ including **date and time**.
 A static map cannot animate time directly, so a practical approach is:
 1. Plot the sensor location marker.
 2. Draw decimated bearing vectors from sensor location.
-3. Encode time by color gradient or by sampling labels (e.g., every 1 min).
+3. Encode time by color gradient (early blue → late red) or by sampling labels (e.g., every 1 min).
 
 Use `bearing_series_static_map_vectors(...)` to compute vector endpoints for
 this display.
 
-In the app popup, enable **Display DIFAR on Chart map (sensor + rays)** to push these rays
-onto the existing Chart map overlay immediately after processing.
+In the app popup, use **Calibration Import...** for calibration files, then enable
+**Display DIFAR on Chart map (sensor + rays)** to push these rays onto the existing
+Chart map overlay immediately after processing.
 
 On Folium maps, click the DIFAR buoy marker to open a target-bearing popup
 showing latest bearing and a compact bearing dial.

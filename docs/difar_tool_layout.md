@@ -155,6 +155,12 @@ This keeps one map frame readable while still conveying time sequence.
 
 ## Current implementation note
 
-The DIFAR popup should expose both:
-- Calibration import controls, and
-- Processing-run controls (WAV input, calibration selection, start UTC, optional compass CSV, optional output CSV, optional sensor lat/lon for static rays, optional "Display DIFAR on Chart map (sensor + rays)").
+The DIFAR popup should expose:
+- A **Calibration Import...** button that opens a dedicated import dialog, and
+- Processing-run controls (auto-use currently loaded WAV when available, calibration selection, start UTC, optional compass CSV, optional output CSV, optional sensor lat/lon for static rays, optional "Display DIFAR on Chart map (sensor + rays)").
+
+
+## 10) Ray colour by time
+
+When rendering DIFAR rays on the Chart map, colour rays by time order
+(early blue to late red gradient) so temporal progression is visible on static maps.
