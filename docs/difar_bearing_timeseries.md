@@ -34,11 +34,18 @@ You can import calibration sets directly to SQLite using:
 - `import_difar_calibration_csv_to_db(db_path, csv_path, calibration_name)`
 - `load_difar_calibration_from_db(db_path, calibration_name)`
 
-Expected CSV columns:
-- `frequency, x, y, z, omni`
+Expected CSV columns (either style):
+- `frequency, x, y, z, omni, x_phase, y_phase, z_phase, omni_phase`
+- `frequency, x, y, z, omni, x/y phase, z phase`
 
-Where `x/y/z` are particle-motion sensitivities (dB re 1V/m/s), and `omni`
-is pressure sensitivity.
+For your file style, `x/y phase` is applied to both X and Y channels,
+`z phase` is applied to Z, and OMNI phase defaults to `0 deg` if not present.
+
+`x/y/z` are particle-motion sensitivities (dB re 1V/m/s), `omni`
+is pressure sensitivity, and phase columns are in degrees.
+
+The phase responses are used during processing to apply first-order
+phase correction (at the analysis band center) before bearing estimation.
 
 ## Compass reference for true north
 Provide compass heading so bearings are map-referenced:

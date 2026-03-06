@@ -21,7 +21,7 @@ class DifarToolsMixin:
 
         help_lbl = QtWidgets.QLabel(
             "DIFAR workflow:\n"
-            "1) Import calibration CSV to DB (frequency,x,y,z,omni).\n"
+            "1) Import calibration CSV to DB (supports frequency,x,y,z,omni,x/y phase,z phase).\n"
             "2) Set WAV start UTC datetime + compass heading/time-series.\n"
             "3) Compute bearing time-series and render static-map rays from sensor marker."
         )

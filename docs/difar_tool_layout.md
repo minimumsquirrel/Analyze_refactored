@@ -72,7 +72,7 @@ Use a 3-panel workflow:
    - Channel selector
    - Time window (start/end)
    - WAV start datetime (UTC, date + time) for GPS/ship-track alignment
-   - Calibration CSV import (columns: frequency, x, y, z, omni) to DB
+   - Calibration CSV import (supports `x/y phase` + `z phase` file style) to DB
    - Compass import (constant heading or heading vs time)
    - Preset picker (e.g., Low-Frequency / Broadband)
 

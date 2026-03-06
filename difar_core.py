@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Literal
 import csv
 import json
+import re
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import soundfile as sf
 from scipy.interpolate import interp1d
-from scipy.signal import butter, sosfiltfilt
+from scipy.signal import butter, sosfiltfilt, hilbert
 
 
 CalibrationUnit = Literal["V_per_mps", "V_per_uPa", "V_per_Pa"]
@@ -34,6 +35,7 @@ class ChannelCalibration:
     freq_hz: np.ndarray
     sensitivity_db: np.ndarray
     unit: CalibrationUnit
+    phase_response_deg: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -160,6 +162,40 @@ def _sensitivity_linear_at(cal: ChannelCalibration, f_hz: float) -> float:
     return 10.0 ** (sens_db / 20.0)
 
 
+def _phase_deg_at(cal: ChannelCalibration, f_hz: float) -> float:
+    """Interpolate phase response at frequency; returns 0 when absent."""
+    if cal.phase_response_deg is None:
+        return 0.0
+    ph = np.asarray(cal.phase_response_deg, dtype=float)
+    if ph.size == 0:
+        return 0.0
+    if cal.freq_hz.size != ph.size:
+        raise ValueError("Calibration freq_hz and phase_response_deg must have same length.")
+    interp = interp1d(cal.freq_hz, ph, kind="linear", fill_value="extrapolate")
+    return float(interp(f_hz))
+
+
+def _apply_phase_correction(
+    x_physical: np.ndarray,
+    fs: float,
+    bandpass_hz: Optional[Tuple[float, float]],
+    cal: Optional[ChannelCalibration],
+) -> np.ndarray:
+    """Apply first-order phase correction using calibration phase at band center."""
+    if cal is None:
+        return x_physical
+    if bandpass_hz is None:
+        center_hz = fs * 0.25
+    else:
+        center_hz = 0.5 * (float(bandpass_hz[0]) + float(bandpass_hz[1]))
+    ph_deg = _phase_deg_at(cal, center_hz)
+    if abs(ph_deg) < 1e-12:
+        return x_physical
+    xa = hilbert(x_physical)
+    corrected = xa * np.exp(-1j * np.deg2rad(ph_deg))
+    return np.real(corrected)
+
+
 def _calibrate_channel_volts_to_physical(
     x_volts: np.ndarray,
     fs: float,
@@ -212,10 +248,13 @@ def load_difar_calibration_json(json_path: str) -> DifarCalibration:
         arr = np.asarray(points, dtype=float)
         if arr.ndim != 2 or arr.shape[1] != 2:
             raise ValueError(f"Invalid calibration points format for '{name}'.")
+        phase = block.get("phase_deg")
+        phase_arr = None if phase is None else np.asarray(phase, dtype=float)
         return ChannelCalibration(
             freq_hz=arr[:, 0],
             sensitivity_db=arr[:, 1],
             unit=block.get("unit", "V_per_mps"),
+            phase_response_deg=phase_arr,
         )
 
     return DifarCalibration(
@@ -302,6 +341,13 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         y_ch = _calibrate_channel_volts_to_physical(y_ch, fs, cfg.bandpass_hz, cal.y)
         if z_ch is not None:
             z_ch = _calibrate_channel_volts_to_physical(z_ch, fs, cfg.bandpass_hz, cal.z)
+
+        # Apply phase correction using calibration phase response at band center
+        omni = _apply_phase_correction(omni, fs, cfg.bandpass_hz, cal.omni)
+        x_ch = _apply_phase_correction(x_ch, fs, cfg.bandpass_hz, cal.x)
+        y_ch = _apply_phase_correction(y_ch, fs, cfg.bandpass_hz, cal.y)
+        if z_ch is not None:
+            z_ch = _apply_phase_correction(z_ch, fs, cfg.bandpass_hz, cal.z)
 
     frame_n = max(1, int(round(cfg.frame_seconds * fs)))
     hop_n = max(1, int(round(cfg.hop_seconds * fs)))
@@ -403,31 +449,68 @@ def import_difar_calibration_csv_to_db(
 ) -> int:
     """Import DIFAR calibration CSV to SQLite.
 
-    CSV must contain columns: frequency, x, y, z, omni.
-    Values are interpreted as dB sensitivities for each channel.
+    Accepts either of these CSV shapes:
+      1) frequency, x, y, z, omni, x_phase, y_phase, z_phase, omni_phase
+      2) frequency, x, y, z, omni, x/y phase, z phase
+
+    In shape (2), x/y phase is applied to both x and y. Missing omni phase is
+    treated as 0 deg.
 
     Returns number of imported rows.
     """
     import sqlite3
 
+    def _canon(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(name).strip().lower())
+
     rows = []
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         r = csv.DictReader(f)
-        needed = {"frequency", "x", "y", "z", "omni"}
-        fields = {c.strip().lower() for c in (r.fieldnames or [])}
-        if not needed.issubset(fields):
-            raise ValueError("Calibration CSV must include columns: frequency, x, y, z, omni")
+        raw_fields = r.fieldnames or []
+        canon_to_raw = {_canon(c): c for c in raw_fields}
+
+        # Required amplitude fields
+        required = ["frequency", "x", "y", "z", "omni"]
+        for req in required:
+            if req not in canon_to_raw:
+                raise ValueError(
+                    "Calibration CSV must include frequency, x, y, z, omni columns."
+                )
+
+        # Phase aliases
+        x_phase_key = (
+            canon_to_raw.get("xphase")
+            or canon_to_raw.get("xyphase")
+            or canon_to_raw.get("xyphase")
+        )
+        y_phase_key = canon_to_raw.get("yphase")
+        z_phase_key = canon_to_raw.get("zphase")
+        omni_phase_key = canon_to_raw.get("omniphase")
+
+        if x_phase_key is None and y_phase_key is None and z_phase_key is None and omni_phase_key is None:
+            raise ValueError(
+                "Calibration CSV must include phase columns. Supported: "
+                "x_phase/y_phase/z_phase/omni_phase OR x/y phase + z phase."
+            )
 
         for row in r:
+            rr = {str(k).strip(): v for k, v in row.items()}
             try:
-                freq = float(row.get("frequency"))
-                xdb = float(row.get("x"))
-                ydb = float(row.get("y"))
-                zdb = float(row.get("z"))
-                odb = float(row.get("omni"))
+                freq = float(rr.get(canon_to_raw["frequency"]))
+                xdb = float(rr.get(canon_to_raw["x"]))
+                ydb = float(rr.get(canon_to_raw["y"]))
+                zdb = float(rr.get(canon_to_raw["z"]))
+                odb = float(rr.get(canon_to_raw["omni"]))
+
+                # x/y shared phase support
+                xph = float(rr.get(x_phase_key)) if x_phase_key is not None else 0.0
+                yph = float(rr.get(y_phase_key)) if y_phase_key is not None else xph
+                zph = float(rr.get(z_phase_key)) if z_phase_key is not None else 0.0
+                oph = float(rr.get(omni_phase_key)) if omni_phase_key is not None else 0.0
             except Exception as e:
                 raise ValueError(f"Invalid row in calibration CSV: {row}") from e
-            rows.append((freq, xdb, ydb, zdb, odb))
+
+            rows.append((freq, xdb, ydb, zdb, odb, xph, yph, zph, oph))
 
     rows.sort(key=lambda t: t[0])
     if not rows:
@@ -445,23 +528,38 @@ def import_difar_calibration_csv_to_db(
             x_json TEXT,
             y_json TEXT,
             z_json TEXT,
-            omni_json TEXT
+            omni_json TEXT,
+            x_phase_json TEXT,
+            y_phase_json TEXT,
+            z_phase_json TEXT,
+            omni_phase_json TEXT
         )
         """
     )
+
+    # Ensure phase columns exist for older DBs
+    cur.execute("PRAGMA table_info(difar_calibration_sets)")
+    existing_cols = {r[1] for r in cur.fetchall()}
+    for col in ("x_phase_json", "y_phase_json", "z_phase_json", "omni_phase_json"):
+        if col not in existing_cols:
+            cur.execute(f"ALTER TABLE difar_calibration_sets ADD COLUMN {col} TEXT")
 
     freq = [r[0] for r in rows]
     xvals = [r[1] for r in rows]
     yvals = [r[2] for r in rows]
     zvals = [r[3] for r in rows]
     ovals = [r[4] for r in rows]
+    xphase = [r[5] for r in rows]
+    yphase = [r[6] for r in rows]
+    zphase = [r[7] for r in rows]
+    ophase = [r[8] for r in rows]
 
     created = datetime.now(timezone.utc).isoformat()
     cur.execute(
         """
         INSERT OR REPLACE INTO difar_calibration_sets
-        (calibration_name, created_utc, freq_json, x_json, y_json, z_json, omni_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (calibration_name, created_utc, freq_json, x_json, y_json, z_json, omni_json, x_phase_json, y_phase_json, z_phase_json, omni_phase_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             calibration_name,
@@ -471,6 +569,10 @@ def import_difar_calibration_csv_to_db(
             json.dumps(yvals),
             json.dumps(zvals),
             json.dumps(ovals),
+            json.dumps(xphase),
+            json.dumps(yphase),
+            json.dumps(zphase),
+            json.dumps(ophase),
         ),
     )
     conn.commit()
@@ -484,9 +586,20 @@ def load_difar_calibration_from_db(db_path: str, calibration_name: str) -> Difar
 
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
+    cur.execute("PRAGMA table_info(difar_calibration_sets)")
+    cols = {r[1] for r in cur.fetchall()}
+    has_xp = "x_phase_json" in cols
+    has_yp = "y_phase_json" in cols
+    has_zp = "z_phase_json" in cols
+    has_op = "omni_phase_json" in cols
+
     cur.execute(
-        """
-        SELECT freq_json, x_json, y_json, z_json, omni_json
+        f"""
+        SELECT freq_json, x_json, y_json, z_json, omni_json,
+               {('x_phase_json' if has_xp else 'NULL')} as x_phase_json,
+               {('y_phase_json' if has_yp else 'NULL')} as y_phase_json,
+               {('z_phase_json' if has_zp else 'NULL')} as z_phase_json,
+               {('omni_phase_json' if has_op else 'NULL')} as omni_phase_json
         FROM difar_calibration_sets
         WHERE calibration_name=?
         """,
@@ -502,12 +615,16 @@ def load_difar_calibration_from_db(db_path: str, calibration_name: str) -> Difar
     y = np.asarray(json.loads(row[2]), dtype=float)
     z = np.asarray(json.loads(row[3]), dtype=float)
     omni = np.asarray(json.loads(row[4]), dtype=float)
+    xph = np.asarray(json.loads(row[5]), dtype=float) if row[5] else None
+    yph = np.asarray(json.loads(row[6]), dtype=float) if row[6] else None
+    zph = np.asarray(json.loads(row[7]), dtype=float) if row[7] else None
+    oph = np.asarray(json.loads(row[8]), dtype=float) if row[8] else None
 
     return DifarCalibration(
-        x=ChannelCalibration(freq_hz=freq, sensitivity_db=x, unit="V_per_mps"),
-        y=ChannelCalibration(freq_hz=freq, sensitivity_db=y, unit="V_per_mps"),
-        z=ChannelCalibration(freq_hz=freq, sensitivity_db=z, unit="V_per_mps"),
-        omni=ChannelCalibration(freq_hz=freq, sensitivity_db=omni, unit="V_per_uPa"),
+        x=ChannelCalibration(freq_hz=freq, sensitivity_db=x, unit="V_per_mps", phase_response_deg=xph),
+        y=ChannelCalibration(freq_hz=freq, sensitivity_db=y, unit="V_per_mps", phase_response_deg=yph),
+        z=ChannelCalibration(freq_hz=freq, sensitivity_db=z, unit="V_per_mps", phase_response_deg=zph),
+        omni=ChannelCalibration(freq_hz=freq, sensitivity_db=omni, unit="V_per_uPa", phase_response_deg=oph),
     )
 
 
