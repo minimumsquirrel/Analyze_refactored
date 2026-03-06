@@ -179,9 +179,21 @@ class DifarToolsMixin:
         """Popup for calibration import and DIFAR processing run."""
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
-        dlg.resize(980, 760)
+        dlg.resize(1500, 900)
 
         layout = QtWidgets.QVBoxLayout(dlg)
+
+        content_row = QtWidgets.QHBoxLayout()
+        layout.addLayout(content_row, stretch=1)
+
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        content_row.addWidget(left_panel, stretch=3)
+
+        right_panel = QtWidgets.QGroupBox("Calibration Curves")
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_panel.setMinimumWidth(520)
+        content_row.addWidget(right_panel, stretch=2)
 
         help_lbl = QtWidgets.QLabel(
             "DIFAR workflow:\n"
@@ -190,13 +202,13 @@ class DifarToolsMixin:
             "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
         )
         help_lbl.setWordWrap(True)
-        layout.addWidget(help_lbl)
+        left_layout.addWidget(help_lbl)
 
         import_row = QtWidgets.QHBoxLayout()
         import_btn = QtWidgets.QPushButton("Calibration Import...")
         import_row.addWidget(import_btn)
         import_row.addStretch(1)
-        layout.addLayout(import_row)
+        left_layout.addLayout(import_row)
 
         proc_box = QtWidgets.QGroupBox("Processing Run")
         proc_form = QtWidgets.QFormLayout(proc_box)
@@ -287,16 +299,120 @@ class DifarToolsMixin:
         run_btn = QtWidgets.QPushButton("Run DIFAR Processing")
         proc_form.addRow("", run_btn)
 
-        layout.addWidget(proc_box)
+        left_layout.addWidget(proc_box)
 
         out = QtWidgets.QPlainTextEdit()
         out.setReadOnly(True)
         out.setPlaceholderText("Status output...")
-        layout.addWidget(out, stretch=1)
+        left_layout.addWidget(out, stretch=1)
 
         close_btn = QtWidgets.QPushButton("Close")
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
-        layout.addLayout(close_row)
+        left_layout.addLayout(close_row)
+
+        cal_plot_note = QtWidgets.QLabel(
+            "Selected calibration preview:\n"
+            "- Top: X/Y/Z particle velocity sensitivity\n"
+            "- Bottom: OMNI pressure sensitivity"
+        )
+        cal_plot_note.setWordWrap(True)
+        right_layout.addWidget(cal_plot_note)
+
+        cal_plot_status = QtWidgets.QLabel("No calibration selected.")
+        cal_plot_status.setWordWrap(True)
+        right_layout.addWidget(cal_plot_status)
+
+        cal_canvas = None
+        cal_fig = None
+        cal_ax_motion = None
+        cal_ax_omni = None
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            cal_fig = Figure(figsize=(5.4, 7.0), facecolor="#111111")
+            cal_canvas = FigureCanvas(cal_fig)
+            cal_ax_motion = cal_fig.add_subplot(2, 1, 1)
+            cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
+            right_layout.addWidget(cal_canvas, stretch=1)
+        except Exception:
+            cal_plot_status.setText("Calibration plots unavailable (matplotlib Qt backend not available).")
+
+        def _palette_for_plots(count: int):
+            try:
+                if hasattr(self, "_ordered_palette"):
+                    pal = [str(c) for c in (self._ordered_palette() or []) if c]
+                else:
+                    pal = []
+            except Exception:
+                pal = []
+            if not pal:
+                base = str(getattr(self, "graph_color", "#03DFE2"))
+                pal = [base, "#80E27E", "#FFB347", "#C77DFF", "#FFD166"]
+            out_cols = []
+            for i in range(max(1, int(count))):
+                out_cols.append(pal[i % len(pal)])
+            return out_cols
+
+        def _style_cal_axes(ax):
+            ax.set_facecolor("#0D0D0D")
+            ax.grid(True, alpha=0.25)
+            ax.tick_params(colors="#DDDDDD")
+            for sp in ax.spines.values():
+                sp.set_color("#666666")
+            ax.xaxis.label.set_color("#DDDDDD")
+            ax.yaxis.label.set_color("#DDDDDD")
+            ax.title.set_color("#DDDDDD")
+
+        def _update_calibration_plots(*_args):
+            if cal_canvas is None or cal_fig is None:
+                return
+            cal_ax_motion.clear(); cal_ax_omni.clear()
+            _style_cal_axes(cal_ax_motion); _style_cal_axes(cal_ax_omni)
+            cal_ax_motion.set_title("Particle Velocity Calibration (X/Y/Z)")
+            cal_ax_omni.set_title("OMNI Pressure Calibration")
+            cal_ax_motion.set_xlabel("Frequency (Hz)")
+            cal_ax_motion.set_ylabel("Sensitivity (dB)")
+            cal_ax_omni.set_xlabel("Frequency (Hz)")
+            cal_ax_omni.set_ylabel("Sensitivity (dB)")
+
+            cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
+            if not cal_name:
+                cal_plot_status.setText("No calibration selected.")
+                cal_canvas.draw_idle()
+                return
+
+            try:
+                cal = load_difar_calibration_from_db(DB_FILENAME, cal_name)
+            except Exception as e:
+                cal_plot_status.setText(f"Could not load calibration '{cal_name}': {e}")
+                cal_canvas.draw_idle()
+                return
+
+            cols = _palette_for_plots(4)
+            plotted_motion = False
+            if getattr(cal, "x", None) is not None:
+                cal_ax_motion.plot(cal.x.freq_hz, cal.x.sensitivity_db, color=cols[0], linewidth=2.0, label="X")
+                plotted_motion = True
+            if getattr(cal, "y", None) is not None:
+                cal_ax_motion.plot(cal.y.freq_hz, cal.y.sensitivity_db, color=cols[1], linewidth=2.0, label="Y")
+                plotted_motion = True
+            if getattr(cal, "z", None) is not None:
+                cal_ax_motion.plot(cal.z.freq_hz, cal.z.sensitivity_db, color=cols[2], linewidth=2.0, label="Z")
+                plotted_motion = True
+            if plotted_motion:
+                cal_ax_motion.legend(loc="best", framealpha=0.35)
+            else:
+                cal_ax_motion.text(0.5, 0.5, "No X/Y/Z data", ha="center", va="center", transform=cal_ax_motion.transAxes, color="#BBBBBB")
+
+            if getattr(cal, "omni", None) is not None:
+                cal_ax_omni.plot(cal.omni.freq_hz, cal.omni.sensitivity_db, color=cols[3], linewidth=2.2, label="OMNI")
+                cal_ax_omni.legend(loc="best", framealpha=0.35)
+            else:
+                cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#BBBBBB")
+
+            cal_fig.tight_layout(pad=1.2)
+            cal_plot_status.setText(f"Calibration preview: {cal_name}")
+            cal_canvas.draw_idle()
 
         def _refresh_calibration_list(select_name: str = ""):
             cal_combo.clear()
@@ -315,6 +431,7 @@ class DifarToolsMixin:
                 idx = cal_combo.findData(select_name)
                 if idx >= 0:
                     cal_combo.setCurrentIndex(idx)
+            _update_calibration_plots()
 
         def _browse_wav():
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -531,6 +648,12 @@ class DifarToolsMixin:
         export_browse.clicked.connect(_browse_export)
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
+        cal_combo.currentIndexChanged.connect(_update_calibration_plots)
+        if hasattr(self, "color_combo"):
+            try:
+                self.color_combo.currentIndexChanged.connect(_update_calibration_plots)
+            except Exception:
+                pass
 
         _refresh_calibration_list()
         dlg.exec_()
