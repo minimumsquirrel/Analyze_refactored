@@ -133,6 +133,7 @@ from tools_measurement import MeasurementToolsMixin
 from tools_modelling import ModellingToolsMixin
 from tools_detection import DetectionToolsMixin
 from tools_database import DatabaseToolsMixin
+from tools_difar import DifarToolsMixin
 # ───────────────────────────────────────────────────────────────────────────
 
 
@@ -1038,6 +1039,7 @@ class MainWindow(
     ModellingToolsMixin,
     DetectionToolsMixin,
     DatabaseToolsMixin,
+    DifarToolsMixin,
 ):
 
 
@@ -3147,7 +3149,7 @@ class MainWindow(
             "Slope De-Clipper", "Find Peaks", "Short-Time RMS", "Crest Factor", "Octave-Band Analysis",
             "SNR Estimator", "LFM Analysis", "LFM Batch Analysis", "HFM Analysis", "Multi Frequency Analysis",
             "SPL Transmit Analysis", "Hydrophone Calibration", "Duty Cycle Analysis",
-            "Active Sonar", "Cepstrum Analysis", "Event Clustering"
+            "Active Sonar", "Cepstrum Analysis", "Event Clustering", "DIFAR Processing"
         ]
 
 
@@ -8610,7 +8612,8 @@ class MainWindow(
             self.tool_combo.addItems([
                 "Active Sonar",
                 "Cepstrum Analysis",
-                "Event Clustering"
+                "Event Clustering",
+                "DIFAR Processing"
             ])
 
         else:  # "Database Tools"
@@ -8746,6 +8749,8 @@ class MainWindow(
                 self.cepstrum_analysis()
             elif tool == "Event Clustering":
                 self.automated_event_clustering_popup()
+            elif tool == "DIFAR Processing":
+                self.difar_processing_popup()
             
 
         elif category == "Database Tools":
