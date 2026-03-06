@@ -170,6 +170,27 @@ class DifarToolsMixin:
         ch_w = QtWidgets.QWidget(); ch_w.setLayout(ch_row)
         proc_form.addRow("Channel Mapping:", ch_w)
 
+        tune_row = QtWidgets.QHBoxLayout()
+        swap_xy_chk = QtWidgets.QCheckBox("Swap X/Y")
+        invert_x_chk = QtWidgets.QCheckBox("Invert X")
+        invert_y_chk = QtWidgets.QCheckBox("Invert Y")
+        tune_row.addWidget(swap_xy_chk); tune_row.addWidget(invert_x_chk); tune_row.addWidget(invert_y_chk)
+        tune_w = QtWidgets.QWidget(); tune_w.setLayout(tune_row)
+        proc_form.addRow("Bearing Convention:", tune_w)
+
+        offs_spin = QtWidgets.QDoubleSpinBox(); offs_spin.setRange(-360.0, 360.0); offs_spin.setDecimals(2); offs_spin.setSingleStep(1.0)
+        proc_form.addRow("Bearing Offset (deg):", offs_spin)
+
+        gate_spin = QtWidgets.QDoubleSpinBox(); gate_spin.setRange(0.0, 99.9); gate_spin.setDecimals(1); gate_spin.setValue(20.0)
+        proc_form.addRow("Directional Gate Percentile:", gate_spin)
+
+        smooth_spin = QtWidgets.QSpinBox(); smooth_spin.setRange(1, 99); smooth_spin.setValue(5)
+        proc_form.addRow("Bearing Smooth Frames:", smooth_spin)
+
+        ambig_chk = QtWidgets.QCheckBox("Resolve ±180° ambiguity by continuity")
+        ambig_chk.setChecked(True)
+        proc_form.addRow("", ambig_chk)
+
         start_dt = QtWidgets.QDateTimeEdit()
         start_dt.setCalendarPopup(True)
         start_dt.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
@@ -307,6 +328,13 @@ class DifarToolsMixin:
                     calibration=cal,
                     compass=compass,
                     start_time_utc=dt,
+                    swap_xy=bool(swap_xy_chk.isChecked()),
+                    invert_x=bool(invert_x_chk.isChecked()),
+                    invert_y=bool(invert_y_chk.isChecked()),
+                    bearing_offset_deg=float(offs_spin.value()),
+                    min_directional_percentile=float(gate_spin.value()),
+                    bearing_smooth_frames=int(smooth_spin.value()),
+                    resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                 )
 
                 result = process_wav_to_bearing_time_series(
@@ -320,6 +348,9 @@ class DifarToolsMixin:
                 out.appendPlainText(f"Frames: {n_frames}")
                 out.appendPlainText(
                     f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
+                )
+                out.appendPlainText(
+                    f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()}"
                 )
                 out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                 if export_path:

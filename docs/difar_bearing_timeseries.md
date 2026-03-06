@@ -91,3 +91,21 @@ get:
 
 Range/distance generally needs additional assumptions or data such as source
 level, propagation model/environment, or multi-sensor geometry/TDOA.
+
+
+## Tuning when simulated/straight tracks look off
+
+If bearings are consistently offset or unstable on straight tracks, use the DIFAR popup tuning controls:
+- **Swap X/Y**, **Invert X**, **Invert Y** to match simulator/sensor axis conventions.
+- **Bearing Offset (deg)** to remove constant bias.
+- **Directional Gate Percentile** to ignore weak vector samples in each frame.
+- **Bearing Smooth Frames** to stabilize track display for steady headings.
+
+
+### Why you may see both left and right bearing lines
+A common DIFAR artifact is a ±180° directional ambiguity, which can appear as
+paired left/right lines on straight tracks.
+
+The tool now includes **Resolve ±180° ambiguity by continuity** to select the
+orientation (bearing or bearing+180) that is most consistent with the previous
+frame.

@@ -100,6 +100,16 @@ class DifarConfig:
         calibration: Optional DIFAR channel calibration bundle.
         compass: Optional compass reference to rotate sensor-frame bearing
             into true-north bearing.
+        swap_xy: Swap X/Y channels before bearing estimation (sensor convention fix).
+        invert_x: Multiply X by -1 before bearing estimation.
+        invert_y: Multiply Y by -1 before bearing estimation.
+        bearing_offset_deg: Additional fixed offset applied to sensor bearing (deg).
+        min_directional_percentile: Optional percentile gate [0,100) to ignore
+            low-magnitude directional samples inside each frame.
+        bearing_smooth_frames: Optional moving-average smoothing window in frames
+            (applied circularly to sensor bearing).
+        resolve_180_ambiguity: If True, choose between bearing and bearing+180
+            based on continuity with previous frame (helps avoid left/right flips).
     """
 
     omni_channel: int = 0
@@ -114,6 +124,13 @@ class DifarConfig:
     start_time_utc: Optional[datetime] = None
     calibration: Optional[DifarCalibration] = None
     compass: Optional[CompassReference] = None
+    swap_xy: bool = False
+    invert_x: bool = False
+    invert_y: bool = False
+    bearing_offset_deg: float = 0.0
+    min_directional_percentile: float = 0.0
+    bearing_smooth_frames: int = 1
+    resolve_180_ambiguity: bool = True
 
 
 def _normalize_start_time_utc(start_time_utc: Optional[datetime]) -> Optional[datetime]:
@@ -150,6 +167,57 @@ def _circular_mean_deg(theta_deg: np.ndarray, eps: float = 1e-12) -> Tuple[float
     mean_rad = np.angle(zbar)
     mean_deg = (np.rad2deg(mean_rad) + 360.0) % 360.0
     return float(mean_deg), conf
+
+
+def _weighted_circular_mean_deg(theta_deg: np.ndarray, w: np.ndarray, eps: float = 1e-12) -> Tuple[float, float]:
+    """Weighted circular mean (deg, 0..360) and weighted resultant confidence [0,1]."""
+    if theta_deg.size == 0:
+        return float("nan"), 0.0
+    ww = np.asarray(w, dtype=float)
+    if ww.size != theta_deg.size:
+        raise ValueError("weights must match theta size")
+    ww = np.maximum(ww, 0.0)
+    sw = float(np.sum(ww))
+    if sw <= eps:
+        return _circular_mean_deg(theta_deg, eps=eps)
+    theta_rad = np.deg2rad(theta_deg)
+    z = np.exp(1j * theta_rad)
+    zbar = np.sum(z * ww) / sw
+    conf = float(np.abs(zbar))
+    if conf < eps:
+        return float("nan"), 0.0
+    mean_deg = (np.rad2deg(np.angle(zbar)) + 360.0) % 360.0
+    return float(mean_deg), conf
+
+
+
+
+def _ang_diff_deg(a: float, b: float) -> float:
+    """Smallest absolute angular difference in degrees."""
+    d = (float(a) - float(b) + 180.0) % 360.0 - 180.0
+    return abs(d)
+
+
+def _resolve_180_by_continuity(curr_deg: float, prev_deg: Optional[float]) -> float:
+    """Pick curr or curr+180 based on proximity to previous bearing."""
+    if prev_deg is None or not np.isfinite(prev_deg):
+        return float(curr_deg % 360.0)
+    a = float(curr_deg % 360.0)
+    b = float((curr_deg + 180.0) % 360.0)
+    return a if _ang_diff_deg(a, prev_deg) <= _ang_diff_deg(b, prev_deg) else b
+
+def _smooth_circular_series_deg(theta_deg: np.ndarray, window: int) -> np.ndarray:
+    if window <= 1 or theta_deg.size == 0:
+        return theta_deg
+    w = int(max(1, window))
+    pad = w // 2
+    ang = np.deg2rad(theta_deg)
+    x = np.cos(ang)
+    y = np.sin(ang)
+    kernel = np.ones(w, dtype=float) / float(w)
+    x2 = np.convolve(np.pad(x, (pad, pad), mode='edge'), kernel, mode='valid')
+    y2 = np.convolve(np.pad(y, (pad, pad), mode='edge'), kernel, mode='valid')
+    return (np.rad2deg(np.arctan2(y2, x2)) + 360.0) % 360.0
 
 
 def _sensitivity_linear_at(cal: ChannelCalibration, f_hz: float) -> float:
@@ -365,8 +433,28 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         y_f = y_ch[start:stop]
         om_f = omni[start:stop]
 
+        if cfg.swap_xy:
+            x_f, y_f = y_f, x_f
+        if cfg.invert_x:
+            x_f = -x_f
+        if cfg.invert_y:
+            y_f = -y_f
+
         inst_theta = (np.rad2deg(np.arctan2(y_f, x_f)) + 360.0) % 360.0
-        bearing_sensor_deg, conf = _circular_mean_deg(inst_theta, eps=cfg.eps)
+        mag = np.sqrt(x_f * x_f + y_f * y_f)
+        if float(cfg.min_directional_percentile) > 0.0:
+            q = float(np.clip(cfg.min_directional_percentile, 0.0, 99.9))
+            thr = float(np.percentile(mag, q))
+            mask = (mag >= thr)
+            if np.any(mask):
+                inst_theta = inst_theta[mask]
+                mag = mag[mask]
+
+        bearing_sensor_deg, conf = _weighted_circular_mean_deg(inst_theta, mag, eps=cfg.eps)
+        bearing_sensor_deg = (bearing_sensor_deg + float(cfg.bearing_offset_deg)) % 360.0
+        if bool(cfg.resolve_180_ambiguity):
+            prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
+            bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
 
         directional_power = float(np.mean(x_f * x_f + y_f * y_f))
         omni_power = float(np.mean(om_f * om_f))
@@ -390,9 +478,16 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
             prms_pa = float(np.sqrt(np.mean(om_f * om_f)))
             pressure_db_out.append(20.0 * np.log10(prms_pa + cfg.eps))
 
+    b_sensor_arr = np.asarray(b_sensor_out, dtype=np.float64)
+    if int(cfg.bearing_smooth_frames) > 1:
+        b_sensor_arr = _smooth_circular_series_deg(b_sensor_arr, int(cfg.bearing_smooth_frames))
+        # recompute true-bearing with same heading sequence
+        if len(b_true_out) == len(b_sensor_arr):
+            b_true_out = [((float(b_sensor_arr[i]) + _heading_at(cfg.compass, float(t_out[i]), eps=cfg.eps)) % 360.0) for i in range(len(b_sensor_arr))]
+
     out: Dict[str, np.ndarray] = {
         "time_s": np.asarray(t_out, dtype=np.float64),
-        "bearing_sensor_deg": np.asarray(b_sensor_out, dtype=np.float64),
+        "bearing_sensor_deg": b_sensor_arr,
         "bearing_true_deg": np.asarray(b_true_out, dtype=np.float64),
         "confidence": np.asarray(c_out, dtype=np.float64),
         "snr_db": np.asarray(s_out, dtype=np.float64),
