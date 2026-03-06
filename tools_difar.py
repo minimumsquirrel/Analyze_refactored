@@ -33,7 +33,7 @@ class DifarToolsMixin:
             "DIFAR workflow:\n"
             "1) Import calibration CSV to DB (frequency,x,y,z,omni + phase columns).\n"
             "2) Select WAV + calibration + channel mapping + start UTC + optional compass CSV.\n"
-            "3) Run bearing extraction and optional CSV export."
+            "3) Run bearing extraction, optional CSV export, and optional Chart overlay."
         )
         help_lbl.setWordWrap(True)
         layout.addWidget(help_lbl)
@@ -105,6 +105,10 @@ class DifarToolsMixin:
         latlon_row = QtWidgets.QHBoxLayout(); latlon_row.addWidget(lat_edit); latlon_row.addWidget(lon_edit)
         latlon_w = QtWidgets.QWidget(); latlon_w.setLayout(latlon_row)
         proc_form.addRow("Static map rays (opt):", latlon_w)
+
+        show_on_chart_chk = QtWidgets.QCheckBox("Show DIFAR rays on Chart tab")
+        show_on_chart_chk.setChecked(True)
+        proc_form.addRow("", show_on_chart_chk)
 
         run_btn = QtWidgets.QPushButton("Run DIFAR Processing")
         proc_form.addRow("", run_btn)
@@ -260,6 +264,23 @@ class DifarToolsMixin:
                         time_s=result["time_s"],
                     )
                     out.appendPlainText(f"Static map rays prepared: {len(rays['time_s'])}")
+
+                    if show_on_chart_chk.isChecked():
+                        self._difar_chart_overlay = {
+                            "sensor_lat": lat,
+                            "sensor_lon": lon,
+                            "lat2": rays.get("lat2"),
+                            "lon2": rays.get("lon2"),
+                            "time_s": rays.get("time_s"),
+                            "bearing_true_deg": rays.get("bearing_true_deg"),
+                            "label": f"DIFAR: {os.path.basename(wav_path)}",
+                        }
+                        if hasattr(self, "refresh_chart_tracks"):
+                            try:
+                                self.refresh_chart_tracks()
+                            except Exception:
+                                pass
+                        out.appendPlainText("DIFAR rays pushed to Chart tab overlay.")
 
             except Exception as e:
                 out.appendPlainText(f"Run failed: {e}")
