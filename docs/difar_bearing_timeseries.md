@@ -76,8 +76,11 @@ A static map cannot animate time directly, so a practical approach is:
 Use `bearing_series_static_map_vectors(...)` to compute vector endpoints for
 this display.
 
-In the app popup, enable **Show DIFAR rays on Chart tab** to push these rays
+In the app popup, enable **Display DIFAR on Chart map (sensor + rays)** to push these rays
 onto the existing Chart map overlay immediately after processing.
+
+On Folium maps, click the DIFAR buoy marker to open a target-bearing popup
+showing latest bearing and a compact bearing dial.
 
 ## Can calibration give distance?
 Usually not from a single DIFAR buoy alone. With calibration, you can reliably

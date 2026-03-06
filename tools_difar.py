@@ -50,7 +50,7 @@ class DifarToolsMixin:
         """Popup for calibration import and DIFAR processing run."""
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
-        dlg.resize(920, 640)
+        dlg.resize(980, 760)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
@@ -131,7 +131,7 @@ class DifarToolsMixin:
         latlon_w = QtWidgets.QWidget(); latlon_w.setLayout(latlon_row)
         proc_form.addRow("Static map rays (opt):", latlon_w)
 
-        show_on_chart_chk = QtWidgets.QCheckBox("Show DIFAR rays on Chart tab")
+        show_on_chart_chk = QtWidgets.QCheckBox("Display DIFAR on Chart map (sensor + rays)")
         show_on_chart_chk.setChecked(True)
         proc_form.addRow("", show_on_chart_chk)
 
@@ -332,6 +332,7 @@ class DifarToolsMixin:
                         time_s=result["time_s"],
                     )
                     out.appendPlainText(f"Static map rays prepared: {len(rays['time_s'])}")
+                    out.appendPlainText(f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}")
 
                     if show_on_chart_chk.isChecked():
                         self._difar_chart_overlay = {

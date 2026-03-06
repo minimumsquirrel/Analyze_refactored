@@ -15439,23 +15439,51 @@ class MainWindow(
         if ov:
             try:
                 slat = float(ov.get("sensor_lat")); slon = float(ov.get("sensor_lon"))
+
+                def _as_float_list(v):
+                    if v is None:
+                        return []
+                    try:
+                        return [float(x) for x in list(v)]
+                    except Exception:
+                        return []
+
+                lat2 = _as_float_list(ov.get("lat2"))
+                lon2 = _as_float_list(ov.get("lon2"))
+                tseries = _as_float_list(ov.get("time_s"))
+                bseries = _as_float_list(ov.get("bearing_true_deg"))
+
+                latest_b = bseries[-1] if bseries else None
+                latest_t = tseries[-1] if tseries else None
+                if latest_b is not None:
+                    ang = float(latest_b % 360.0)
+                    popup_html = (
+                        f"<b>{str(ov.get('label', 'DIFAR Sensor'))}</b><br>"
+                        f"Latest bearing: <b>{ang:.1f}°</b>"
+                        + (f"<br>t={latest_t:.1f}s" if latest_t is not None else "")
+                        + f"<br>Rays: {len(lat2)}"
+                        + f"<br><svg width='120' height='120' viewBox='0 0 120 120'>"
+                        + f"<circle cx='60' cy='60' r='48' fill='none' stroke='#7A4CFA' stroke-width='2'/>"
+                        + f"<line x1='60' y1='60' x2='{60 + 42*math.sin(math.radians(ang)):.1f}' y2='{60 - 42*math.cos(math.radians(ang)):.1f}' stroke='#C77DFF' stroke-width='3'/>"
+                        + "<text x='60' y='16' text-anchor='middle' font-size='10'>N</text>"
+                        + "</svg>"
+                    )
+                else:
+                    popup_html = str(ov.get("label", "DIFAR Sensor"))
+
                 folium.Marker(
                     [slat, slon],
-                    popup=folium.Popup(str(ov.get("label", "DIFAR Sensor")), max_width=320),
+                    popup=folium.Popup(popup_html, max_width=360),
                     icon=folium.Icon(color='purple', icon='bullseye', prefix='fa')
                 ).add_to(m)
-                lat2 = ov.get("lat2") or []
-                lon2 = ov.get("lon2") or []
-                tseries = ov.get("time_s") or []
+
                 for i, (la, lo) in enumerate(zip(lat2, lon2)):
-                    try:
-                        la = float(la); lo = float(lo)
-                    except Exception:
-                        continue
                     tip = f"DIFAR ray {i}"
                     if i < len(tseries):
                         tip += f"  t={float(tseries[i]):.1f}s"
-                    folium.PolyLine([(slat, slon), (la, lo)], color='#C77DFF', weight=2, opacity=0.75, tooltip=tip).add_to(m)
+                    if i < len(bseries):
+                        tip += f"  bearing={float(bseries[i]):.1f}°"
+                    folium.PolyLine([(slat, slon), (la, lo)], color='#C77DFF', weight=2, opacity=0.9, tooltip=tip).add_to(m)
             except Exception:
                 pass
 
@@ -15610,8 +15638,14 @@ class MainWindow(
                     self.gps_plot.plot([slon], [slat], pen=None, symbol='star', symbolSize=12,
                                        symbolBrush=pg.mkBrush('#C77DFF'), symbolPen=pg.mkPen('#4B1D7A', width=1.2),
                                        name="DIFAR Sensor")
-                    lat2 = difar_overlay.get("lat2") or []
-                    lon2 = difar_overlay.get("lon2") or []
+                    try:
+                        lat2 = [float(v) for v in list(difar_overlay.get("lat2"))] if difar_overlay.get("lat2") is not None else []
+                    except Exception:
+                        lat2 = []
+                    try:
+                        lon2 = [float(v) for v in list(difar_overlay.get("lon2"))] if difar_overlay.get("lon2") is not None else []
+                    except Exception:
+                        lon2 = []
                     for i, (la, lo) in enumerate(zip(lat2, lon2)):
                         try:
                             la = float(la); lo = float(lo)

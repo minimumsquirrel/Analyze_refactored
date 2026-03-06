@@ -157,4 +157,4 @@ This keeps one map frame readable while still conveying time sequence.
 
 The DIFAR popup should expose both:
 - Calibration import controls, and
-- Processing-run controls (WAV input, calibration selection, start UTC, optional compass CSV, optional output CSV, optional sensor lat/lon for static rays, optional "Show DIFAR rays on Chart tab").
+- Processing-run controls (WAV input, calibration selection, start UTC, optional compass CSV, optional output CSV, optional sensor lat/lon for static rays, optional "Display DIFAR on Chart map (sensor + rays)").
