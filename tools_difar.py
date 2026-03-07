@@ -211,7 +211,9 @@ class DifarToolsMixin:
 
         import_row = QtWidgets.QHBoxLayout()
         import_btn = QtWidgets.QPushButton("Calibration Import...")
+        sim_btn = QtWidgets.QPushButton("Open DIFAR Simulator...")
         import_row.addWidget(import_btn)
+        import_row.addWidget(sim_btn)
         import_row.addStretch(1)
         left_layout.addLayout(import_row)
 
@@ -656,7 +658,19 @@ class DifarToolsMixin:
                 out.appendPlainText(f"Run failed: {e}")
                 QtWidgets.QMessageBox.critical(dlg, "Run Failed", str(e))
 
+        def _open_simulator():
+            try:
+                from tools_difar_simulator import launch_difar_simulator
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Simulator Unavailable", f"Failed to load DIFAR simulator tool:\n{e}")
+                return
+            try:
+                self._difar_sim_window = launch_difar_simulator(parent=self)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Simulator Error", str(e))
+
         import_btn.clicked.connect(_open_cal_import)
+        sim_btn.clicked.connect(_open_simulator)
         wav_browse.clicked.connect(_browse_wav)
         compass_browse.clicked.connect(_browse_compass)
         export_browse.clicked.connect(_browse_export)
