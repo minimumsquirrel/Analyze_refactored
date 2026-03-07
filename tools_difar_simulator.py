@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ import pandas as pd
 from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 from scipy.io.wavfile import write as wav_write
+
+from shared import DB_FILENAME
 
 DARK_QSS = """
 * { font-family: Segoe UI; font-size: 10pt; }
@@ -534,13 +537,18 @@ class GenerateThread(QtCore.QThread):
 
 
 class DifarSimWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(self, project_id: Optional[int] = None, output_dir: Optional[str] = None, db_path: Optional[str] = None,
+                 host_window=None):
         super().__init__()
         self.setWindowTitle("DIFAR Synthetic Generator — PyQt5 / M20-105")
         self.resize(1580, 940)
         self.cal: Optional[CalData] = None
         self.cal_path: Optional[str] = None
         self._gen_thread: Optional[GenerateThread] = None
+        self.project_id = project_id
+        self.output_dir = output_dir
+        self.db_path = db_path or DB_FILENAME
+        self.host_window = host_window
 
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
@@ -718,7 +726,13 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             return
         self.btn_generate.setEnabled(False)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        kwargs = dict(out_prefix=self.le_out.text().strip() or "difar_sim", cal=self.cal, fs=int(self.sb_fs.value()),
+        out_name = os.path.basename(self.le_out.text().strip() or "difar_sim")
+        out_prefix = out_name
+        if self.output_dir:
+            os.makedirs(self.output_dir, exist_ok=True)
+            out_prefix = os.path.join(self.output_dir, out_name)
+
+        kwargs = dict(out_prefix=out_prefix, cal=self.cal, fs=int(self.sb_fs.value()),
                       duration_s=float(self.ds_dur.value()), sensor_lat=float(self.ds_lat.value()), sensor_lon=float(self.ds_lon.value()),
                       pattern_name=self.cb_pattern.currentText(), bearing0_deg=float(self.ds_bearing0.value()), range_m=float(self.ds_range.value()),
                       period_s=float(self.ds_period.value()), swing_deg=float(self.ds_swing.value()), rate_hz=float(self.ds_rate.value()),
@@ -742,6 +756,87 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self._gen_thread.failed.connect(self._on_generate_error)
         self._gen_thread.finished.connect(self._on_generate_thread_finished)
         self._gen_thread.start()
+
+    @staticmethod
+    def _ensure_chart_track_tables(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gps_tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER,
+                name TEXT,
+                source_file TEXT,
+                color TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gps_track_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL,
+                point_index INTEGER,
+                timestamp_utc TEXT,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                elevation_m REAL,
+                FOREIGN KEY(track_id) REFERENCES gps_tracks(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_gps_tracks_project ON gps_tracks(project_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_gps_track_points_track ON gps_track_points(track_id, point_index)")
+        conn.commit()
+
+    def _save_debug_track_to_db(self, result):
+        if self.project_id is None:
+            self.append_log("GPS DB note: no selected project, skipping GPS track DB save.")
+            return
+        if not os.path.isfile(result.debug_csv_path):
+            return
+
+        points = []
+        try:
+            df = pd.read_csv(result.debug_csv_path)
+            for i, row in df.iterrows():
+                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
+                points.append((i, ts_iso, float(row["lat"]), float(row["lon"]), None))
+        except Exception as exc:
+            self.append_log(f"GPS DB warning: failed reading debug track CSV: {exc}")
+            return
+
+        if not points:
+            self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
+            return
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            self._ensure_chart_track_tables(conn)
+            cur = conn.cursor()
+            base = os.path.splitext(os.path.basename(result.gga_path))[0]
+            track_name = f"DIFAR Sim: {base}"
+            color = "#03DFE2"
+            cur.execute(
+                "INSERT INTO gps_tracks (project_id, name, source_file, color) VALUES (?, ?, ?, ?)",
+                (int(self.project_id), track_name, os.path.abspath(result.gga_path), color),
+            )
+            track_id = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                [(track_id, idx, ts, lat, lon, ele) for idx, ts, lat, lon, ele in points],
+            )
+            conn.commit()
+            conn.close()
+            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={len(points)}).")
+            if self.host_window is not None and hasattr(self.host_window, "refresh_chart_tracks"):
+                try:
+                    self.host_window.refresh_chart_tracks(select_id=track_id)
+                except Exception:
+                    pass
+        except Exception as exc:
+            self.append_log(f"GPS DB warning: {exc}")
 
     def _on_generate_thread_finished(self):
         try:
@@ -769,17 +864,22 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.append_log(f"Done. GPGGA: {os.path.abspath(result.gga_path)}")
         self.append_log(f"Done. Debug CSV: {os.path.abspath(result.debug_csv_path)}")
         self.append_log(f"Done. Meta: {os.path.abspath(result.meta_path)}")
+        self._save_debug_track_to_db(result)
 
     def _on_generate_error(self, msg: str):
         QtWidgets.QMessageBox.critical(self, "Generation Error", msg)
         self.append_log(f"Error: {msg}")
 
 
-def launch_difar_simulator(parent=None, calibration_csv: Optional[str] = None) -> DifarSimWindow:
-    window = DifarSimWindow()
+def launch_difar_simulator(parent=None, calibration_csv: Optional[str] = None, project_id: Optional[int] = None,
+                           output_dir: Optional[str] = None, db_path: Optional[str] = None,
+                           host_window=None) -> DifarSimWindow:
+    window = DifarSimWindow(project_id=project_id, output_dir=output_dir, db_path=db_path, host_window=host_window)
     window.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     if parent is not None:
         window.setParent(parent, QtCore.Qt.Window)
+        window.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+        window.setWindowFlag(QtCore.Qt.Tool, True)
     if calibration_csv and os.path.isfile(calibration_csv):
         window.cal = load_m20105_cal_csv(calibration_csv)
         window.cal_path = calibration_csv

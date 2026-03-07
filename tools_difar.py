@@ -665,7 +665,18 @@ class DifarToolsMixin:
                 QtWidgets.QMessageBox.critical(dlg, "Simulator Unavailable", f"Failed to load DIFAR simulator tool:\n{e}")
                 return
             try:
-                self._difar_sim_window = launch_difar_simulator(parent=self)
+                output_dir = None
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        output_dir = self._project_subdir("difar_simulator")
+                    except Exception:
+                        output_dir = None
+                self._difar_sim_window = launch_difar_simulator(
+                    parent=dlg,
+                    project_id=getattr(self, "current_project_id", None),
+                    output_dir=output_dir,
+                    host_window=self,
+                )
             except Exception as e:
                 QtWidgets.QMessageBox.critical(dlg, "Simulator Error", str(e))
 
