@@ -521,28 +521,123 @@ def process_wav_to_bearing_time_series(
     out = compute_bearing_time_series(data=data, fs=fs, cfg=cfg)
 
     if export_csv_path:
-        with open(export_csv_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            columns = ["time_s"]
-            if "timestamp_utc" in out:
-                columns.append("timestamp_utc")
-            columns.extend(["bearing_sensor_deg", "bearing_true_deg", "confidence", "snr_db"])
-            if "intensity_motion_db_re_1_mps" in out:
-                columns.append("intensity_motion_db_re_1_mps")
-            if "intensity_pressure_db_re_1_Pa" in out:
-                columns.append("intensity_pressure_db_re_1_Pa")
-            w.writerow(columns)
+        _write_bearing_timeseries_csv(out, export_csv_path)
 
-            row_count = len(out["time_s"])
-            for i in range(row_count):
-                row = []
-                for col in columns:
-                    val = out[col][i]
-                    if isinstance(val, (np.floating, float)):
-                        row.append(float(val))
-                    else:
-                        row.append(str(val))
-                w.writerow(row)
+    return out
+
+
+def _write_bearing_timeseries_csv(out: Dict[str, np.ndarray], export_csv_path: str) -> None:
+    """Write bearing time-series output dictionary to CSV."""
+    with open(export_csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        columns = ["time_s"]
+        if "timestamp_utc" in out:
+            columns.append("timestamp_utc")
+        columns.extend(["bearing_sensor_deg", "bearing_true_deg", "confidence", "snr_db"])
+        if "intensity_motion_db_re_1_mps" in out:
+            columns.append("intensity_motion_db_re_1_mps")
+        if "intensity_pressure_db_re_1_Pa" in out:
+            columns.append("intensity_pressure_db_re_1_Pa")
+        w.writerow(columns)
+
+        row_count = len(out["time_s"])
+        for i in range(row_count):
+            row = []
+            for col in columns:
+                val = out[col][i]
+                if isinstance(val, (np.floating, float)):
+                    row.append(float(val))
+                else:
+                    row.append(str(val))
+            w.writerow(row)
+
+
+def process_wav_to_bearing_time_series_chunked(
+    wav_path: str,
+    cfg: DifarConfig | None = None,
+    export_csv_path: Optional[str] = None,
+    chunk_seconds: float = 900.0,
+    overlap_seconds: float = 2.0,
+) -> Dict[str, np.ndarray]:
+    """Process long WAV files in chunks to limit memory usage.
+
+    Chunk outputs are merged into a single result in file-relative time.
+    """
+    cfg = cfg or DifarConfig()
+    if chunk_seconds <= 0:
+        raise ValueError("chunk_seconds must be > 0")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be >= 0")
+
+    with sf.SoundFile(wav_path, "r") as f:
+        fs = float(f.samplerate)
+        total_frames = int(len(f))
+
+        chunk_frames = max(1, int(round(chunk_seconds * fs)))
+        overlap_frames = max(0, int(round(overlap_seconds * fs)))
+        step_frames = max(1, chunk_frames - overlap_frames)
+
+        chunks_out = []
+        last_time = -1e18
+        for start in range(0, total_frames, step_frames):
+            f.seek(start)
+            data = f.read(frames=chunk_frames, dtype="float64", always_2d=True)
+            if data.size == 0:
+                break
+
+            chunk_cfg = DifarConfig(**vars(cfg))
+            start_offset_s = float(start) / fs
+            if chunk_cfg.start_time_utc is not None:
+                chunk_cfg.start_time_utc = chunk_cfg.start_time_utc + timedelta(seconds=start_offset_s)
+            if chunk_cfg.compass is not None and chunk_cfg.compass.time_s is not None:
+                chunk_cfg.compass = CompassReference(
+                    heading_deg=np.asarray(chunk_cfg.compass.heading_deg, dtype=np.float64),
+                    time_s=np.asarray(chunk_cfg.compass.time_s, dtype=np.float64) - start_offset_s,
+                )
+
+            out = compute_bearing_time_series(data=data, fs=fs, cfg=chunk_cfg)
+            if len(out.get("time_s", [])) == 0:
+                continue
+
+            t = np.asarray(out["time_s"], dtype=np.float64) + start_offset_s
+            keep = t > last_time
+            if not np.any(keep):
+                continue
+
+            filtered = {}
+            for k, v in out.items():
+                arr = np.asarray(v)
+                filtered[k] = arr[keep]
+            filtered["time_s"] = t[keep]
+            last_time = float(filtered["time_s"][-1])
+            chunks_out.append(filtered)
+
+            if start + chunk_frames >= total_frames:
+                break
+
+    if not chunks_out:
+        out = {
+            "time_s": np.asarray([], dtype=np.float64),
+            "bearing_sensor_deg": np.asarray([], dtype=np.float64),
+            "bearing_true_deg": np.asarray([], dtype=np.float64),
+            "confidence": np.asarray([], dtype=np.float64),
+            "snr_db": np.asarray([], dtype=np.float64),
+        }
+    else:
+        keys = []
+        for c in chunks_out:
+            for k in c.keys():
+                if k not in keys:
+                    keys.append(k)
+        out = {}
+        for k in keys:
+            parts = [np.asarray(c[k]) for c in chunks_out if k in c]
+            if not parts:
+                continue
+            out[k] = np.concatenate(parts, axis=0)
+
+    if export_csv_path:
+        _write_bearing_timeseries_csv(out, export_csv_path)
 
     return out
 
