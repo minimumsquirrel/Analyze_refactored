@@ -562,6 +562,8 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.db_path = db_path or DB_FILENAME
         self.host_window = host_window
 
+        self._sync_context_from_host()
+
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
         root.setContentsMargins(10, 10, 10, 10); root.setSpacing(10)
@@ -717,6 +719,20 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.lbl_sl.setVisible(is_physical); self.ds_sl.setVisible(is_physical)
         self.lbl_constant_rl.setVisible(not is_physical); self.ds_constant_rl.setVisible(not is_physical)
 
+    def _sync_context_from_host(self):
+        if self.host_window is None:
+            return
+        if self.project_id is None:
+            try:
+                self.project_id = getattr(self.host_window, "current_project_id", None)
+            except Exception:
+                self.project_id = None
+        if not self.output_dir and hasattr(self.host_window, "_project_subdir"):
+            try:
+                self.output_dir = self.host_window._project_subdir("difar_simulator")
+            except Exception:
+                pass
+
     def on_load_cal(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Calibration CSV", "", "CSV Files (*.csv)")
         if not path:
@@ -730,6 +746,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Calibration Error", str(exc))
 
     def on_generate(self):
+        self._sync_context_from_host()
         if self.cal is None:
             QtWidgets.QMessageBox.warning(self, "Missing Calibration", "Load the M20-105 calibration CSV first.")
             return
@@ -803,6 +820,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         conn.commit()
 
     def _save_debug_track_to_db(self, result):
+        self._sync_context_from_host()
         if self.project_id is None:
             self.append_log("GPS DB note: no selected project, skipping GPS track DB save.")
             return
