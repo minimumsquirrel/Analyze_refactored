@@ -16,12 +16,59 @@ from difar_core import (
     load_difar_calibration_from_db,
     load_compass_csv,
     process_wav_to_bearing_time_series,
+    process_wav_to_bearing_time_series_chunked,
     bearing_series_static_map_vectors,
 )
 
 
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
+
+
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
 
 
     @staticmethod
@@ -293,6 +340,29 @@ class DifarToolsMixin:
         export_w = QtWidgets.QWidget(); export_w.setLayout(export_row)
         proc_form.addRow("Output CSV (opt):", export_w)
 
+        chunk_chk = QtWidgets.QCheckBox("Chunk long files (recommended)")
+        chunk_chk.setChecked(True)
+        proc_form.addRow("Long-file mode:", chunk_chk)
+
+        chunk_row = QtWidgets.QHBoxLayout()
+        chunk_minutes = QtWidgets.QDoubleSpinBox(); chunk_minutes.setRange(1.0, 180.0); chunk_minutes.setDecimals(1); chunk_minutes.setValue(15.0); chunk_minutes.setSuffix(" min")
+        overlap_seconds = QtWidgets.QDoubleSpinBox(); overlap_seconds.setRange(0.0, 120.0); overlap_seconds.setDecimals(1); overlap_seconds.setValue(2.0); overlap_seconds.setSuffix(" s overlap")
+        chunk_row.addWidget(chunk_minutes); chunk_row.addWidget(overlap_seconds)
+        chunk_w = QtWidgets.QWidget(); chunk_w.setLayout(chunk_row)
+        proc_form.addRow("Chunk settings:", chunk_w)
+
+        band_row = QtWidgets.QHBoxLayout()
+        band_lo = QtWidgets.QDoubleSpinBox(); band_lo.setRange(1.0, 200000.0); band_lo.setDecimals(1); band_lo.setValue(20.0)
+        band_hi = QtWidgets.QDoubleSpinBox(); band_hi.setRange(1.0, 200000.0); band_hi.setDecimals(1); band_hi.setValue(500.0)
+        band_row.addWidget(QtWidgets.QLabel("Lo")); band_row.addWidget(band_lo)
+        band_row.addWidget(QtWidgets.QLabel("Hi")); band_row.addWidget(band_hi)
+        band_w = QtWidgets.QWidget(); band_w.setLayout(band_row)
+        proc_form.addRow("Bandpass (Hz):", band_w)
+
+        target_bands_edit = QtWidgets.QLineEdit()
+        target_bands_edit.setPlaceholderText("Optional multi-target bands, e.g. 20-80; 80-250; 250-600")
+        proc_form.addRow("Target bands (opt):", target_bands_edit)
+
         lat_edit = QtWidgets.QLineEdit(); lat_edit.setPlaceholderText("sensor latitude")
         lon_edit = QtWidgets.QLineEdit(); lon_edit.setPlaceholderText("sensor longitude")
         latlon_row = QtWidgets.QHBoxLayout(); latlon_row.addWidget(lat_edit); latlon_row.addWidget(lon_edit)
@@ -484,6 +554,24 @@ class DifarToolsMixin:
                 on_imported=lambda nm: _refresh_calibration_list(select_name=nm),
             )
 
+        def _parse_target_bands(text: str):
+            text = (text or "").strip()
+            if not text:
+                return []
+            bands = []
+            for tok in text.split(";"):
+                part = tok.strip()
+                if not part:
+                    continue
+                if "-" not in part:
+                    raise ValueError(f"Invalid band token '{part}'. Use lo-hi format.")
+                lo_txt, hi_txt = [x.strip() for x in part.split("-", 1)]
+                lo = float(lo_txt); hi = float(hi_txt)
+                if lo <= 0 or hi <= lo:
+                    raise ValueError(f"Invalid band '{part}'. Need hi > lo > 0.")
+                bands.append((lo, hi))
+            return bands
+
         def _run_processing():
             wav_path = (loaded_wav or "").strip() or wav_edit.text().strip()
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
@@ -513,7 +601,7 @@ class DifarToolsMixin:
                 z_val = int(z_spin.value())
                 z_idx = None if z_val <= 0 else (z_val - 1)
 
-                cfg = self._make_difar_config_compat(
+                base_cfg_kwargs = dict(
                     omni_channel=int(omni_spin.value()) - 1,
                     x_channel=int(x_spin.value()) - 1,
                     y_channel=int(y_spin.value()) - 1,
@@ -530,68 +618,95 @@ class DifarToolsMixin:
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
                 )
+                bands = _parse_target_bands(target_bands_edit.text())
+                if not bands:
+                    bands = [(float(band_lo.value()), float(band_hi.value()))]
 
-                result = process_wav_to_bearing_time_series(
-                    wav_path,
-                    cfg=cfg,
-                    export_csv_path=export_path,
-                )
+                for band_idx, (bp_lo, bp_hi) in enumerate(bands, start=1):
+                    cfg = self._make_difar_config_compat(**base_cfg_kwargs, bandpass_hz=(bp_lo, bp_hi))
+                    run_tag = f"band {bp_lo:.1f}-{bp_hi:.1f} Hz"
 
-                n_frames = len(result.get("time_s", []))
-                out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)}")
-                out.appendPlainText(f"Frames: {n_frames}")
-                out.appendPlainText(
-                    f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
-                )
-                out.appendPlainText(
-                    f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
-                )
-                out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
-                if export_path:
-                    out.appendPlainText(f"Saved CSV: {export_path}")
+                    run_export_path = None
+                    if export_path:
+                        if len(bands) == 1:
+                            run_export_path = export_path
+                        else:
+                            base, ext = os.path.splitext(export_path)
+                            ext = ext or ".csv"
+                            run_export_path = f"{base}_b{int(round(bp_lo))}-{int(round(bp_hi))}{ext}"
 
-                run_id = None
-                if save_db_chk.isChecked():
-                    serializable = {}
-                    for k, v in result.items():
-                        try:
-                            serializable[k] = [float(x) if hasattr(x, "__float__") else str(x) for x in list(v)]
-                        except Exception:
-                            serializable[k] = str(v)
-
-                    conn = sqlite3.connect(DB_FILENAME)
-                    self._ensure_difar_results_table(conn)
-                    cur = conn.cursor()
-                    cur.execute(
-                        """
-                        INSERT INTO difar_results (
-                            created_utc, wav_path, calibration_name, start_time_utc,
-                            omni_channel, x_channel, y_channel, z_channel,
-                            compass_path, sensor_lat, sensor_lon, result_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            datetime.now(timezone.utc).isoformat(),
+                    if chunk_chk.isChecked():
+                        result = process_wav_to_bearing_time_series_chunked(
                             wav_path,
-                            cal_name,
-                            dt.isoformat(),
-                            int(omni_spin.value()) - 1,
-                            int(x_spin.value()) - 1,
-                            int(y_spin.value()) - 1,
-                            (None if z_spin.value() <= 0 else int(z_spin.value()) - 1),
-                            (compass_path or None),
-                            (float(lat_edit.text()) if lat_edit.text().strip() else None),
-                            (float(lon_edit.text()) if lon_edit.text().strip() else None),
-                            json.dumps(serializable),
-                        ),
-                    )
-                    run_id = cur.lastrowid
-                    conn.commit()
-                    conn.close()
-                    out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
+                            cfg=cfg,
+                            export_csv_path=run_export_path,
+                            chunk_seconds=float(chunk_minutes.value()) * 60.0,
+                            overlap_seconds=float(overlap_seconds.value()),
+                        )
+                    else:
+                        result = process_wav_to_bearing_time_series(
+                            wav_path,
+                            cfg=cfg,
+                            export_csv_path=run_export_path,
+                        )
 
-                lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
-                if lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result:
+                    n_frames = len(result.get("time_s", []))
+                    out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)} [{band_idx}/{len(bands)} {run_tag}]")
+                    out.appendPlainText(f"Frames: {n_frames}")
+                    out.appendPlainText(
+                        f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
+                    )
+                    out.appendPlainText(
+                        f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
+                    )
+                    out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
+                    if run_export_path:
+                        out.appendPlainText(f"Saved CSV: {run_export_path}")
+
+                    run_id = None
+                    if save_db_chk.isChecked():
+                        serializable = {}
+                        for k, v in result.items():
+                            try:
+                                serializable[k] = [float(x) if hasattr(x, "__float__") else str(x) for x in list(v)]
+                            except Exception:
+                                serializable[k] = str(v)
+
+                        conn = sqlite3.connect(DB_FILENAME)
+                        self._ensure_difar_results_table(conn)
+                        cur = conn.cursor()
+                        cur.execute(
+                            """
+                            INSERT INTO difar_results (
+                                created_utc, wav_path, calibration_name, start_time_utc,
+                                omni_channel, x_channel, y_channel, z_channel,
+                                compass_path, sensor_lat, sensor_lon, result_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                datetime.now(timezone.utc).isoformat(),
+                                wav_path,
+                                f"{cal_name} [{run_tag}]",
+                                dt.isoformat(),
+                                int(omni_spin.value()) - 1,
+                                int(x_spin.value()) - 1,
+                                int(y_spin.value()) - 1,
+                                (None if z_spin.value() <= 0 else int(z_spin.value()) - 1),
+                                (compass_path or None),
+                                (float(lat_edit.text()) if lat_edit.text().strip() else None),
+                                (float(lon_edit.text()) if lon_edit.text().strip() else None),
+                                json.dumps(serializable),
+                            ),
+                        )
+                        run_id = cur.lastrowid
+                        conn.commit()
+                        conn.close()
+                        out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
+
+                    lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
+                    if not (lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result):
+                        continue
+
                     lat = float(lat_txt)
                     lon = float(lon_txt)
                     rays = bearing_series_static_map_vectors(
@@ -605,10 +720,15 @@ class DifarToolsMixin:
                         f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
                     )
 
-                    project_id = getattr(self, "current_project_id", None)
+                    def _as_float_list(raw):
+                        if raw is None:
+                            return []
+                        return [float(v) for v in list(raw)]
+
+                    project_id = self._resolve_active_project_id()
                     try:
                         conn = sqlite3.connect(DB_FILENAME)
-                        self._ensure_difar_rays_table(conn)
+                        self._ensure_difar_rays_table_compat(conn)
                         cur = conn.cursor()
                         cur.execute(
                             """
@@ -620,15 +740,15 @@ class DifarToolsMixin:
                             """,
                             (
                                 datetime.now(timezone.utc).isoformat(),
-                                (int(project_id) if project_id is not None else None),
+                                project_id,
                                 run_id,
-                                f"DIFAR: {os.path.basename(wav_path)}",
+                                f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                                 float(lat),
                                 float(lon),
-                                json.dumps([float(v) for v in list(rays.get("lat2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("lon2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("time_s") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("bearing_true_deg") or [])]),
+                                json.dumps(_as_float_list(rays.get("lat2"))),
+                                json.dumps(_as_float_list(rays.get("lon2"))),
+                                json.dumps(_as_float_list(rays.get("time_s"))),
+                                json.dumps(_as_float_list(rays.get("bearing_true_deg"))),
                             ),
                         )
                         ray_id = cur.lastrowid
@@ -645,7 +765,7 @@ class DifarToolsMixin:
                             "lon2": rays.get("lon2"),
                             "time_s": rays.get("time_s"),
                             "bearing_true_deg": rays.get("bearing_true_deg"),
-                            "label": f"DIFAR: {os.path.basename(wav_path)}",
+                            "label": f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                         }
                         if hasattr(self, "refresh_chart_tracks"):
                             try:
@@ -665,6 +785,7 @@ class DifarToolsMixin:
                 QtWidgets.QMessageBox.critical(dlg, "Simulator Unavailable", f"Failed to load DIFAR simulator tool:\n{e}")
                 return
             try:
+                project_id = self._resolve_active_project_id()
                 output_dir = None
                 if hasattr(self, "_project_subdir"):
                     try:
@@ -673,8 +794,9 @@ class DifarToolsMixin:
                         output_dir = None
                 self._difar_sim_window = launch_difar_simulator(
                     parent=dlg,
-                    project_id=getattr(self, "current_project_id", None),
+                    project_id=project_id,
                     output_dir=output_dir,
+                    db_path=DB_FILENAME,
                     host_window=self,
                 )
             except Exception as e:
