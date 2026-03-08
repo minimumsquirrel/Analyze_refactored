@@ -23,6 +23,37 @@ from difar_core import (
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
 
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
+
 
     @staticmethod
     def _make_difar_config_compat(**kwargs):
@@ -605,7 +636,7 @@ class DifarToolsMixin:
                         f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
                     )
 
-                    project_id = getattr(self, "current_project_id", None)
+                    project_id = self._resolve_active_project_id()
                     try:
                         conn = sqlite3.connect(DB_FILENAME)
                         self._ensure_difar_rays_table(conn)
@@ -620,7 +651,7 @@ class DifarToolsMixin:
                             """,
                             (
                                 datetime.now(timezone.utc).isoformat(),
-                                (int(project_id) if project_id is not None else None),
+                                project_id,
                                 run_id,
                                 f"DIFAR: {os.path.basename(wav_path)}",
                                 float(lat),

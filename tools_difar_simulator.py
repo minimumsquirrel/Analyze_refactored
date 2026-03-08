@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sqlite3
+import csv
 import sys
 import time
 from dataclasses import dataclass
@@ -518,7 +519,18 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    return ScenarioResult(wav_path, gga_path, debug_csv_path, meta_path, east, north, t, r_m, bearing_deg)
+    preview = slice(None, None, step)
+    return ScenarioResult(
+        wav_path,
+        gga_path,
+        debug_csv_path,
+        meta_path,
+        east[preview],
+        north[preview],
+        t[preview],
+        r_m[preview],
+        bearing_deg[preview],
+    )
 
 
 class GenerateThread(QtCore.QThread):
@@ -797,20 +809,6 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         if not os.path.isfile(result.debug_csv_path):
             return
 
-        points = []
-        try:
-            df = pd.read_csv(result.debug_csv_path)
-            for i, row in df.iterrows():
-                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
-                points.append((i, ts_iso, float(row["lat"]), float(row["lon"]), None))
-        except Exception as exc:
-            self.append_log(f"GPS DB warning: failed reading debug track CSV: {exc}")
-            return
-
-        if not points:
-            self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
-            return
-
         try:
             conn = sqlite3.connect(self.db_path)
             self._ensure_chart_track_tables(conn)
@@ -823,13 +821,35 @@ class DifarSimWindow(QtWidgets.QMainWindow):
                 (int(self.project_id), track_name, os.path.abspath(result.gga_path), color),
             )
             track_id = cur.lastrowid
-            cur.executemany(
-                "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
-                [(track_id, idx, ts, lat, lon, ele) for idx, ts, lat, lon, ele in points],
-            )
+            point_count = 0
+            batch = []
+            with open(result.debug_csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for i, row in enumerate(reader):
+                    ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
+                    batch.append((track_id, i, ts_iso, float(row["lat"]), float(row["lon"]), None))
+                    if len(batch) >= 2000:
+                        cur.executemany(
+                            "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                            batch,
+                        )
+                        point_count += len(batch)
+                        batch.clear()
+                if batch:
+                    cur.executemany(
+                        "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                        batch,
+                    )
+                    point_count += len(batch)
+
+            if point_count == 0:
+                conn.rollback()
+                conn.close()
+                self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
+                return
             conn.commit()
             conn.close()
-            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={len(points)}).")
+            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={point_count}).")
             if self.host_window is not None and hasattr(self.host_window, "refresh_chart_tracks"):
                 try:
                     self.host_window.refresh_chart_tracks(select_id=track_id)
