@@ -457,12 +457,14 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         bearing_sensor_deg, conf = _weighted_circular_mean_deg(inst_theta, mag, eps=cfg.eps)
         bearing_sensor_deg = (bearing_sensor_deg + float(cfg.bearing_offset_deg)) % 360.0
         if bool(cfg.resolve_180_ambiguity):
+            resolved_by_omni = False
             if bool(cfg.use_omni_for_ambiguity):
-                bearing_sensor_deg = _resolve_180_by_omni_active_intensity(
+                bearing_sensor_deg, resolved_by_omni = _resolve_180_by_omni_active_intensity(
                     bearing_sensor_deg, om_f, x_f, y_f, eps=cfg.eps
                 )
-            prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
-            bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
+            if not resolved_by_omni:
+                prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
+                bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
 
         directional_power = float(np.mean(x_f * x_f + y_f * y_f))
         omni_power = float(np.mean(om_f * om_f))
@@ -778,23 +780,23 @@ def _resolve_180_by_omni_active_intensity(
     x_frame: np.ndarray,
     y_frame: np.ndarray,
     eps: float = 1e-12,
-) -> float:
+) -> tuple[float, bool]:
     """Resolve ±180 using an active-intensity proxy from OMNI and particle motion.
 
     Computes frame-wise components Ix=mean(omni*x), Iy=mean(omni*y), and
     chooses between `curr_deg` and `curr_deg+180` that best matches the
-    resulting direction atan2(Iy, Ix). If intensity vector is too weak, keeps
-    current bearing unchanged.
+    resulting direction atan2(Iy, Ix). Returns `(bearing_deg, used_intensity)`.
+    If intensity vector is too weak, keeps current bearing unchanged and marks
+    `used_intensity=False`.
     """
     ix = float(np.mean(omni_frame * x_frame))
     iy = float(np.mean(omni_frame * y_frame))
     mag = float(np.hypot(ix, iy))
     if mag <= eps:
-        return float(curr_deg % 360.0)
+        return float(curr_deg % 360.0), False
 
     intensity_dir = float((np.rad2deg(np.arctan2(iy, ix)) + 360.0) % 360.0)
     alt = (float(curr_deg) + 180.0) % 360.0
     d0 = _ang_diff_deg(curr_deg, intensity_dir)
     d1 = _ang_diff_deg(alt, intensity_dir)
-    return float((curr_deg % 360.0) if d0 <= d1 else alt)
-
+    return float((curr_deg % 360.0) if d0 <= d1 else alt), True
