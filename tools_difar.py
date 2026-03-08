@@ -16,12 +16,59 @@ from difar_core import (
     load_difar_calibration_from_db,
     load_compass_csv,
     process_wav_to_bearing_time_series,
+    process_wav_to_bearing_time_series_chunked,
     bearing_series_static_map_vectors,
 )
 
 
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
+
+
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
 
 
     @staticmethod
@@ -293,6 +340,17 @@ class DifarToolsMixin:
         export_w = QtWidgets.QWidget(); export_w.setLayout(export_row)
         proc_form.addRow("Output CSV (opt):", export_w)
 
+        chunk_chk = QtWidgets.QCheckBox("Chunk long files (recommended)")
+        chunk_chk.setChecked(True)
+        proc_form.addRow("Long-file mode:", chunk_chk)
+
+        chunk_row = QtWidgets.QHBoxLayout()
+        chunk_minutes = QtWidgets.QDoubleSpinBox(); chunk_minutes.setRange(1.0, 180.0); chunk_minutes.setDecimals(1); chunk_minutes.setValue(15.0); chunk_minutes.setSuffix(" min")
+        overlap_seconds = QtWidgets.QDoubleSpinBox(); overlap_seconds.setRange(0.0, 120.0); overlap_seconds.setDecimals(1); overlap_seconds.setValue(2.0); overlap_seconds.setSuffix(" s overlap")
+        chunk_row.addWidget(chunk_minutes); chunk_row.addWidget(overlap_seconds)
+        chunk_w = QtWidgets.QWidget(); chunk_w.setLayout(chunk_row)
+        proc_form.addRow("Chunk settings:", chunk_w)
+
         lat_edit = QtWidgets.QLineEdit(); lat_edit.setPlaceholderText("sensor latitude")
         lon_edit = QtWidgets.QLineEdit(); lon_edit.setPlaceholderText("sensor longitude")
         latlon_row = QtWidgets.QHBoxLayout(); latlon_row.addWidget(lat_edit); latlon_row.addWidget(lon_edit)
@@ -531,11 +589,20 @@ class DifarToolsMixin:
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
                 )
 
-                result = process_wav_to_bearing_time_series(
-                    wav_path,
-                    cfg=cfg,
-                    export_csv_path=export_path,
-                )
+                if chunk_chk.isChecked():
+                    result = process_wav_to_bearing_time_series_chunked(
+                        wav_path,
+                        cfg=cfg,
+                        export_csv_path=export_path,
+                        chunk_seconds=float(chunk_minutes.value()) * 60.0,
+                        overlap_seconds=float(overlap_seconds.value()),
+                    )
+                else:
+                    result = process_wav_to_bearing_time_series(
+                        wav_path,
+                        cfg=cfg,
+                        export_csv_path=export_path,
+                    )
 
                 n_frames = len(result.get("time_s", []))
                 out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)}")
@@ -605,10 +672,15 @@ class DifarToolsMixin:
                         f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
                     )
 
-                    project_id = getattr(self, "current_project_id", None)
+                    def _as_float_list(raw):
+                        if raw is None:
+                            return []
+                        return [float(v) for v in list(raw)]
+
+                    project_id = self._resolve_active_project_id()
                     try:
                         conn = sqlite3.connect(DB_FILENAME)
-                        self._ensure_difar_rays_table(conn)
+                        self._ensure_difar_rays_table_compat(conn)
                         cur = conn.cursor()
                         cur.execute(
                             """
@@ -620,15 +692,15 @@ class DifarToolsMixin:
                             """,
                             (
                                 datetime.now(timezone.utc).isoformat(),
-                                (int(project_id) if project_id is not None else None),
+                                project_id,
                                 run_id,
                                 f"DIFAR: {os.path.basename(wav_path)}",
                                 float(lat),
                                 float(lon),
-                                json.dumps([float(v) for v in list(rays.get("lat2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("lon2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("time_s") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("bearing_true_deg") or [])]),
+                                json.dumps(_as_float_list(rays.get("lat2"))),
+                                json.dumps(_as_float_list(rays.get("lon2"))),
+                                json.dumps(_as_float_list(rays.get("time_s"))),
+                                json.dumps(_as_float_list(rays.get("bearing_true_deg"))),
                             ),
                         )
                         ray_id = cur.lastrowid
@@ -665,6 +737,7 @@ class DifarToolsMixin:
                 QtWidgets.QMessageBox.critical(dlg, "Simulator Unavailable", f"Failed to load DIFAR simulator tool:\n{e}")
                 return
             try:
+                project_id = self._resolve_active_project_id()
                 output_dir = None
                 if hasattr(self, "_project_subdir"):
                     try:
@@ -673,8 +746,9 @@ class DifarToolsMixin:
                         output_dir = None
                 self._difar_sim_window = launch_difar_simulator(
                     parent=dlg,
-                    project_id=getattr(self, "current_project_id", None),
+                    project_id=project_id,
                     output_dir=output_dir,
+                    db_path=DB_FILENAME,
                     host_window=self,
                 )
             except Exception as e:
