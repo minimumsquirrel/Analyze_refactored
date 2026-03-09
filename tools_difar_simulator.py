@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sqlite3
+import csv
 import sys
 import time
 from dataclasses import dataclass
@@ -518,7 +519,18 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    return ScenarioResult(wav_path, gga_path, debug_csv_path, meta_path, east, north, t, r_m, bearing_deg)
+    preview = slice(None, None, step)
+    return ScenarioResult(
+        wav_path,
+        gga_path,
+        debug_csv_path,
+        meta_path,
+        east[preview],
+        north[preview],
+        t[preview],
+        r_m[preview],
+        bearing_deg[preview],
+    )
 
 
 class GenerateThread(QtCore.QThread):
@@ -549,6 +561,8 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.output_dir = output_dir
         self.db_path = db_path or DB_FILENAME
         self.host_window = host_window
+
+        self._sync_context_from_host()
 
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
@@ -705,6 +719,20 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.lbl_sl.setVisible(is_physical); self.ds_sl.setVisible(is_physical)
         self.lbl_constant_rl.setVisible(not is_physical); self.ds_constant_rl.setVisible(not is_physical)
 
+    def _sync_context_from_host(self):
+        if self.host_window is None:
+            return
+        if self.project_id is None:
+            try:
+                self.project_id = getattr(self.host_window, "current_project_id", None)
+            except Exception:
+                self.project_id = None
+        if not self.output_dir and hasattr(self.host_window, "_project_subdir"):
+            try:
+                self.output_dir = self.host_window._project_subdir("difar_simulator")
+            except Exception:
+                pass
+
     def on_load_cal(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Calibration CSV", "", "CSV Files (*.csv)")
         if not path:
@@ -718,6 +746,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Calibration Error", str(exc))
 
     def on_generate(self):
+        self._sync_context_from_host()
         if self.cal is None:
             QtWidgets.QMessageBox.warning(self, "Missing Calibration", "Load the M20-105 calibration CSV first.")
             return
@@ -791,24 +820,11 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         conn.commit()
 
     def _save_debug_track_to_db(self, result):
+        self._sync_context_from_host()
         if self.project_id is None:
             self.append_log("GPS DB note: no selected project, skipping GPS track DB save.")
             return
         if not os.path.isfile(result.debug_csv_path):
-            return
-
-        points = []
-        try:
-            df = pd.read_csv(result.debug_csv_path)
-            for i, row in df.iterrows():
-                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
-                points.append((i, ts_iso, float(row["lat"]), float(row["lon"]), None))
-        except Exception as exc:
-            self.append_log(f"GPS DB warning: failed reading debug track CSV: {exc}")
-            return
-
-        if not points:
-            self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
             return
 
         try:
@@ -823,13 +839,35 @@ class DifarSimWindow(QtWidgets.QMainWindow):
                 (int(self.project_id), track_name, os.path.abspath(result.gga_path), color),
             )
             track_id = cur.lastrowid
-            cur.executemany(
-                "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
-                [(track_id, idx, ts, lat, lon, ele) for idx, ts, lat, lon, ele in points],
-            )
+            point_count = 0
+            batch = []
+            with open(result.debug_csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for i, row in enumerate(reader):
+                    ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
+                    batch.append((track_id, i, ts_iso, float(row["lat"]), float(row["lon"]), None))
+                    if len(batch) >= 2000:
+                        cur.executemany(
+                            "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                            batch,
+                        )
+                        point_count += len(batch)
+                        batch.clear()
+                if batch:
+                    cur.executemany(
+                        "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                        batch,
+                    )
+                    point_count += len(batch)
+
+            if point_count == 0:
+                conn.rollback()
+                conn.close()
+                self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
+                return
             conn.commit()
             conn.close()
-            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={len(points)}).")
+            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={point_count}).")
             if self.host_window is not None and hasattr(self.host_window, "refresh_chart_tracks"):
                 try:
                     self.host_window.refresh_chart_tracks(select_id=track_id)
