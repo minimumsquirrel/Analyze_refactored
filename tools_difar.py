@@ -378,6 +378,52 @@ class DifarToolsMixin:
         return None
 
 
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
+
+
     @staticmethod
     def _make_difar_config_compat(**kwargs):
         """Build DifarConfig while tolerating older/newer parameter names."""
@@ -455,6 +501,8 @@ class DifarToolsMixin:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_utc TEXT,
                 updated_utc TEXT,
+                last_used_utc TEXT,
+                use_count INTEGER DEFAULT 0,
                 project_id INTEGER,
                 profile_name TEXT NOT NULL,
                 classification TEXT,
@@ -466,19 +514,25 @@ class DifarToolsMixin:
             """
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_target_profiles_project ON difar_target_profiles(project_id, profile_name)")
+        cur.execute("PRAGMA table_info(difar_target_profiles)")
+        cols = {r[1] for r in cur.fetchall()}
+        if "last_used_utc" not in cols:
+            cur.execute("ALTER TABLE difar_target_profiles ADD COLUMN last_used_utc TEXT")
+        if "use_count" not in cols:
+            cur.execute("ALTER TABLE difar_target_profiles ADD COLUMN use_count INTEGER DEFAULT 0")
         cur.execute("SELECT COUNT(*) FROM difar_target_profiles")
         if int(cur.fetchone()[0]) == 0:
             now = datetime.now(timezone.utc).isoformat()
             seeds = [
-                (now, now, None, "Low Tonal Vessel", "vessel", 20.0, 80.0, "20-80", "Preloaded"),
-                (now, now, None, "Mid Broadband Machinery", "vessel", 80.0, 250.0, "80-250", "Preloaded"),
-                (now, now, None, "High Tonal / Transient", "unknown", 250.0, 600.0, "250-600", "Preloaded"),
+                (now, now, None, 0, None, "Low Tonal Vessel", "vessel", 20.0, 80.0, "20-80", "Preloaded"),
+                (now, now, None, 0, None, "Mid Broadband Machinery", "vessel", 80.0, 250.0, "80-250", "Preloaded"),
+                (now, now, None, 0, None, "High Tonal / Transient", "unknown", 250.0, 600.0, "250-600", "Preloaded"),
             ]
             cur.executemany(
                 """
                 INSERT INTO difar_target_profiles
-                (created_utc, updated_utc, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (created_utc, updated_utc, last_used_utc, use_count, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 seeds,
             )
@@ -985,7 +1039,7 @@ class DifarToolsMixin:
                 pid = self._resolve_active_project_id()
                 q = (qtxt or "").strip()
                 sql = (
-                    "SELECT id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text "
+                    "SELECT id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, COALESCE(use_count,0), last_used_utc "
                     "FROM difar_target_profiles WHERE (project_id IS NULL OR project_id = ?) "
                 )
                 params = [pid]
@@ -993,14 +1047,15 @@ class DifarToolsMixin:
                     like = f"%{q}%"
                     sql += "AND (profile_name LIKE ? OR classification LIKE ? OR target_bands_text LIKE ?) "
                     params.extend([like, like, like])
-                sql += "ORDER BY profile_name COLLATE NOCASE"
+                sql += "ORDER BY COALESCE(last_used_utc,'') DESC, profile_name COLLATE NOCASE"
                 cur.execute(sql, tuple(params))
                 rows = cur.fetchall(); conn.close()
                 profile_combo.blockSignals(True)
                 profile_combo.clear(); profile_combo.addItem("(No profile)", None)
-                for rid, name, cls, lo, hi, btxt in rows:
-                    label = f"{name} | {cls or 'unclassified'} | {btxt or f'{lo:.0f}-{hi:.0f}'}"
-                    profile_combo.addItem(label, (int(rid), name or "", cls or "", float(lo or 0.0), float(hi or 0.0), btxt or ""))
+                for rid, name, cls, lo, hi, btxt, used_n, last_used in rows:
+                    used_note = f"used {int(used_n)}x"
+                    label = f"{name} | {cls or 'unclassified'} | {btxt or f'{lo:.0f}-{hi:.0f}'} | {used_note}"
+                    profile_combo.addItem(label, (int(rid), name or "", cls or "", float(lo or 0.0), float(hi or 0.0), btxt or "", int(used_n), last_used or ""))
                     if btxt and bands_combo.findText(btxt) < 0:
                         bands_combo.addItem(btxt)
                 profile_combo.blockSignals(False)
@@ -1009,7 +1064,7 @@ class DifarToolsMixin:
                 meta = profile_combo.currentData()
                 if not meta:
                     return
-                _, name, cls, lo, hi, btxt = meta
+                _, name, cls, lo, hi, btxt, _, _ = meta
                 profile_name_edit.setText(name)
                 class_edit.setText(cls)
                 if lo > 0 and hi > lo:
@@ -1047,7 +1102,7 @@ class DifarToolsMixin:
                 if not meta:
                     QtWidgets.QMessageBox.warning(pop, "No Profile Selected", "Select a profile to update.")
                     return
-                rid, _, _, _, _, _ = meta
+                rid = int(meta[0])
                 name = profile_name_edit.text().strip()
                 if not name:
                     QtWidgets.QMessageBox.warning(pop, "Missing Profile Name", "Enter a target profile name.")
@@ -1076,7 +1131,7 @@ class DifarToolsMixin:
                 if not meta:
                     QtWidgets.QMessageBox.warning(pop, "No Profile Selected", "Select a profile to delete.")
                     return
-                rid, name, *_ = meta
+                rid = int(meta[0]); name = str(meta[1])
                 ans = QtWidgets.QMessageBox.question(pop, "Delete Profile", f"Delete target profile '{name}'?")
                 if ans != QtWidgets.QMessageBox.Yes:
                     return
@@ -1202,6 +1257,23 @@ class DifarToolsMixin:
                             cfg=cfg,
                             export_csv_path=run_export_path,
                         )
+
+                    if selected_profile_id is not None:
+                        try:
+                            conn = sqlite3.connect(DB_FILENAME)
+                            self._ensure_difar_target_profiles_table(conn)
+                            cur = conn.cursor()
+                            cur.execute(
+                                """
+                                UPDATE difar_target_profiles
+                                SET last_used_utc=?, use_count=COALESCE(use_count,0)+1
+                                WHERE id=?
+                                """,
+                                (datetime.now(timezone.utc).isoformat(), int(selected_profile_id)),
+                            )
+                            conn.commit(); conn.close()
+                        except Exception:
+                            pass
 
                     n_frames = len(result.get("time_s", []))
                     out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)} [{band_idx}/{len(bands)} {run_tag}]")
