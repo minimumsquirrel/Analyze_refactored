@@ -332,6 +332,52 @@ class DifarToolsMixin:
         return None
 
 
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
+
+
     @staticmethod
     def _make_difar_config_compat(**kwargs):
         """Build DifarConfig while tolerating older/newer parameter names."""
@@ -912,7 +958,9 @@ class DifarToolsMixin:
             bands_combo = QtWidgets.QComboBox(); bands_combo.setEditable(True)
             bands_combo.addItems(["20-80", "80-250", "250-600"])
             add_preset_btn = QtWidgets.QPushButton("Add Band Preset")
-            save_profile_btn = QtWidgets.QPushButton("Save / Update Target Profile")
+            save_profile_btn = QtWidgets.QPushButton("Save New Profile")
+            update_profile_btn = QtWidgets.QPushButton("Update Selected")
+            delete_profile_btn = QtWidgets.QPushButton("Delete Selected")
             apply_btn = QtWidgets.QPushButton("Use Selected Profile")
             close_btn2 = QtWidgets.QPushButton("Close")
 
@@ -923,7 +971,9 @@ class DifarToolsMixin:
             form.addRow("Profile name:", profile_name_edit)
             form.addRow("Classification:", class_edit)
             form.addRow("Target bands:", b_w)
-            form.addRow("", save_profile_btn)
+            act_row = QtWidgets.QHBoxLayout(); act_row.addWidget(save_profile_btn); act_row.addWidget(update_profile_btn); act_row.addWidget(delete_profile_btn)
+            act_w = QtWidgets.QWidget(); act_w.setLayout(act_row)
+            form.addRow("", act_w)
 
             btns = QtWidgets.QHBoxLayout(); btns.addWidget(apply_btn); btns.addStretch(1); btns.addWidget(close_btn2)
             lay.addLayout(btns)
@@ -992,6 +1042,52 @@ class DifarToolsMixin:
                 _refresh_profiles(search_edit.text())
                 out.appendPlainText(f"Saved target profile: {name} ({bands_txt})")
 
+            def _update_profile():
+                meta = profile_combo.currentData()
+                if not meta:
+                    QtWidgets.QMessageBox.warning(pop, "No Profile Selected", "Select a profile to update.")
+                    return
+                rid, _, _, _, _, _ = meta
+                name = profile_name_edit.text().strip()
+                if not name:
+                    QtWidgets.QMessageBox.warning(pop, "Missing Profile Name", "Enter a target profile name.")
+                    return
+                bands_txt = bands_combo.currentText().strip() or f"{band_lo.value():.1f}-{band_hi.value():.1f}"
+                _parse_target_bands(bands_txt)
+                cls = class_edit.text().strip() or None
+                now = datetime.now(timezone.utc).isoformat()
+                conn = sqlite3.connect(DB_FILENAME)
+                self._ensure_difar_target_profiles_table(conn)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE difar_target_profiles
+                    SET updated_utc=?, profile_name=?, classification=?, band_lo_hz=?, band_hi_hz=?, target_bands_text=?
+                    WHERE id=?
+                    """,
+                    (now, name, cls, float(band_lo.value()), float(band_hi.value()), bands_txt, int(rid)),
+                )
+                conn.commit(); conn.close()
+                _refresh_profiles(search_edit.text())
+                out.appendPlainText(f"Updated target profile id={rid}: {name} ({bands_txt})")
+
+            def _delete_profile():
+                meta = profile_combo.currentData()
+                if not meta:
+                    QtWidgets.QMessageBox.warning(pop, "No Profile Selected", "Select a profile to delete.")
+                    return
+                rid, name, *_ = meta
+                ans = QtWidgets.QMessageBox.question(pop, "Delete Profile", f"Delete target profile '{name}'?")
+                if ans != QtWidgets.QMessageBox.Yes:
+                    return
+                conn = sqlite3.connect(DB_FILENAME)
+                self._ensure_difar_target_profiles_table(conn)
+                cur = conn.cursor()
+                cur.execute("DELETE FROM difar_target_profiles WHERE id=?", (int(rid),))
+                conn.commit(); conn.close()
+                _refresh_profiles(search_edit.text())
+                out.appendPlainText(f"Deleted target profile id={rid}: {name}")
+
             def _add_preset():
                 txt = bands_combo.currentText().strip()
                 if not txt:
@@ -1015,6 +1111,8 @@ class DifarToolsMixin:
             search_edit.textChanged.connect(_refresh_profiles)
             profile_combo.currentIndexChanged.connect(_on_selected)
             save_profile_btn.clicked.connect(_save_profile)
+            update_profile_btn.clicked.connect(_update_profile)
+            delete_profile_btn.clicked.connect(_delete_profile)
             add_preset_btn.clicked.connect(_add_preset)
             apply_btn.clicked.connect(_apply_profile)
             close_btn2.clicked.connect(pop.reject)
