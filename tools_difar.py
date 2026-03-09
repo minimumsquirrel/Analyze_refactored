@@ -16,12 +16,59 @@ from difar_core import (
     load_difar_calibration_from_db,
     load_compass_csv,
     process_wav_to_bearing_time_series,
+    process_wav_to_bearing_time_series_chunked,
     bearing_series_static_map_vectors,
 )
 
 
 class DifarToolsMixin:
     """Mixin class providing DIFAR tools for MainWindow."""
+
+
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
 
 
     @staticmethod
@@ -78,10 +125,56 @@ class DifarToolsMixin:
                 compass_path TEXT,
                 sensor_lat REAL,
                 sensor_lon REAL,
+                target_profile_id INTEGER,
+                target_classification TEXT,
                 result_json TEXT
             )
             """
         )
+        cur.execute("PRAGMA table_info(difar_results)")
+        cols = {r[1] for r in cur.fetchall()}
+        if "target_profile_id" not in cols:
+            cur.execute("ALTER TABLE difar_results ADD COLUMN target_profile_id INTEGER")
+        if "target_classification" not in cols:
+            cur.execute("ALTER TABLE difar_results ADD COLUMN target_classification TEXT")
+        conn.commit()
+
+    @staticmethod
+    def _ensure_difar_target_profiles_table(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_target_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                updated_utc TEXT,
+                project_id INTEGER,
+                profile_name TEXT NOT NULL,
+                classification TEXT,
+                band_lo_hz REAL,
+                band_hi_hz REAL,
+                target_bands_text TEXT,
+                notes TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_target_profiles_project ON difar_target_profiles(project_id, profile_name)")
+        cur.execute("SELECT COUNT(*) FROM difar_target_profiles")
+        if int(cur.fetchone()[0]) == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            seeds = [
+                (now, now, None, "Low Tonal Vessel", "vessel", 20.0, 80.0, "20-80", "Preloaded"),
+                (now, now, None, "Mid Broadband Machinery", "vessel", 80.0, 250.0, "80-250", "Preloaded"),
+                (now, now, None, "High Tonal / Transient", "unknown", 250.0, 600.0, "250-600", "Preloaded"),
+            ]
+            cur.executemany(
+                """
+                INSERT INTO difar_target_profiles
+                (created_utc, updated_utc, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                seeds,
+            )
         conn.commit()
 
     @staticmethod
@@ -293,6 +386,32 @@ class DifarToolsMixin:
         export_w = QtWidgets.QWidget(); export_w.setLayout(export_row)
         proc_form.addRow("Output CSV (opt):", export_w)
 
+        chunk_chk = QtWidgets.QCheckBox("Chunk long files (recommended)")
+        chunk_chk.setChecked(True)
+        proc_form.addRow("Long-file mode:", chunk_chk)
+
+        chunk_row = QtWidgets.QHBoxLayout()
+        chunk_minutes = QtWidgets.QDoubleSpinBox(); chunk_minutes.setRange(1.0, 180.0); chunk_minutes.setDecimals(1); chunk_minutes.setValue(15.0); chunk_minutes.setSuffix(" min")
+        overlap_seconds = QtWidgets.QDoubleSpinBox(); overlap_seconds.setRange(0.0, 120.0); overlap_seconds.setDecimals(1); overlap_seconds.setValue(2.0); overlap_seconds.setSuffix(" s overlap")
+        chunk_row.addWidget(chunk_minutes); chunk_row.addWidget(overlap_seconds)
+        chunk_w = QtWidgets.QWidget(); chunk_w.setLayout(chunk_row)
+        proc_form.addRow("Chunk settings:", chunk_w)
+
+        band_row = QtWidgets.QHBoxLayout()
+        band_lo = QtWidgets.QDoubleSpinBox(); band_lo.setRange(1.0, 200000.0); band_lo.setDecimals(1); band_lo.setValue(20.0)
+        band_hi = QtWidgets.QDoubleSpinBox(); band_hi.setRange(1.0, 200000.0); band_hi.setDecimals(1); band_hi.setValue(500.0)
+        band_row.addWidget(QtWidgets.QLabel("Lo")); band_row.addWidget(band_lo)
+        band_row.addWidget(QtWidgets.QLabel("Hi")); band_row.addWidget(band_hi)
+        band_w = QtWidgets.QWidget(); band_w.setLayout(band_row)
+        proc_form.addRow("Bandpass (Hz):", band_w)
+
+        target_profile_summary = QtWidgets.QLabel("No target profile selected (using Bandpass above).")
+        target_profile_summary.setWordWrap(True)
+        manage_profiles_btn = QtWidgets.QPushButton("Target Profiles...")
+        prof_row = QtWidgets.QHBoxLayout(); prof_row.addWidget(target_profile_summary, 1); prof_row.addWidget(manage_profiles_btn)
+        prof_w = QtWidgets.QWidget(); prof_w.setLayout(prof_row)
+        proc_form.addRow("Target profile:", prof_w)
+
         lat_edit = QtWidgets.QLineEdit(); lat_edit.setPlaceholderText("sensor latitude")
         lon_edit = QtWidgets.QLineEdit(); lon_edit.setPlaceholderText("sensor longitude")
         latlon_row = QtWidgets.QHBoxLayout(); latlon_row.addWidget(lat_edit); latlon_row.addWidget(lon_edit)
@@ -484,6 +603,165 @@ class DifarToolsMixin:
                 on_imported=lambda nm: _refresh_calibration_list(select_name=nm),
             )
 
+        def _parse_target_bands(text: str):
+            text = (text or "").strip()
+            if not text:
+                return []
+            bands = []
+            for tok in text.split(";"):
+                part = tok.strip()
+                if not part:
+                    continue
+                if "-" not in part:
+                    raise ValueError(f"Invalid band token '{part}'. Use lo-hi format.")
+                lo_txt, hi_txt = [x.strip() for x in part.split("-", 1)]
+                lo = float(lo_txt); hi = float(hi_txt)
+                if lo <= 0 or hi <= lo:
+                    raise ValueError(f"Invalid band '{part}'. Need hi > lo > 0.")
+                bands.append((lo, hi))
+            return bands
+
+        selected_profile_meta = None
+        selected_target_classification = ""
+        selected_target_bands_text = ""
+
+        def _update_target_profile_summary():
+            nonlocal selected_profile_meta, selected_target_classification, selected_target_bands_text
+            if selected_profile_meta:
+                _, name, cls, _, _, btxt = selected_profile_meta
+                cls_txt = selected_target_classification or cls or "unclassified"
+                bands_txt = selected_target_bands_text or btxt or f"{band_lo.value():.1f}-{band_hi.value():.1f}"
+                target_profile_summary.setText(f"{name} | {cls_txt} | {bands_txt}")
+            else:
+                target_profile_summary.setText("No target profile selected (using Bandpass above).")
+
+        def _open_target_profiles_popup():
+            nonlocal selected_profile_meta, selected_target_classification, selected_target_bands_text
+            pop = QtWidgets.QDialog(dlg)
+            pop.setWindowTitle("DIFAR Target Profiles")
+            pop.resize(700, 320)
+            lay = QtWidgets.QVBoxLayout(pop)
+            form = QtWidgets.QFormLayout()
+            lay.addLayout(form)
+
+            search_edit = QtWidgets.QLineEdit(); search_edit.setPlaceholderText("Search saved target profiles...")
+            profile_combo = QtWidgets.QComboBox()
+            profile_name_edit = QtWidgets.QLineEdit(); profile_name_edit.setPlaceholderText("Profile name")
+            class_edit = QtWidgets.QLineEdit(); class_edit.setPlaceholderText("e.g., vessel, cetacean, unknown")
+            bands_combo = QtWidgets.QComboBox(); bands_combo.setEditable(True)
+            bands_combo.addItems(["20-80", "80-250", "250-600"])
+            add_preset_btn = QtWidgets.QPushButton("Add Band Preset")
+            save_profile_btn = QtWidgets.QPushButton("Save / Update Target Profile")
+            apply_btn = QtWidgets.QPushButton("Use Selected Profile")
+            close_btn2 = QtWidgets.QPushButton("Close")
+
+            b_row = QtWidgets.QHBoxLayout(); b_row.addWidget(bands_combo); b_row.addWidget(add_preset_btn)
+            b_w = QtWidgets.QWidget(); b_w.setLayout(b_row)
+            form.addRow("Search:", search_edit)
+            form.addRow("Profile:", profile_combo)
+            form.addRow("Profile name:", profile_name_edit)
+            form.addRow("Classification:", class_edit)
+            form.addRow("Target bands:", b_w)
+            form.addRow("", save_profile_btn)
+
+            btns = QtWidgets.QHBoxLayout(); btns.addWidget(apply_btn); btns.addStretch(1); btns.addWidget(close_btn2)
+            lay.addLayout(btns)
+
+            def _refresh_profiles(qtxt=""):
+                conn = sqlite3.connect(DB_FILENAME)
+                self._ensure_difar_target_profiles_table(conn)
+                cur = conn.cursor()
+                pid = self._resolve_active_project_id()
+                q = (qtxt or "").strip()
+                sql = (
+                    "SELECT id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text "
+                    "FROM difar_target_profiles WHERE (project_id IS NULL OR project_id = ?) "
+                )
+                params = [pid]
+                if q:
+                    like = f"%{q}%"
+                    sql += "AND (profile_name LIKE ? OR classification LIKE ? OR target_bands_text LIKE ?) "
+                    params.extend([like, like, like])
+                sql += "ORDER BY profile_name COLLATE NOCASE"
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall(); conn.close()
+                profile_combo.blockSignals(True)
+                profile_combo.clear(); profile_combo.addItem("(No profile)", None)
+                for rid, name, cls, lo, hi, btxt in rows:
+                    label = f"{name} | {cls or 'unclassified'} | {btxt or f'{lo:.0f}-{hi:.0f}'}"
+                    profile_combo.addItem(label, (int(rid), name or "", cls or "", float(lo or 0.0), float(hi or 0.0), btxt or ""))
+                    if btxt and bands_combo.findText(btxt) < 0:
+                        bands_combo.addItem(btxt)
+                profile_combo.blockSignals(False)
+
+            def _on_selected(_idx=None):
+                meta = profile_combo.currentData()
+                if not meta:
+                    return
+                _, name, cls, lo, hi, btxt = meta
+                profile_name_edit.setText(name)
+                class_edit.setText(cls)
+                if lo > 0 and hi > lo:
+                    band_lo.setValue(lo); band_hi.setValue(hi)
+                if btxt:
+                    bands_combo.setEditText(btxt)
+
+            def _save_profile():
+                name = profile_name_edit.text().strip()
+                if not name:
+                    QtWidgets.QMessageBox.warning(pop, "Missing Profile Name", "Enter a target profile name.")
+                    return
+                bands_txt = bands_combo.currentText().strip() or f"{band_lo.value():.1f}-{band_hi.value():.1f}"
+                _parse_target_bands(bands_txt)
+                cls = class_edit.text().strip() or None
+                now = datetime.now(timezone.utc).isoformat()
+                pid = self._resolve_active_project_id()
+                conn = sqlite3.connect(DB_FILENAME)
+                self._ensure_difar_target_profiles_table(conn)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO difar_target_profiles
+                    (created_utc, updated_utc, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (now, now, pid, name, cls, float(band_lo.value()), float(band_hi.value()), bands_txt, "Saved from DIFAR tool"),
+                )
+                conn.commit(); conn.close()
+                _refresh_profiles(search_edit.text())
+                out.appendPlainText(f"Saved target profile: {name} ({bands_txt})")
+
+            def _add_preset():
+                txt = bands_combo.currentText().strip()
+                if not txt:
+                    return
+                try:
+                    _parse_target_bands(txt)
+                except Exception as e:
+                    QtWidgets.QMessageBox.warning(pop, "Invalid Band Preset", str(e))
+                    return
+                if bands_combo.findText(txt) < 0:
+                    bands_combo.addItem(txt)
+
+            def _apply_profile():
+                nonlocal selected_profile_meta, selected_target_classification, selected_target_bands_text
+                selected_profile_meta = profile_combo.currentData()
+                selected_target_classification = class_edit.text().strip()
+                selected_target_bands_text = bands_combo.currentText().strip()
+                _update_target_profile_summary()
+                pop.accept()
+
+            search_edit.textChanged.connect(_refresh_profiles)
+            profile_combo.currentIndexChanged.connect(_on_selected)
+            save_profile_btn.clicked.connect(_save_profile)
+            add_preset_btn.clicked.connect(_add_preset)
+            apply_btn.clicked.connect(_apply_profile)
+            close_btn2.clicked.connect(pop.reject)
+            _refresh_profiles()
+            if selected_target_bands_text:
+                bands_combo.setEditText(selected_target_bands_text)
+            pop.exec_()
+
         def _run_processing():
             wav_path = (loaded_wav or "").strip() or wav_edit.text().strip()
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
@@ -513,7 +791,7 @@ class DifarToolsMixin:
                 z_val = int(z_spin.value())
                 z_idx = None if z_val <= 0 else (z_val - 1)
 
-                cfg = self._make_difar_config_compat(
+                base_cfg_kwargs = dict(
                     omni_channel=int(omni_spin.value()) - 1,
                     x_channel=int(x_spin.value()) - 1,
                     y_channel=int(y_spin.value()) - 1,
@@ -530,68 +808,101 @@ class DifarToolsMixin:
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
                 )
+                bands_text = (selected_target_bands_text or "").strip()
+                bands = _parse_target_bands(bands_text)
+                if not bands:
+                    bands = [(float(band_lo.value()), float(band_hi.value()))]
 
-                result = process_wav_to_bearing_time_series(
-                    wav_path,
-                    cfg=cfg,
-                    export_csv_path=export_path,
-                )
+                selected_profile_id = selected_profile_meta[0] if selected_profile_meta else None
+                target_class = selected_target_classification or (selected_profile_meta[2] if selected_profile_meta else None)
 
-                n_frames = len(result.get("time_s", []))
-                out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)}")
-                out.appendPlainText(f"Frames: {n_frames}")
-                out.appendPlainText(
-                    f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
-                )
-                out.appendPlainText(
-                    f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
-                )
-                out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
-                if export_path:
-                    out.appendPlainText(f"Saved CSV: {export_path}")
+                for band_idx, (bp_lo, bp_hi) in enumerate(bands, start=1):
+                    cfg = self._make_difar_config_compat(**base_cfg_kwargs, bandpass_hz=(bp_lo, bp_hi))
+                    run_tag = f"band {bp_lo:.1f}-{bp_hi:.1f} Hz"
 
-                run_id = None
-                if save_db_chk.isChecked():
-                    serializable = {}
-                    for k, v in result.items():
-                        try:
-                            serializable[k] = [float(x) if hasattr(x, "__float__") else str(x) for x in list(v)]
-                        except Exception:
-                            serializable[k] = str(v)
+                    run_export_path = None
+                    if export_path:
+                        if len(bands) == 1:
+                            run_export_path = export_path
+                        else:
+                            base, ext = os.path.splitext(export_path)
+                            ext = ext or ".csv"
+                            run_export_path = f"{base}_b{int(round(bp_lo))}-{int(round(bp_hi))}{ext}"
 
-                    conn = sqlite3.connect(DB_FILENAME)
-                    self._ensure_difar_results_table(conn)
-                    cur = conn.cursor()
-                    cur.execute(
-                        """
-                        INSERT INTO difar_results (
-                            created_utc, wav_path, calibration_name, start_time_utc,
-                            omni_channel, x_channel, y_channel, z_channel,
-                            compass_path, sensor_lat, sensor_lon, result_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            datetime.now(timezone.utc).isoformat(),
+                    if chunk_chk.isChecked():
+                        result = process_wav_to_bearing_time_series_chunked(
                             wav_path,
-                            cal_name,
-                            dt.isoformat(),
-                            int(omni_spin.value()) - 1,
-                            int(x_spin.value()) - 1,
-                            int(y_spin.value()) - 1,
-                            (None if z_spin.value() <= 0 else int(z_spin.value()) - 1),
-                            (compass_path or None),
-                            (float(lat_edit.text()) if lat_edit.text().strip() else None),
-                            (float(lon_edit.text()) if lon_edit.text().strip() else None),
-                            json.dumps(serializable),
-                        ),
-                    )
-                    run_id = cur.lastrowid
-                    conn.commit()
-                    conn.close()
-                    out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
+                            cfg=cfg,
+                            export_csv_path=run_export_path,
+                            chunk_seconds=float(chunk_minutes.value()) * 60.0,
+                            overlap_seconds=float(overlap_seconds.value()),
+                        )
+                    else:
+                        result = process_wav_to_bearing_time_series(
+                            wav_path,
+                            cfg=cfg,
+                            export_csv_path=run_export_path,
+                        )
 
-                lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
-                if lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result:
+                    n_frames = len(result.get("time_s", []))
+                    out.appendPlainText(f"Processed WAV: {os.path.basename(wav_path)} [{band_idx}/{len(bands)} {run_tag}]")
+                    out.appendPlainText(f"Frames: {n_frames}")
+                    out.appendPlainText(
+                        f"Channel map (1-based): OMNI={omni_spin.value()}, X={x_spin.value()}, Y={y_spin.value()}, Z={(z_spin.value() if z_spin.value() > 0 else 'unused')}"
+                    )
+                    out.appendPlainText(
+                        f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
+                    )
+                    out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
+                    if run_export_path:
+                        out.appendPlainText(f"Saved CSV: {run_export_path}")
+
+                    run_id = None
+                    if save_db_chk.isChecked():
+                        serializable = {}
+                        for k, v in result.items():
+                            try:
+                                serializable[k] = [float(x) if hasattr(x, "__float__") else str(x) for x in list(v)]
+                            except Exception:
+                                serializable[k] = str(v)
+
+                        conn = sqlite3.connect(DB_FILENAME)
+                        self._ensure_difar_results_table(conn)
+                        cur = conn.cursor()
+                        cur.execute(
+                            """
+                            INSERT INTO difar_results (
+                                created_utc, wav_path, calibration_name, start_time_utc,
+                                omni_channel, x_channel, y_channel, z_channel,
+                                compass_path, sensor_lat, sensor_lon, target_profile_id, target_classification, result_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                datetime.now(timezone.utc).isoformat(),
+                                wav_path,
+                                f"{cal_name} [{run_tag}]",
+                                dt.isoformat(),
+                                int(omni_spin.value()) - 1,
+                                int(x_spin.value()) - 1,
+                                int(y_spin.value()) - 1,
+                                (None if z_spin.value() <= 0 else int(z_spin.value()) - 1),
+                                (compass_path or None),
+                                (float(lat_edit.text()) if lat_edit.text().strip() else None),
+                                (float(lon_edit.text()) if lon_edit.text().strip() else None),
+                                selected_profile_id,
+                                target_class,
+                                json.dumps(serializable),
+                            ),
+                        )
+                        run_id = cur.lastrowid
+                        conn.commit()
+                        conn.close()
+                        out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
+
+                    lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
+                    if not (lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result):
+                        continue
+
                     lat = float(lat_txt)
                     lon = float(lon_txt)
                     rays = bearing_series_static_map_vectors(
@@ -605,10 +916,15 @@ class DifarToolsMixin:
                         f"Display on Chart map: {'ON' if show_on_chart_chk.isChecked() else 'OFF'}"
                     )
 
-                    project_id = getattr(self, "current_project_id", None)
+                    def _as_float_list(raw):
+                        if raw is None:
+                            return []
+                        return [float(v) for v in list(raw)]
+
+                    project_id = self._resolve_active_project_id()
                     try:
                         conn = sqlite3.connect(DB_FILENAME)
-                        self._ensure_difar_rays_table(conn)
+                        self._ensure_difar_rays_table_compat(conn)
                         cur = conn.cursor()
                         cur.execute(
                             """
@@ -620,15 +936,15 @@ class DifarToolsMixin:
                             """,
                             (
                                 datetime.now(timezone.utc).isoformat(),
-                                (int(project_id) if project_id is not None else None),
+                                project_id,
                                 run_id,
-                                f"DIFAR: {os.path.basename(wav_path)}",
+                                f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                                 float(lat),
                                 float(lon),
-                                json.dumps([float(v) for v in list(rays.get("lat2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("lon2") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("time_s") or [])]),
-                                json.dumps([float(v) for v in list(rays.get("bearing_true_deg") or [])]),
+                                json.dumps(_as_float_list(rays.get("lat2"))),
+                                json.dumps(_as_float_list(rays.get("lon2"))),
+                                json.dumps(_as_float_list(rays.get("time_s"))),
+                                json.dumps(_as_float_list(rays.get("bearing_true_deg"))),
                             ),
                         )
                         ray_id = cur.lastrowid
@@ -645,7 +961,7 @@ class DifarToolsMixin:
                             "lon2": rays.get("lon2"),
                             "time_s": rays.get("time_s"),
                             "bearing_true_deg": rays.get("bearing_true_deg"),
-                            "label": f"DIFAR: {os.path.basename(wav_path)}",
+                            "label": f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                         }
                         if hasattr(self, "refresh_chart_tracks"):
                             try:
@@ -665,6 +981,7 @@ class DifarToolsMixin:
                 QtWidgets.QMessageBox.critical(dlg, "Simulator Unavailable", f"Failed to load DIFAR simulator tool:\n{e}")
                 return
             try:
+                project_id = self._resolve_active_project_id()
                 output_dir = None
                 if hasattr(self, "_project_subdir"):
                     try:
@@ -673,8 +990,9 @@ class DifarToolsMixin:
                         output_dir = None
                 self._difar_sim_window = launch_difar_simulator(
                     parent=dlg,
-                    project_id=getattr(self, "current_project_id", None),
+                    project_id=project_id,
                     output_dir=output_dir,
+                    db_path=DB_FILENAME,
                     host_window=self,
                 )
             except Exception as e:
@@ -685,6 +1003,7 @@ class DifarToolsMixin:
         wav_browse.clicked.connect(_browse_wav)
         compass_browse.clicked.connect(_browse_compass)
         export_browse.clicked.connect(_browse_export)
+        manage_profiles_btn.clicked.connect(_open_target_profiles_popup)
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
         cal_combo.currentIndexChanged.connect(_update_calibration_plots)
@@ -695,4 +1014,5 @@ class DifarToolsMixin:
                 pass
 
         _refresh_calibration_list()
+        _update_target_profile_summary()
         dlg.exec_()
