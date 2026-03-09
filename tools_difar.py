@@ -240,6 +240,52 @@ class DifarToolsMixin:
         return None
 
 
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
+
+
     @staticmethod
     def _make_difar_config_compat(**kwargs):
         """Build DifarConfig while tolerating older/newer parameter names."""
@@ -294,10 +340,56 @@ class DifarToolsMixin:
                 compass_path TEXT,
                 sensor_lat REAL,
                 sensor_lon REAL,
+                target_profile_id INTEGER,
+                target_classification TEXT,
                 result_json TEXT
             )
             """
         )
+        cur.execute("PRAGMA table_info(difar_results)")
+        cols = {r[1] for r in cur.fetchall()}
+        if "target_profile_id" not in cols:
+            cur.execute("ALTER TABLE difar_results ADD COLUMN target_profile_id INTEGER")
+        if "target_classification" not in cols:
+            cur.execute("ALTER TABLE difar_results ADD COLUMN target_classification TEXT")
+        conn.commit()
+
+    @staticmethod
+    def _ensure_difar_target_profiles_table(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_target_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                updated_utc TEXT,
+                project_id INTEGER,
+                profile_name TEXT NOT NULL,
+                classification TEXT,
+                band_lo_hz REAL,
+                band_hi_hz REAL,
+                target_bands_text TEXT,
+                notes TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_target_profiles_project ON difar_target_profiles(project_id, profile_name)")
+        cur.execute("SELECT COUNT(*) FROM difar_target_profiles")
+        if int(cur.fetchone()[0]) == 0:
+            now = datetime.now(timezone.utc).isoformat()
+            seeds = [
+                (now, now, None, "Low Tonal Vessel", "vessel", 20.0, 80.0, "20-80", "Preloaded"),
+                (now, now, None, "Mid Broadband Machinery", "vessel", 80.0, 250.0, "80-250", "Preloaded"),
+                (now, now, None, "High Tonal / Transient", "unknown", 250.0, 600.0, "250-600", "Preloaded"),
+            ]
+            cur.executemany(
+                """
+                INSERT INTO difar_target_profiles
+                (created_utc, updated_utc, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                seeds,
+            )
         conn.commit()
 
     @staticmethod
@@ -532,6 +624,27 @@ class DifarToolsMixin:
         target_bands_edit.setPlaceholderText("Optional multi-target bands, e.g. 20-80; 80-250; 250-600")
         proc_form.addRow("Target bands (opt):", target_bands_edit)
 
+        profile_search_edit = QtWidgets.QLineEdit(); profile_search_edit.setPlaceholderText("Search saved target profiles...")
+        proc_form.addRow("Profile search:", profile_search_edit)
+
+        profile_combo = QtWidgets.QComboBox()
+        proc_form.addRow("Target profile:", profile_combo)
+
+        profile_name_edit = QtWidgets.QLineEdit(); profile_name_edit.setPlaceholderText("Profile name")
+        classification_edit = QtWidgets.QLineEdit(); classification_edit.setPlaceholderText("e.g., vessel, cetacean, unknown")
+        proc_form.addRow("Profile name:", profile_name_edit)
+        proc_form.addRow("Classification:", classification_edit)
+
+        band_preset_combo = QtWidgets.QComboBox(); band_preset_combo.setEditable(True)
+        band_preset_combo.addItems(["20-80", "80-250", "250-600"])
+        add_preset_btn = QtWidgets.QPushButton("Add Band Preset")
+        preset_row = QtWidgets.QHBoxLayout(); preset_row.addWidget(band_preset_combo); preset_row.addWidget(add_preset_btn)
+        preset_w = QtWidgets.QWidget(); preset_w.setLayout(preset_row)
+        proc_form.addRow("Target bands preset:", preset_w)
+
+        save_profile_btn = QtWidgets.QPushButton("Save / Update Target Profile")
+        proc_form.addRow("", save_profile_btn)
+
         lat_edit = QtWidgets.QLineEdit(); lat_edit.setPlaceholderText("sensor latitude")
         lon_edit = QtWidgets.QLineEdit(); lon_edit.setPlaceholderText("sensor longitude")
         latlon_row = QtWidgets.QHBoxLayout(); latlon_row.addWidget(lat_edit); latlon_row.addWidget(lon_edit)
@@ -741,6 +854,87 @@ class DifarToolsMixin:
                 bands.append((lo, hi))
             return bands
 
+        def _refresh_target_profiles(search_txt: str = ""):
+            conn = sqlite3.connect(DB_FILENAME)
+            self._ensure_difar_target_profiles_table(conn)
+            cur = conn.cursor()
+            pid = self._resolve_active_project_id()
+            q = (search_txt or "").strip()
+            sql = (
+                "SELECT id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text "
+                "FROM difar_target_profiles "
+                "WHERE (project_id IS NULL OR project_id = ?) "
+            )
+            params = [pid]
+            if q:
+                sql += "AND (profile_name LIKE ? OR classification LIKE ? OR target_bands_text LIKE ?) "
+                like = f"%{q}%"
+                params.extend([like, like, like])
+            sql += "ORDER BY profile_name COLLATE NOCASE"
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+            conn.close()
+
+            profile_combo.blockSignals(True)
+            profile_combo.clear()
+            profile_combo.addItem("(No profile)", None)
+            for rid, name, cls, lo, hi, btxt in rows:
+                label = f"{name} | {cls or 'unclassified'} | {btxt or f'{lo:.0f}-{hi:.0f}'}"
+                profile_combo.addItem(label, (int(rid), name or "", cls or "", float(lo or 0.0), float(hi or 0.0), btxt or ""))
+            profile_combo.blockSignals(False)
+
+        def _on_profile_selected(_idx=None):
+            meta = profile_combo.currentData()
+            if not meta:
+                return
+            _, name, cls, lo, hi, btxt = meta
+            profile_name_edit.setText(name)
+            classification_edit.setText(cls)
+            if lo > 0 and hi > lo:
+                band_lo.setValue(float(lo)); band_hi.setValue(float(hi))
+            if btxt:
+                target_bands_edit.setText(btxt)
+                band_preset_combo.setEditText(btxt)
+
+        def _save_target_profile():
+            name = profile_name_edit.text().strip()
+            if not name:
+                QtWidgets.QMessageBox.warning(dlg, "Missing Profile Name", "Enter a target profile name.")
+                return
+            cls = classification_edit.text().strip() or None
+            bands_txt = (target_bands_edit.text().strip() or band_preset_combo.currentText().strip() or f"{band_lo.value():.1f}-{band_hi.value():.1f}")
+            pid = self._resolve_active_project_id()
+            now = datetime.now(timezone.utc).isoformat()
+            conn = sqlite3.connect(DB_FILENAME)
+            self._ensure_difar_target_profiles_table(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO difar_target_profiles
+                (created_utc, updated_utc, project_id, profile_name, classification, band_lo_hz, band_hi_hz, target_bands_text, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (now, now, pid, name, cls, float(band_lo.value()), float(band_hi.value()), bands_txt, "Saved from DIFAR tool"),
+            )
+            conn.commit(); conn.close()
+            if band_preset_combo.findText(bands_txt) < 0:
+                band_preset_combo.addItem(bands_txt)
+            _refresh_target_profiles(profile_search_edit.text())
+            out.appendPlainText(f"Saved target profile: {name} ({bands_txt})")
+
+        def _add_band_preset():
+            txt = band_preset_combo.currentText().strip()
+            if not txt:
+                return
+            try:
+                _parse_target_bands(txt)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(dlg, "Invalid Band Preset", str(e))
+                return
+            if band_preset_combo.findText(txt) < 0:
+                band_preset_combo.addItem(txt)
+            target_bands_edit.setText(txt)
+
         def _run_processing():
             wav_path = (loaded_wav or "").strip() or wav_edit.text().strip()
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
@@ -787,9 +981,14 @@ class DifarToolsMixin:
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
                 )
-                bands = _parse_target_bands(target_bands_edit.text())
+                bands_text = target_bands_edit.text().strip() or band_preset_combo.currentText().strip()
+                bands = _parse_target_bands(bands_text)
                 if not bands:
                     bands = [(float(band_lo.value()), float(band_hi.value()))]
+
+                selected_profile = profile_combo.currentData()
+                selected_profile_id = selected_profile[0] if selected_profile else None
+                target_class = classification_edit.text().strip() or (selected_profile[2] if selected_profile else None)
 
                 for band_idx, (bp_lo, bp_hi) in enumerate(bands, start=1):
                     cfg = self._make_difar_config_compat(**base_cfg_kwargs, bandpass_hz=(bp_lo, bp_hi))
@@ -849,8 +1048,8 @@ class DifarToolsMixin:
                             INSERT INTO difar_results (
                                 created_utc, wav_path, calibration_name, start_time_utc,
                                 omni_channel, x_channel, y_channel, z_channel,
-                                compass_path, sensor_lat, sensor_lon, result_json
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                compass_path, sensor_lat, sensor_lon, target_profile_id, target_classification, result_json
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 datetime.now(timezone.utc).isoformat(),
@@ -864,6 +1063,8 @@ class DifarToolsMixin:
                                 (compass_path or None),
                                 (float(lat_edit.text()) if lat_edit.text().strip() else None),
                                 (float(lon_edit.text()) if lon_edit.text().strip() else None),
+                                selected_profile_id,
+                                target_class,
                                 json.dumps(serializable),
                             ),
                         )
@@ -976,6 +1177,11 @@ class DifarToolsMixin:
         wav_browse.clicked.connect(_browse_wav)
         compass_browse.clicked.connect(_browse_compass)
         export_browse.clicked.connect(_browse_export)
+        profile_search_edit.textChanged.connect(_refresh_target_profiles)
+        profile_combo.currentIndexChanged.connect(_on_profile_selected)
+        save_profile_btn.clicked.connect(_save_target_profile)
+        add_preset_btn.clicked.connect(_add_band_preset)
+        band_preset_combo.currentTextChanged.connect(lambda txt: target_bands_edit.setText((txt or "").strip()))
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
         cal_combo.currentIndexChanged.connect(_update_calibration_plots)
@@ -986,4 +1192,5 @@ class DifarToolsMixin:
                 pass
 
         _refresh_calibration_list()
+        _refresh_target_profiles()
         dlg.exec_()
