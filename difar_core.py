@@ -457,12 +457,14 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         bearing_sensor_deg, conf = _weighted_circular_mean_deg(inst_theta, mag, eps=cfg.eps)
         bearing_sensor_deg = (bearing_sensor_deg + float(cfg.bearing_offset_deg)) % 360.0
         if bool(cfg.resolve_180_ambiguity):
+            resolved_by_omni = False
             if bool(cfg.use_omni_for_ambiguity):
-                bearing_sensor_deg = _resolve_180_by_omni_active_intensity(
+                bearing_sensor_deg, resolved_by_omni = _resolve_180_by_omni_active_intensity(
                     bearing_sensor_deg, om_f, x_f, y_f, eps=cfg.eps
                 )
-            prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
-            bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
+            if not resolved_by_omni:
+                prev_b = (b_sensor_out[-1] if len(b_sensor_out) > 0 else None)
+                bearing_sensor_deg = _resolve_180_by_continuity(bearing_sensor_deg, prev_b)
 
         directional_power = float(np.mean(x_f * x_f + y_f * y_f))
         omni_power = float(np.mean(om_f * om_f))
@@ -519,28 +521,123 @@ def process_wav_to_bearing_time_series(
     out = compute_bearing_time_series(data=data, fs=fs, cfg=cfg)
 
     if export_csv_path:
-        with open(export_csv_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            columns = ["time_s"]
-            if "timestamp_utc" in out:
-                columns.append("timestamp_utc")
-            columns.extend(["bearing_sensor_deg", "bearing_true_deg", "confidence", "snr_db"])
-            if "intensity_motion_db_re_1_mps" in out:
-                columns.append("intensity_motion_db_re_1_mps")
-            if "intensity_pressure_db_re_1_Pa" in out:
-                columns.append("intensity_pressure_db_re_1_Pa")
-            w.writerow(columns)
+        _write_bearing_timeseries_csv(out, export_csv_path)
 
-            row_count = len(out["time_s"])
-            for i in range(row_count):
-                row = []
-                for col in columns:
-                    val = out[col][i]
-                    if isinstance(val, (np.floating, float)):
-                        row.append(float(val))
-                    else:
-                        row.append(str(val))
-                w.writerow(row)
+    return out
+
+
+def _write_bearing_timeseries_csv(out: Dict[str, np.ndarray], export_csv_path: str) -> None:
+    """Write bearing time-series output dictionary to CSV."""
+    with open(export_csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        columns = ["time_s"]
+        if "timestamp_utc" in out:
+            columns.append("timestamp_utc")
+        columns.extend(["bearing_sensor_deg", "bearing_true_deg", "confidence", "snr_db"])
+        if "intensity_motion_db_re_1_mps" in out:
+            columns.append("intensity_motion_db_re_1_mps")
+        if "intensity_pressure_db_re_1_Pa" in out:
+            columns.append("intensity_pressure_db_re_1_Pa")
+        w.writerow(columns)
+
+        row_count = len(out["time_s"])
+        for i in range(row_count):
+            row = []
+            for col in columns:
+                val = out[col][i]
+                if isinstance(val, (np.floating, float)):
+                    row.append(float(val))
+                else:
+                    row.append(str(val))
+            w.writerow(row)
+
+
+def process_wav_to_bearing_time_series_chunked(
+    wav_path: str,
+    cfg: DifarConfig | None = None,
+    export_csv_path: Optional[str] = None,
+    chunk_seconds: float = 900.0,
+    overlap_seconds: float = 2.0,
+) -> Dict[str, np.ndarray]:
+    """Process long WAV files in chunks to limit memory usage.
+
+    Chunk outputs are merged into a single result in file-relative time.
+    """
+    cfg = cfg or DifarConfig()
+    if chunk_seconds <= 0:
+        raise ValueError("chunk_seconds must be > 0")
+    if overlap_seconds < 0:
+        raise ValueError("overlap_seconds must be >= 0")
+
+    with sf.SoundFile(wav_path, "r") as f:
+        fs = float(f.samplerate)
+        total_frames = int(len(f))
+
+        chunk_frames = max(1, int(round(chunk_seconds * fs)))
+        overlap_frames = max(0, int(round(overlap_seconds * fs)))
+        step_frames = max(1, chunk_frames - overlap_frames)
+
+        chunks_out = []
+        last_time = -1e18
+        for start in range(0, total_frames, step_frames):
+            f.seek(start)
+            data = f.read(frames=chunk_frames, dtype="float64", always_2d=True)
+            if data.size == 0:
+                break
+
+            chunk_cfg = DifarConfig(**vars(cfg))
+            start_offset_s = float(start) / fs
+            if chunk_cfg.start_time_utc is not None:
+                chunk_cfg.start_time_utc = chunk_cfg.start_time_utc + timedelta(seconds=start_offset_s)
+            if chunk_cfg.compass is not None and chunk_cfg.compass.time_s is not None:
+                chunk_cfg.compass = CompassReference(
+                    heading_deg=np.asarray(chunk_cfg.compass.heading_deg, dtype=np.float64),
+                    time_s=np.asarray(chunk_cfg.compass.time_s, dtype=np.float64) - start_offset_s,
+                )
+
+            out = compute_bearing_time_series(data=data, fs=fs, cfg=chunk_cfg)
+            if len(out.get("time_s", [])) == 0:
+                continue
+
+            t = np.asarray(out["time_s"], dtype=np.float64) + start_offset_s
+            keep = t > last_time
+            if not np.any(keep):
+                continue
+
+            filtered = {}
+            for k, v in out.items():
+                arr = np.asarray(v)
+                filtered[k] = arr[keep]
+            filtered["time_s"] = t[keep]
+            last_time = float(filtered["time_s"][-1])
+            chunks_out.append(filtered)
+
+            if start + chunk_frames >= total_frames:
+                break
+
+    if not chunks_out:
+        out = {
+            "time_s": np.asarray([], dtype=np.float64),
+            "bearing_sensor_deg": np.asarray([], dtype=np.float64),
+            "bearing_true_deg": np.asarray([], dtype=np.float64),
+            "confidence": np.asarray([], dtype=np.float64),
+            "snr_db": np.asarray([], dtype=np.float64),
+        }
+    else:
+        keys = []
+        for c in chunks_out:
+            for k in c.keys():
+                if k not in keys:
+                    keys.append(k)
+        out = {}
+        for k in keys:
+            parts = [np.asarray(c[k]) for c in chunks_out if k in c]
+            if not parts:
+                continue
+            out[k] = np.concatenate(parts, axis=0)
+
+    if export_csv_path:
+        _write_bearing_timeseries_csv(out, export_csv_path)
 
     return out
 
@@ -778,23 +875,23 @@ def _resolve_180_by_omni_active_intensity(
     x_frame: np.ndarray,
     y_frame: np.ndarray,
     eps: float = 1e-12,
-) -> float:
+) -> tuple[float, bool]:
     """Resolve ±180 using an active-intensity proxy from OMNI and particle motion.
 
     Computes frame-wise components Ix=mean(omni*x), Iy=mean(omni*y), and
     chooses between `curr_deg` and `curr_deg+180` that best matches the
-    resulting direction atan2(Iy, Ix). If intensity vector is too weak, keeps
-    current bearing unchanged.
+    resulting direction atan2(Iy, Ix). Returns `(bearing_deg, used_intensity)`.
+    If intensity vector is too weak, keeps current bearing unchanged and marks
+    `used_intensity=False`.
     """
     ix = float(np.mean(omni_frame * x_frame))
     iy = float(np.mean(omni_frame * y_frame))
     mag = float(np.hypot(ix, iy))
     if mag <= eps:
-        return float(curr_deg % 360.0)
+        return float(curr_deg % 360.0), False
 
     intensity_dir = float((np.rad2deg(np.arctan2(iy, ix)) + 360.0) % 360.0)
     alt = (float(curr_deg) + 180.0) % 360.0
     d0 = _ang_diff_deg(curr_deg, intensity_dir)
     d1 = _ang_diff_deg(alt, intensity_dir)
-    return float((curr_deg % 360.0) if d0 <= d1 else alt)
-
+    return float((curr_deg % 360.0) if d0 <= d1 else alt), True
