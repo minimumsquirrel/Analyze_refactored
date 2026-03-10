@@ -14489,6 +14489,13 @@ class MainWindow(
         self.chart_show_difar_cb.toggled.connect(self._plot_selected_gps_tracks)
         sidebar.addWidget(self.chart_show_difar_cb)
 
+        sidebar.addWidget(QtWidgets.QLabel("DIFAR Bearing Events"))
+        self.difar_event_list = QtWidgets.QListWidget()
+        self.difar_event_list.setMinimumHeight(110)
+        self.difar_event_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.difar_event_list.itemSelectionChanged.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.difar_event_list)
+
         sidebar.addWidget(QtWidgets.QLabel("Waypoints"))
         self.waypoint_list = QtWidgets.QListWidget()
         self.waypoint_list.setMinimumHeight(120)
@@ -14852,6 +14859,7 @@ class MainWindow(
         if target_item is not None:
             target_item.setSelected(True)
         self.refresh_chart_waypoints()
+        self._refresh_difar_event_list()
         self._plot_selected_gps_tracks()
 
     def _fetch_track_points(self, track_id):
@@ -15641,6 +15649,50 @@ class MainWindow(
             })
         return overlays
 
+    def _refresh_difar_event_list(self):
+        if not hasattr(self, 'difar_event_list'):
+            return
+        selected_ids = set()
+        for item in self.difar_event_list.selectedItems():
+            did = item.data(QtCore.Qt.UserRole)
+            if did is not None:
+                selected_ids.add(int(did))
+
+        overlays = []
+        try:
+            overlays = self._fetch_difar_overlays_for_chart()
+        except Exception:
+            overlays = []
+
+        self.difar_event_list.blockSignals(True)
+        self.difar_event_list.clear()
+        for ov in overlays:
+            did = ov.get('id')
+            label = ov.get('label') or f"DIFAR Rays {did}"
+            created = ov.get('created_utc') or ''
+            if created:
+                label = f"{label} ({str(created).split('T')[0]})"
+            item = QtWidgets.QListWidgetItem(label)
+            if did is not None:
+                item.setData(QtCore.Qt.UserRole, int(did))
+            self.difar_event_list.addItem(item)
+            if did is not None and int(did) in selected_ids:
+                item.setSelected(True)
+        self.difar_event_list.blockSignals(False)
+
+    def _selected_difar_event_ids(self):
+        if not hasattr(self, 'difar_event_list'):
+            return None
+        ids = []
+        for item in self.difar_event_list.selectedItems():
+            did = item.data(QtCore.Qt.UserRole)
+            if did is not None:
+                try:
+                    ids.append(int(did))
+                except Exception:
+                    pass
+        return set(ids) if ids else None
+
 
 
     def _plot_selected_gps_tracks(self):
@@ -15693,6 +15745,10 @@ class MainWindow(
             transient = getattr(self, "_difar_chart_overlay", None)
             if transient:
                 difar_overlays.append(transient)
+
+        selected_difar_ids = self._selected_difar_event_ids()
+        if selected_difar_ids:
+            difar_overlays = [ov for ov in difar_overlays if (ov.get('id') in selected_difar_ids)]
 
         for difar_overlay in difar_overlays:
             try:
