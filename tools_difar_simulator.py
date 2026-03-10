@@ -719,6 +719,8 @@ class DifarSimWindow(QtWidgets.QMainWindow):
 
         self._sync_context_from_host()
 
+        self._sync_context_from_host()
+
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
         root.setContentsMargins(10, 10, 10, 10); root.setSpacing(10)
