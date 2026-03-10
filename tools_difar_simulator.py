@@ -466,25 +466,7 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
                       racetrack_center_east_m: float = 0.0, racetrack_center_north_m: float = 0.0,
                       multi_target_enable: bool = False, target_schedule_specs: str = "",
                       target_queue_json: str = "") -> ScenarioResult:
-    n = int(fs * duration_s)
-    if n < 2:
-        raise ValueError("Duration/sample rate combination produces too few samples.")
-
-    t = np.arange(n, dtype=float) / fs
     dt = 1.0 / fs
-    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
-                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
-                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
-                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
-                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
-                                     racetrack_center_north_m=racetrack_center_north_m)
-    vr_mps = np.gradient(r_m, dt)
-
-    v_omni = np.zeros_like(t)
-    v_x = np.zeros_like(t)
-    v_y = np.zeros_like(t)
-    v_z = np.zeros_like(t)
-
     target_defs: List[Dict[str, float]] = [{
         "start_s": 0.0,
         "duration_s": duration_s,
@@ -507,6 +489,26 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
             target_defs = _parse_target_schedule_specs(target_schedule_specs)
         if not target_defs:
             raise ValueError("Multi-target mode enabled but no valid queued targets were provided.")
+
+    required_duration_s = max(float(td.get("start_s", 0.0)) + float(td.get("duration_s", 0.0)) for td in target_defs)
+    duration_s = max(float(duration_s), float(required_duration_s))
+    n = int(fs * duration_s)
+    if n < 2:
+        raise ValueError("Duration/sample rate combination produces too few samples.")
+
+    t = np.arange(n, dtype=float) / fs
+    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
+                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
+                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
+                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
+                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
+                                     racetrack_center_north_m=racetrack_center_north_m)
+    vr_mps = np.gradient(r_m, dt)
+
+    v_omni = np.zeros_like(t)
+    v_x = np.zeros_like(t)
+    v_y = np.zeros_like(t)
+    v_z = np.zeros_like(t)
 
     for ti, td in enumerate(target_defs):
         br_i, rr_i = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
@@ -716,8 +718,6 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.db_path = db_path or DB_FILENAME
         self.host_window = host_window
         self._target_queue: List[Dict[str, Any]] = []
-
-        self._sync_context_from_host()
 
         self._sync_context_from_host()
 
@@ -999,8 +999,19 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             os.makedirs(self.output_dir, exist_ok=True)
             out_prefix = os.path.join(self.output_dir, out_name)
 
+        duration_s = float(self.ds_dur.value())
+        if self.ck_multi_targets.isChecked() and self._target_queue:
+            cursor = 0.0
+            for t in self._target_queue:
+                cursor += float(t.get("gap_s", 0.0) or 0.0)
+                cursor += float(t.get("duration_s", 0.0) or 0.0)
+            queued_end = cursor
+            if queued_end > duration_s:
+                self.append_log(f"Info: extending duration to {queued_end:.1f}s to include full target queue.")
+                duration_s = queued_end
+
         kwargs = dict(out_prefix=out_prefix, cal=self.cal, fs=int(self.sb_fs.value()),
-                      duration_s=float(self.ds_dur.value()), sensor_lat=float(self.ds_lat.value()), sensor_lon=float(self.ds_lon.value()),
+                      duration_s=duration_s, sensor_lat=float(self.ds_lat.value()), sensor_lon=float(self.ds_lon.value()),
                       pattern_name=self.cb_pattern.currentText(), bearing0_deg=float(self.ds_bearing0.value()), range_m=float(self.ds_range.value()),
                       period_s=float(self.ds_period.value()), swing_deg=float(self.ds_swing.value()), rate_hz=float(self.ds_rate.value()),
                       speed_mps=float(self.ds_speed_kts.value()) * KTS_TO_MPS, racetrack_long_m=float(self.ds_rt_long.value()),
