@@ -9,7 +9,7 @@ import csv
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 import numpy as np
 import pandas as pd
@@ -331,36 +331,43 @@ def enforce_vp(data: np.ndarray, max_vp: float, mode: str) -> Tuple[np.ndarray, 
     return data * scale, scale, peak_before
 
 
-def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float, sensor_lat: float, sensor_lon: float,
-                      pattern_name: str, bearing0_deg: float, range_m: float, period_s: float, swing_deg: float,
-                      rate_hz: float, speed_mps: float, racetrack_long_m: float, racetrack_short_m: float,
-                      spiral_r_start_m: float, spiral_r_end_m: float, spiral_revs: float, elevation_deg: float,
-                      sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float,
-                      level_mode: str = "physical_sl", constant_rl_db_re_1upa: float = 120.0,
-                      use_absorption: bool = False, ambient_noise_enable: bool = False,
-                      ambient_noise_db_rel: float = -20.0, ambient_noise_color_alpha: float = 1.0,
-                      wave_mod_enable: bool = False, wave_mod_strength: float = 0.25,
-                      doppler_enable: bool = False, sound_speed_ms: float = 1500.0,
-                      multipath_enable: bool = False, multipath_delay_ms: float = 12.0,
-                      multipath_atten_db: float = 10.0, cavitation_mix_enable: bool = False,
-                      cavitation_mix_db_rel: float = -12.0, max_vp: float = 10.0, vp_mode: str = "scale",
-                      start_epoch_s: float = 0.0, seed: int = 1234, water_density_kgm3: float = 1025.0,
-                      output_track_hz: float = 5.0, export_mode: str = "raw_volts", target_full_scale: float = 0.8,
-                      racetrack_center_east_m: float = 0.0, racetrack_center_north_m: float = 0.0) -> ScenarioResult:
-    n = int(fs * duration_s)
-    if n < 2:
-        raise ValueError("Duration/sample rate combination produces too few samples.")
+def _parse_target_schedule_specs(spec_text: str) -> List[Dict[str, float]]:
+    """Parse scheduled targets text block.
 
-    t = np.arange(n, dtype=float) / fs
-    dt = 1.0 / fs
-    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
-                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
-                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
-                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
-                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
-                                     racetrack_center_north_m=racetrack_center_north_m)
-    vr_mps = np.gradient(r_m, dt)
+    One target per line, CSV format:
+    start_s,duration_s,bearing_deg,range_m,f0_hz,sl_db,sig_type,bw_hz,elevation_deg
 
+    Last three fields are optional.
+    """
+    lines = [ln.strip() for ln in (spec_text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    out = []
+    for ln in lines:
+        parts = [p.strip() for p in ln.split(",")]
+        if len(parts) < 7:
+            raise ValueError(f"Invalid target schedule line: '{ln}'. Need at least 7 comma-separated fields.")
+        start_s = float(parts[0])
+        duration_s = float(parts[1])
+        if duration_s <= 0:
+            raise ValueError(f"duration_s must be > 0 in line: '{ln}'")
+        out.append({
+            "start_s": start_s,
+            "duration_s": duration_s,
+            "bearing_deg": float(parts[2]),
+            "range_m": float(parts[3]),
+            "f0_hz": float(parts[4]),
+            "sl_db": float(parts[5]),
+            "sig_type": str(parts[6]),
+            "bw_hz": float(parts[7]) if len(parts) >= 8 and parts[7] != "" else None,
+            "elevation_deg": float(parts[8]) if len(parts) >= 9 and parts[8] != "" else None,
+        })
+    return out
+
+
+def _synthesize_one_target(t: np.ndarray, fs: int, cal: CalData, r_m: np.ndarray, bearing_deg: np.ndarray, vr_mps: np.ndarray,
+                           sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float, level_mode: str,
+                           constant_rl_db_re_1upa: float, use_absorption: bool, wave_mod_enable: bool,
+                           wave_mod_strength: float, doppler_enable: bool, sound_speed_ms: float,
+                           water_density_kgm3: float, seed: int, elevation_deg: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     src = base_signal(t, sig_type, f0_hz, bw_hz, fs, seed)
     if doppler_enable and sig_type in ("tone", "am_tone", "band_noise"):
         src = apply_doppler_tone_envelope(t, f0_hz, sound_speed_ms, vr_mps, src)
@@ -412,6 +419,89 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
         v_x = sign_x * amp_x * carrier_x
         v_y = sign_y * amp_y * carrier_y
         v_z = sign_z * amp_z * carrier_z
+
+    return v_omni, v_x, v_y, v_z
+
+
+def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float, sensor_lat: float, sensor_lon: float,
+                      pattern_name: str, bearing0_deg: float, range_m: float, period_s: float, swing_deg: float,
+                      rate_hz: float, speed_mps: float, racetrack_long_m: float, racetrack_short_m: float,
+                      spiral_r_start_m: float, spiral_r_end_m: float, spiral_revs: float, elevation_deg: float,
+                      sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float,
+                      level_mode: str = "physical_sl", constant_rl_db_re_1upa: float = 120.0,
+                      use_absorption: bool = False, ambient_noise_enable: bool = False,
+                      ambient_noise_db_rel: float = -20.0, ambient_noise_color_alpha: float = 1.0,
+                      wave_mod_enable: bool = False, wave_mod_strength: float = 0.25,
+                      doppler_enable: bool = False, sound_speed_ms: float = 1500.0,
+                      multipath_enable: bool = False, multipath_delay_ms: float = 12.0,
+                      multipath_atten_db: float = 10.0, cavitation_mix_enable: bool = False,
+                      cavitation_mix_db_rel: float = -12.0, max_vp: float = 10.0, vp_mode: str = "scale",
+                      start_epoch_s: float = 0.0, seed: int = 1234, water_density_kgm3: float = 1025.0,
+                      output_track_hz: float = 5.0, export_mode: str = "raw_volts", target_full_scale: float = 0.8,
+                      racetrack_center_east_m: float = 0.0, racetrack_center_north_m: float = 0.0,
+                      multi_target_enable: bool = False, target_schedule_specs: str = "") -> ScenarioResult:
+    n = int(fs * duration_s)
+    if n < 2:
+        raise ValueError("Duration/sample rate combination produces too few samples.")
+
+    t = np.arange(n, dtype=float) / fs
+    dt = 1.0 / fs
+    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
+                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
+                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
+                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
+                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
+                                     racetrack_center_north_m=racetrack_center_north_m)
+    vr_mps = np.gradient(r_m, dt)
+
+    v_omni = np.zeros_like(t)
+    v_x = np.zeros_like(t)
+    v_y = np.zeros_like(t)
+    v_z = np.zeros_like(t)
+
+    target_defs: List[Dict[str, float]] = [{
+        "start_s": 0.0,
+        "duration_s": duration_s,
+        "bearing_deg": bearing0_deg,
+        "range_m": range_m,
+        "f0_hz": f0_hz,
+        "sl_db": sl_db_re_1upa_1m,
+        "sig_type": sig_type,
+        "bw_hz": bw_hz,
+        "elevation_deg": elevation_deg,
+    }]
+    if multi_target_enable and target_schedule_specs.strip():
+        target_defs.extend(_parse_target_schedule_specs(target_schedule_specs))
+
+    for ti, td in enumerate(target_defs):
+        br_i, rr_i = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
+                                   range_m=float(td.get("range_m", range_m)), period_s=period_s, swing_deg=swing_deg,
+                                   rate_hz=rate_hz, speed_mps=speed_mps, racetrack_long_m=racetrack_long_m,
+                                   racetrack_short_m=racetrack_short_m, spiral_r_start_m=spiral_r_start_m,
+                                   spiral_r_end_m=spiral_r_end_m, spiral_revs=spiral_revs,
+                                   racetrack_center_east_m=racetrack_center_east_m,
+                                   racetrack_center_north_m=racetrack_center_north_m)
+        vr_i = np.gradient(rr_i, dt)
+        t_start = float(td.get("start_s", 0.0))
+        t_dur = float(td.get("duration_s", duration_s))
+        mask = (t >= t_start) & (t < (t_start + t_dur))
+        if not np.any(mask):
+            continue
+        o_i, x_i, y_i, z_i = _synthesize_one_target(
+            t=t, fs=fs, cal=cal, r_m=rr_i, bearing_deg=br_i, vr_mps=vr_i,
+            sig_type=str(td.get("sig_type", sig_type)), f0_hz=float(td.get("f0_hz", f0_hz)),
+            bw_hz=float(td.get("bw_hz") if td.get("bw_hz") is not None else bw_hz),
+            sl_db_re_1upa_1m=float(td.get("sl_db", sl_db_re_1upa_1m)), level_mode=level_mode,
+            constant_rl_db_re_1upa=constant_rl_db_re_1upa, use_absorption=use_absorption,
+            wave_mod_enable=wave_mod_enable, wave_mod_strength=wave_mod_strength,
+            doppler_enable=doppler_enable, sound_speed_ms=sound_speed_ms,
+            water_density_kgm3=water_density_kgm3, seed=seed + 997 * ti,
+            elevation_deg=float(td.get("elevation_deg") if td.get("elevation_deg") is not None else elevation_deg),
+        )
+        v_omni[mask] += o_i[mask]
+        v_x[mask] += x_i[mask]
+        v_y[mask] += y_i[mask]
+        v_z[mask] += z_i[mask]
 
     if multipath_enable:
         delay_s = max(0.0, multipath_delay_ms / 1000.0)
@@ -494,11 +584,10 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
                            "spiral_r_start_m": spiral_r_start_m, "spiral_r_end_m": spiral_r_end_m, "spiral_revs": spiral_revs,
                            "elevation_deg": elevation_deg},
         "source": {"sig_type": sig_type, "f0_hz": f0_hz, "bw_hz": bw_hz, "sl_db_re_1upa_1m": sl_db_re_1upa_1m,
-                   "level_mode": level_mode, "constant_rl_db_re_1upa": constant_rl_db_re_1upa},
+                   "level_mode": level_mode, "constant_rl_db_re_1upa": constant_rl_db_re_1upa,
+                   "multi_target_enable": multi_target_enable, "target_count": len(target_defs), "target_schedule_specs": target_schedule_specs},
         "calibration": {"omni_units": "dB re 1 V/uPa", "vector_units": "dB re 1 V/(m/s)", "xy_phase_units": "deg",
-                        "z_phase_units": "deg", "interpolated_values": {"omni_db_v_per_upa": omni_db, "x_db_v_per_ms": sx_db,
-                                                                             "y_db_v_per_ms": sy_db, "z_db_v_per_ms": sz_db,
-                                                                             "xy_phase_deg": math.degrees(xy_phase), "z_phase_deg": math.degrees(z_phase)}},
+                        "z_phase_units": "deg", "interpolated_values": "per-target interpolation at target f0"},
         "physics": {"sound_speed_ms": sound_speed_ms, "water_density_kgm3": water_density_kgm3,
                     "model": "Plane-wave approximation: particle_velocity = pressure / (rho*c)"},
         "ocean_effects": {"use_absorption": use_absorption, "ambient_noise_enable": ambient_noise_enable,
@@ -677,6 +766,18 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         g.addWidget(QtWidgets.QLabel("Level Mode"), 2, 0); g.addWidget(self.cb_level_mode, 2, 1); self.lbl_sl = QtWidgets.QLabel("Source Level (dB re 1 µPa @1m)"); g.addWidget(self.lbl_sl, 2, 2); g.addWidget(self.ds_sl, 2, 3)
         g.addWidget(QtWidgets.QLabel("Sound Speed (m/s)"), 3, 0); g.addWidget(self.ds_c, 3, 1); self.lbl_constant_rl = QtWidgets.QLabel("Constant RL (dB re 1 µPa)"); g.addWidget(self.lbl_constant_rl, 3, 2); g.addWidget(self.ds_constant_rl, 3, 3)
         g.addWidget(QtWidgets.QLabel("Water Density (kg/m³)"), 4, 0); g.addWidget(self.ds_rho, 4, 1)
+        self.ck_multi_targets = QtWidgets.QCheckBox("Enable multi-target / sequence schedule")
+        self.te_target_schedule = QtWidgets.QPlainTextEdit()
+        self.te_target_schedule.setPlaceholderText(
+            "One target/event per line:\n"
+            "start_s,duration_s,bearing_deg,range_m,f0_hz,sl_db,sig_type,bw_hz,elevation_deg\n"
+            "Example:\n"
+            "0,900,20,2500,90,178,tone,20,0\n"
+            "600,1200,75,4000,220,185,band_noise,120,0"
+        )
+        self.te_target_schedule.setMaximumHeight(100)
+        g.addWidget(self.ck_multi_targets, 5, 0, 1, 4)
+        g.addWidget(self.te_target_schedule, 6, 0, 1, 4)
         parent_layout.addWidget(gb); self.on_level_mode_changed(self.cb_level_mode.currentText())
 
     def build_effects_group(self, parent_layout):
@@ -779,7 +880,8 @@ class DifarSimWindow(QtWidgets.QMainWindow):
                       cavitation_mix_db_rel=float(self.ds_cav_db.value()), max_vp=float(self.ds_vp.value()), vp_mode=self.cb_vp_mode.currentText(),
                       start_epoch_s=time.time(), seed=int(time.time()) & 0xFFFF, water_density_kgm3=float(self.ds_rho.value()),
                       output_track_hz=float(self.ds_track_hz.value()), export_mode=self.cb_export_mode.currentText(), target_full_scale=0.8,
-                      racetrack_center_east_m=float(self.ds_rt_center_e.value()), racetrack_center_north_m=float(self.ds_rt_center_n.value()))
+                      racetrack_center_east_m=float(self.ds_rt_center_e.value()), racetrack_center_north_m=float(self.ds_rt_center_n.value()),
+                      multi_target_enable=self.ck_multi_targets.isChecked(), target_schedule_specs=self.te_target_schedule.toPlainText())
         self._gen_thread = GenerateThread(kwargs, self)
         self._gen_thread.finished_ok.connect(self._on_generate_done)
         self._gen_thread.failed.connect(self._on_generate_error)
