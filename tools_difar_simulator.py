@@ -5,10 +5,11 @@ import json
 import math
 import os
 import sqlite3
+import csv
 import sys
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -330,36 +331,68 @@ def enforce_vp(data: np.ndarray, max_vp: float, mode: str) -> Tuple[np.ndarray, 
     return data * scale, scale, peak_before
 
 
-def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float, sensor_lat: float, sensor_lon: float,
-                      pattern_name: str, bearing0_deg: float, range_m: float, period_s: float, swing_deg: float,
-                      rate_hz: float, speed_mps: float, racetrack_long_m: float, racetrack_short_m: float,
-                      spiral_r_start_m: float, spiral_r_end_m: float, spiral_revs: float, elevation_deg: float,
-                      sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float,
-                      level_mode: str = "physical_sl", constant_rl_db_re_1upa: float = 120.0,
-                      use_absorption: bool = False, ambient_noise_enable: bool = False,
-                      ambient_noise_db_rel: float = -20.0, ambient_noise_color_alpha: float = 1.0,
-                      wave_mod_enable: bool = False, wave_mod_strength: float = 0.25,
-                      doppler_enable: bool = False, sound_speed_ms: float = 1500.0,
-                      multipath_enable: bool = False, multipath_delay_ms: float = 12.0,
-                      multipath_atten_db: float = 10.0, cavitation_mix_enable: bool = False,
-                      cavitation_mix_db_rel: float = -12.0, max_vp: float = 10.0, vp_mode: str = "scale",
-                      start_epoch_s: float = 0.0, seed: int = 1234, water_density_kgm3: float = 1025.0,
-                      output_track_hz: float = 5.0, export_mode: str = "raw_volts", target_full_scale: float = 0.8,
-                      racetrack_center_east_m: float = 0.0, racetrack_center_north_m: float = 0.0) -> ScenarioResult:
-    n = int(fs * duration_s)
-    if n < 2:
-        raise ValueError("Duration/sample rate combination produces too few samples.")
+def _parse_target_schedule_specs(spec_text: str) -> List[Dict[str, float]]:
+    """Parse scheduled targets text block.
 
-    t = np.arange(n, dtype=float) / fs
-    dt = 1.0 / fs
-    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
-                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
-                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
-                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
-                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
-                                     racetrack_center_north_m=racetrack_center_north_m)
-    vr_mps = np.gradient(r_m, dt)
+    One target per line, CSV format:
+    start_s,duration_s,bearing_deg,range_m,f0_hz,sl_db,sig_type,bw_hz,elevation_deg
 
+    Last three fields are optional.
+    """
+    lines = [ln.strip() for ln in (spec_text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    out = []
+    for ln in lines:
+        parts = [p.strip() for p in ln.split(",")]
+        if len(parts) < 7:
+            raise ValueError(f"Invalid target schedule line: '{ln}'. Need at least 7 comma-separated fields.")
+        start_s = float(parts[0])
+        duration_s = float(parts[1])
+        if duration_s <= 0:
+            raise ValueError(f"duration_s must be > 0 in line: '{ln}'")
+        out.append({
+            "start_s": start_s,
+            "duration_s": duration_s,
+            "bearing_deg": float(parts[2]),
+            "range_m": float(parts[3]),
+            "f0_hz": float(parts[4]),
+            "sl_db": float(parts[5]),
+            "sig_type": str(parts[6]),
+            "bw_hz": float(parts[7]) if len(parts) >= 8 and parts[7] != "" else None,
+            "elevation_deg": float(parts[8]) if len(parts) >= 9 and parts[8] != "" else None,
+        })
+    return out
+
+
+def _normalize_target_queue(queue_items: List[Dict[str, Any]]) -> List[Dict[str, float]]:
+    """Convert queued target rows with optional gaps into absolute start/duration definitions."""
+    out: List[Dict[str, float]] = []
+    cursor_s = 0.0
+    for item in (queue_items or []):
+        gap_s = float(item.get("gap_s", 0.0) or 0.0)
+        cursor_s += max(0.0, gap_s)
+        duration_s = float(item.get("duration_s", 0.0) or 0.0)
+        if duration_s <= 0.0:
+            continue
+        out.append({
+            "start_s": cursor_s,
+            "duration_s": duration_s,
+            "bearing_deg": float(item.get("bearing_deg", 0.0) or 0.0),
+            "range_m": float(item.get("range_m", 1000.0) or 1000.0),
+            "f0_hz": float(item.get("f0_hz", 800.0) or 800.0),
+            "sl_db": float(item.get("sl_db", 175.0) or 175.0),
+            "sig_type": str(item.get("sig_type", "tone") or "tone"),
+            "bw_hz": float(item.get("bw_hz", 300.0) or 300.0),
+            "elevation_deg": float(item.get("elevation_deg", 0.0) or 0.0),
+        })
+        cursor_s += duration_s
+    return out
+
+
+def _synthesize_one_target(t: np.ndarray, fs: int, cal: CalData, r_m: np.ndarray, bearing_deg: np.ndarray, vr_mps: np.ndarray,
+                           sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float, level_mode: str,
+                           constant_rl_db_re_1upa: float, use_absorption: bool, wave_mod_enable: bool,
+                           wave_mod_strength: float, doppler_enable: bool, sound_speed_ms: float,
+                           water_density_kgm3: float, seed: int, elevation_deg: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     src = base_signal(t, sig_type, f0_hz, bw_hz, fs, seed)
     if doppler_enable and sig_type in ("tone", "am_tone", "band_noise"):
         src = apply_doppler_tone_envelope(t, f0_hz, sound_speed_ms, vr_mps, src)
@@ -411,6 +444,101 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
         v_x = sign_x * amp_x * carrier_x
         v_y = sign_y * amp_y * carrier_y
         v_z = sign_z * amp_z * carrier_z
+
+    return v_omni, v_x, v_y, v_z
+
+
+def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float, sensor_lat: float, sensor_lon: float,
+                      pattern_name: str, bearing0_deg: float, range_m: float, period_s: float, swing_deg: float,
+                      rate_hz: float, speed_mps: float, racetrack_long_m: float, racetrack_short_m: float,
+                      spiral_r_start_m: float, spiral_r_end_m: float, spiral_revs: float, elevation_deg: float,
+                      sig_type: str, f0_hz: float, bw_hz: float, sl_db_re_1upa_1m: float,
+                      level_mode: str = "physical_sl", constant_rl_db_re_1upa: float = 120.0,
+                      use_absorption: bool = False, ambient_noise_enable: bool = False,
+                      ambient_noise_db_rel: float = -20.0, ambient_noise_color_alpha: float = 1.0,
+                      wave_mod_enable: bool = False, wave_mod_strength: float = 0.25,
+                      doppler_enable: bool = False, sound_speed_ms: float = 1500.0,
+                      multipath_enable: bool = False, multipath_delay_ms: float = 12.0,
+                      multipath_atten_db: float = 10.0, cavitation_mix_enable: bool = False,
+                      cavitation_mix_db_rel: float = -12.0, max_vp: float = 10.0, vp_mode: str = "scale",
+                      start_epoch_s: float = 0.0, seed: int = 1234, water_density_kgm3: float = 1025.0,
+                      output_track_hz: float = 5.0, export_mode: str = "raw_volts", target_full_scale: float = 0.8,
+                      racetrack_center_east_m: float = 0.0, racetrack_center_north_m: float = 0.0,
+                      multi_target_enable: bool = False, target_schedule_specs: str = "",
+                      target_queue_json: str = "") -> ScenarioResult:
+    dt = 1.0 / fs
+    target_defs: List[Dict[str, float]] = [{
+        "start_s": 0.0,
+        "duration_s": duration_s,
+        "bearing_deg": bearing0_deg,
+        "range_m": range_m,
+        "f0_hz": f0_hz,
+        "sl_db": sl_db_re_1upa_1m,
+        "sig_type": sig_type,
+        "bw_hz": bw_hz,
+        "elevation_deg": elevation_deg,
+    }]
+    if multi_target_enable:
+        target_defs = []
+        if target_queue_json.strip():
+            try:
+                target_defs = _normalize_target_queue(json.loads(target_queue_json))
+            except Exception as exc:
+                raise ValueError(f"Invalid target queue JSON: {exc}")
+        elif target_schedule_specs.strip():
+            target_defs = _parse_target_schedule_specs(target_schedule_specs)
+        if not target_defs:
+            raise ValueError("Multi-target mode enabled but no valid queued targets were provided.")
+
+    required_duration_s = max(float(td.get("start_s", 0.0)) + float(td.get("duration_s", 0.0)) for td in target_defs)
+    duration_s = max(float(duration_s), float(required_duration_s))
+    n = int(fs * duration_s)
+    if n < 2:
+        raise ValueError("Duration/sample rate combination produces too few samples.")
+
+    t = np.arange(n, dtype=float) / fs
+    bearing_deg, r_m = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=bearing0_deg, range_m=range_m,
+                                     period_s=period_s, swing_deg=swing_deg, rate_hz=rate_hz, speed_mps=speed_mps,
+                                     racetrack_long_m=racetrack_long_m, racetrack_short_m=racetrack_short_m,
+                                     spiral_r_start_m=spiral_r_start_m, spiral_r_end_m=spiral_r_end_m,
+                                     spiral_revs=spiral_revs, racetrack_center_east_m=racetrack_center_east_m,
+                                     racetrack_center_north_m=racetrack_center_north_m)
+    vr_mps = np.gradient(r_m, dt)
+
+    v_omni = np.zeros_like(t)
+    v_x = np.zeros_like(t)
+    v_y = np.zeros_like(t)
+    v_z = np.zeros_like(t)
+
+    for ti, td in enumerate(target_defs):
+        br_i, rr_i = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
+                                   range_m=float(td.get("range_m", range_m)), period_s=period_s, swing_deg=swing_deg,
+                                   rate_hz=rate_hz, speed_mps=speed_mps, racetrack_long_m=racetrack_long_m,
+                                   racetrack_short_m=racetrack_short_m, spiral_r_start_m=spiral_r_start_m,
+                                   spiral_r_end_m=spiral_r_end_m, spiral_revs=spiral_revs,
+                                   racetrack_center_east_m=racetrack_center_east_m,
+                                   racetrack_center_north_m=racetrack_center_north_m)
+        vr_i = np.gradient(rr_i, dt)
+        t_start = float(td.get("start_s", 0.0))
+        t_dur = float(td.get("duration_s", duration_s))
+        mask = (t >= t_start) & (t < (t_start + t_dur))
+        if not np.any(mask):
+            continue
+        o_i, x_i, y_i, z_i = _synthesize_one_target(
+            t=t, fs=fs, cal=cal, r_m=rr_i, bearing_deg=br_i, vr_mps=vr_i,
+            sig_type=str(td.get("sig_type", sig_type)), f0_hz=float(td.get("f0_hz", f0_hz)),
+            bw_hz=float(td.get("bw_hz") if td.get("bw_hz") is not None else bw_hz),
+            sl_db_re_1upa_1m=float(td.get("sl_db", sl_db_re_1upa_1m)), level_mode=level_mode,
+            constant_rl_db_re_1upa=constant_rl_db_re_1upa, use_absorption=use_absorption,
+            wave_mod_enable=wave_mod_enable, wave_mod_strength=wave_mod_strength,
+            doppler_enable=doppler_enable, sound_speed_ms=sound_speed_ms,
+            water_density_kgm3=water_density_kgm3, seed=seed + 997 * ti,
+            elevation_deg=float(td.get("elevation_deg") if td.get("elevation_deg") is not None else elevation_deg),
+        )
+        v_omni[mask] += o_i[mask]
+        v_x[mask] += x_i[mask]
+        v_y[mask] += y_i[mask]
+        v_z[mask] += z_i[mask]
 
     if multipath_enable:
         delay_s = max(0.0, multipath_delay_ms / 1000.0)
@@ -480,6 +608,35 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
         for i in range(0, n, step):
             f.write(f"{ts[i]:.3f},{lat[i]:.8f},{lon[i]:.8f},{east[i]:.3f},{north[i]:.3f},{sog[i]:.3f},{cog[i]:.2f},{r_m[i]:.2f},{bearing_deg[i]:.2f}\n")
 
+    per_target_files = []
+    if multi_target_enable:
+        for ti, td in enumerate(target_defs, start=1):
+            br_i, rr_i = choose_motion(
+                t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
+                range_m=float(td.get("range_m", range_m)), period_s=period_s, swing_deg=swing_deg,
+                rate_hz=rate_hz, speed_mps=speed_mps, racetrack_long_m=racetrack_long_m,
+                racetrack_short_m=racetrack_short_m, spiral_r_start_m=spiral_r_start_m,
+                spiral_r_end_m=spiral_r_end_m, spiral_revs=spiral_revs,
+                racetrack_center_east_m=racetrack_center_east_m, racetrack_center_north_m=racetrack_center_north_m,
+            )
+            t_start = float(td.get("start_s", 0.0))
+            t_end = t_start + float(td.get("duration_s", 0.0))
+            mask = (t >= t_start) & (t < t_end)
+            idx = np.where(mask)[0]
+            if idx.size == 0:
+                continue
+            tgt_gga = f"{out_prefix}_target{ti}_track_gpgga.txt"
+            tgt_csv = f"{out_prefix}_target{ti}_track_debug.csv"
+            with open(tgt_gga, "w", encoding="utf-8") as fg, open(tgt_csv, "w", encoding="utf-8") as fc:
+                fc.write("timestamp_s,lat,lon,east_m,north_m,sog_mps,cog_deg,range_m,bearing_deg\n")
+                for k in idx[::step]:
+                    ee, nn = bearing_range_to_enu(float(br_i[k]), float(rr_i[k]))
+                    dlat, dlon = meters_to_latlon_offsets(sensor_lat, ee, nn)
+                    la, lo = sensor_lat + dlat, sensor_lon + dlon
+                    fg.write(make_gpgga(ts[k], la, lo) + "\n")
+                    fc.write(f"{ts[k]:.3f},{la:.8f},{lo:.8f},{ee:.3f},{nn:.3f},0.000,0.00,{rr_i[k]:.2f},{br_i[k]:.2f}\n")
+            per_target_files.append({"target_index": ti, "gga": os.path.abspath(tgt_gga), "debug_csv": os.path.abspath(tgt_csv)})
+
     meta = {
         "fs": fs, "duration_s": duration_s,
         "timing": {"start_epoch_s": start_epoch_s, "wav_duration_s": duration_s, "wav_samples": n, "sample_rate_hz": fs,
@@ -493,11 +650,11 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
                            "spiral_r_start_m": spiral_r_start_m, "spiral_r_end_m": spiral_r_end_m, "spiral_revs": spiral_revs,
                            "elevation_deg": elevation_deg},
         "source": {"sig_type": sig_type, "f0_hz": f0_hz, "bw_hz": bw_hz, "sl_db_re_1upa_1m": sl_db_re_1upa_1m,
-                   "level_mode": level_mode, "constant_rl_db_re_1upa": constant_rl_db_re_1upa},
+                   "level_mode": level_mode, "constant_rl_db_re_1upa": constant_rl_db_re_1upa,
+                   "multi_target_enable": multi_target_enable, "target_count": len(target_defs), "target_schedule_specs": target_schedule_specs,
+                   "target_queue_json": target_queue_json},
         "calibration": {"omni_units": "dB re 1 V/uPa", "vector_units": "dB re 1 V/(m/s)", "xy_phase_units": "deg",
-                        "z_phase_units": "deg", "interpolated_values": {"omni_db_v_per_upa": omni_db, "x_db_v_per_ms": sx_db,
-                                                                             "y_db_v_per_ms": sy_db, "z_db_v_per_ms": sz_db,
-                                                                             "xy_phase_deg": math.degrees(xy_phase), "z_phase_deg": math.degrees(z_phase)}},
+                        "z_phase_units": "deg", "interpolated_values": "per-target interpolation at target f0"},
         "physics": {"sound_speed_ms": sound_speed_ms, "water_density_kgm3": water_density_kgm3,
                     "model": "Plane-wave approximation: particle_velocity = pressure / (rho*c)"},
         "ocean_effects": {"use_absorption": use_absorption, "ambient_noise_enable": ambient_noise_enable,
@@ -511,14 +668,25 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
                        "peak_before_export_scaling": wav_peak_before, "wav_scale_applied": wav_scale_applied},
         "channel_peaks_raw_volts": channel_peaks,
         "files": {"wav": os.path.abspath(wav_path), "track_gpgga": os.path.abspath(gga_path),
-                  "track_debug_csv": os.path.abspath(debug_csv_path)},
+                  "track_debug_csv": os.path.abspath(debug_csv_path), "per_target_tracks": per_target_files},
     }
 
     meta_path = f"{out_prefix}_meta.json"
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
-    return ScenarioResult(wav_path, gga_path, debug_csv_path, meta_path, east, north, t, r_m, bearing_deg)
+    preview = slice(None, None, step)
+    return ScenarioResult(
+        wav_path,
+        gga_path,
+        debug_csv_path,
+        meta_path,
+        east[preview],
+        north[preview],
+        t[preview],
+        r_m[preview],
+        bearing_deg[preview],
+    )
 
 
 class GenerateThread(QtCore.QThread):
@@ -549,6 +717,9 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.output_dir = output_dir
         self.db_path = db_path or DB_FILENAME
         self.host_window = host_window
+        self._target_queue: List[Dict[str, Any]] = []
+
+        self._sync_context_from_host()
 
         central = QtWidgets.QWidget(); self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
@@ -663,6 +834,42 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         g.addWidget(QtWidgets.QLabel("Level Mode"), 2, 0); g.addWidget(self.cb_level_mode, 2, 1); self.lbl_sl = QtWidgets.QLabel("Source Level (dB re 1 µPa @1m)"); g.addWidget(self.lbl_sl, 2, 2); g.addWidget(self.ds_sl, 2, 3)
         g.addWidget(QtWidgets.QLabel("Sound Speed (m/s)"), 3, 0); g.addWidget(self.ds_c, 3, 1); self.lbl_constant_rl = QtWidgets.QLabel("Constant RL (dB re 1 µPa)"); g.addWidget(self.lbl_constant_rl, 3, 2); g.addWidget(self.ds_constant_rl, 3, 3)
         g.addWidget(QtWidgets.QLabel("Water Density (kg/m³)"), 4, 0); g.addWidget(self.ds_rho, 4, 1)
+        self.ck_multi_targets = QtWidgets.QCheckBox("Enable multi-target / sequence schedule")
+        self.ds_tgt_gap = QtWidgets.QDoubleSpinBox(); self.ds_tgt_gap.setRange(0, 36000); self.ds_tgt_gap.setDecimals(1); self.ds_tgt_gap.setValue(60.0)
+        self.ds_tgt_dur = QtWidgets.QDoubleSpinBox(); self.ds_tgt_dur.setRange(1, 36000); self.ds_tgt_dur.setDecimals(1); self.ds_tgt_dur.setValue(600.0)
+        self.ds_tgt_bearing = QtWidgets.QDoubleSpinBox(); self.ds_tgt_bearing.setRange(0, 360); self.ds_tgt_bearing.setDecimals(1); self.ds_tgt_bearing.setValue(20.0)
+        self.ds_tgt_range = QtWidgets.QDoubleSpinBox(); self.ds_tgt_range.setRange(1, 100000); self.ds_tgt_range.setDecimals(1); self.ds_tgt_range.setValue(2500.0)
+        self.ds_tgt_f0 = QtWidgets.QDoubleSpinBox(); self.ds_tgt_f0.setRange(1, 200000); self.ds_tgt_f0.setDecimals(1); self.ds_tgt_f0.setValue(90.0)
+        self.ds_tgt_sl = QtWidgets.QDoubleSpinBox(); self.ds_tgt_sl.setRange(80, 250); self.ds_tgt_sl.setDecimals(1); self.ds_tgt_sl.setValue(178.0)
+        self.cb_tgt_sig = QtWidgets.QComboBox(); self.cb_tgt_sig.addItems(["tone", "am_tone", "band_noise", "vessel_noise"])
+        self.ds_tgt_bw = QtWidgets.QDoubleSpinBox(); self.ds_tgt_bw.setRange(1, 50000); self.ds_tgt_bw.setDecimals(1); self.ds_tgt_bw.setValue(120.0)
+        self.ds_tgt_elev = QtWidgets.QDoubleSpinBox(); self.ds_tgt_elev.setRange(-90, 90); self.ds_tgt_elev.setDecimals(1); self.ds_tgt_elev.setValue(0.0)
+        self.btn_add_target = QtWidgets.QPushButton("Add Target to Queue")
+        self.btn_remove_target = QtWidgets.QPushButton("Remove Selected")
+        self.btn_clear_targets = QtWidgets.QPushButton("Clear Queue")
+        self.lw_target_queue = QtWidgets.QListWidget(); self.lw_target_queue.setMaximumHeight(110)
+
+        qrow1 = QtWidgets.QGridLayout()
+        qrow1.addWidget(QtWidgets.QLabel("Gap Before (s)"), 0, 0); qrow1.addWidget(self.ds_tgt_gap, 0, 1)
+        qrow1.addWidget(QtWidgets.QLabel("Duration (s)"), 0, 2); qrow1.addWidget(self.ds_tgt_dur, 0, 3)
+        qrow1.addWidget(QtWidgets.QLabel("Bearing (deg)"), 1, 0); qrow1.addWidget(self.ds_tgt_bearing, 1, 1)
+        qrow1.addWidget(QtWidgets.QLabel("Range (m)"), 1, 2); qrow1.addWidget(self.ds_tgt_range, 1, 3)
+        qrow1.addWidget(QtWidgets.QLabel("f0 (Hz)"), 2, 0); qrow1.addWidget(self.ds_tgt_f0, 2, 1)
+        qrow1.addWidget(QtWidgets.QLabel("SL (dB)"), 2, 2); qrow1.addWidget(self.ds_tgt_sl, 2, 3)
+        qrow1.addWidget(QtWidgets.QLabel("Signal Type"), 3, 0); qrow1.addWidget(self.cb_tgt_sig, 3, 1)
+        qrow1.addWidget(QtWidgets.QLabel("BW (Hz)"), 3, 2); qrow1.addWidget(self.ds_tgt_bw, 3, 3)
+        qrow1.addWidget(QtWidgets.QLabel("Elevation (deg)"), 4, 0); qrow1.addWidget(self.ds_tgt_elev, 4, 1)
+        br = QtWidgets.QHBoxLayout(); br.addWidget(self.btn_add_target); br.addWidget(self.btn_remove_target); br.addWidget(self.btn_clear_targets)
+        qwrap = QtWidgets.QWidget(); qwrap.setLayout(qrow1)
+        brow = QtWidgets.QWidget(); brow.setLayout(br)
+        g.addWidget(self.ck_multi_targets, 5, 0, 1, 4)
+        g.addWidget(qwrap, 6, 0, 1, 4)
+        g.addWidget(brow, 7, 0, 1, 4)
+        g.addWidget(self.lw_target_queue, 8, 0, 1, 4)
+        self.btn_add_target.clicked.connect(self._add_target_to_queue)
+        self.btn_remove_target.clicked.connect(self._remove_selected_target)
+        self.btn_clear_targets.clicked.connect(self._clear_target_queue)
+        self._refresh_target_queue_view()
         parent_layout.addWidget(gb); self.on_level_mode_changed(self.cb_level_mode.currentText())
 
     def build_effects_group(self, parent_layout):
@@ -705,6 +912,65 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.lbl_sl.setVisible(is_physical); self.ds_sl.setVisible(is_physical)
         self.lbl_constant_rl.setVisible(not is_physical); self.ds_constant_rl.setVisible(not is_physical)
 
+    def _sync_context_from_host(self):
+        if self.host_window is None:
+            return
+        if self.project_id is None:
+            try:
+                self.project_id = getattr(self.host_window, "current_project_id", None)
+            except Exception:
+                self.project_id = None
+        if not self.output_dir and hasattr(self.host_window, "_project_subdir"):
+            try:
+                self.output_dir = self.host_window._project_subdir("difar_simulator")
+            except Exception:
+                pass
+
+    def _refresh_target_queue_view(self):
+        if not hasattr(self, "lw_target_queue"):
+            return
+        self.lw_target_queue.clear()
+        cursor = 0.0
+        for i, t in enumerate(self._target_queue, start=1):
+            cursor += float(t.get("gap_s", 0.0))
+            start = cursor
+            dur = float(t.get("duration_s", 0.0))
+            end = start + dur
+            txt = (f"T{i}: start={start:.1f}s dur={dur:.1f}s gap={float(t.get('gap_s',0.0)):.1f}s "
+                   f"brg={float(t.get('bearing_deg',0.0)):.1f}° range={float(t.get('range_m',0.0)):.0f}m "
+                   f"f0={float(t.get('f0_hz',0.0)):.1f}Hz {str(t.get('sig_type','tone'))}")
+            item = QtWidgets.QListWidgetItem(txt)
+            item.setData(QtCore.Qt.UserRole, i - 1)
+            self.lw_target_queue.addItem(item)
+            cursor = end
+
+    def _add_target_to_queue(self):
+        self._target_queue.append({
+            "gap_s": float(self.ds_tgt_gap.value()),
+            "duration_s": float(self.ds_tgt_dur.value()),
+            "bearing_deg": float(self.ds_tgt_bearing.value()),
+            "range_m": float(self.ds_tgt_range.value()),
+            "f0_hz": float(self.ds_tgt_f0.value()),
+            "sl_db": float(self.ds_tgt_sl.value()),
+            "sig_type": self.cb_tgt_sig.currentText(),
+            "bw_hz": float(self.ds_tgt_bw.value()),
+            "elevation_deg": float(self.ds_tgt_elev.value()),
+        })
+        self._refresh_target_queue_view()
+
+    def _remove_selected_target(self):
+        if not hasattr(self, "lw_target_queue"):
+            return
+        row = self.lw_target_queue.currentRow()
+        if row < 0 or row >= len(self._target_queue):
+            return
+        self._target_queue.pop(row)
+        self._refresh_target_queue_view()
+
+    def _clear_target_queue(self):
+        self._target_queue.clear()
+        self._refresh_target_queue_view()
+
     def on_load_cal(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Calibration CSV", "", "CSV Files (*.csv)")
         if not path:
@@ -718,6 +984,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Calibration Error", str(exc))
 
     def on_generate(self):
+        self._sync_context_from_host()
         if self.cal is None:
             QtWidgets.QMessageBox.warning(self, "Missing Calibration", "Load the M20-105 calibration CSV first.")
             return
@@ -732,8 +999,19 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             os.makedirs(self.output_dir, exist_ok=True)
             out_prefix = os.path.join(self.output_dir, out_name)
 
+        duration_s = float(self.ds_dur.value())
+        if self.ck_multi_targets.isChecked() and self._target_queue:
+            cursor = 0.0
+            for t in self._target_queue:
+                cursor += float(t.get("gap_s", 0.0) or 0.0)
+                cursor += float(t.get("duration_s", 0.0) or 0.0)
+            queued_end = cursor
+            if queued_end > duration_s:
+                self.append_log(f"Info: extending duration to {queued_end:.1f}s to include full target queue.")
+                duration_s = queued_end
+
         kwargs = dict(out_prefix=out_prefix, cal=self.cal, fs=int(self.sb_fs.value()),
-                      duration_s=float(self.ds_dur.value()), sensor_lat=float(self.ds_lat.value()), sensor_lon=float(self.ds_lon.value()),
+                      duration_s=duration_s, sensor_lat=float(self.ds_lat.value()), sensor_lon=float(self.ds_lon.value()),
                       pattern_name=self.cb_pattern.currentText(), bearing0_deg=float(self.ds_bearing0.value()), range_m=float(self.ds_range.value()),
                       period_s=float(self.ds_period.value()), swing_deg=float(self.ds_swing.value()), rate_hz=float(self.ds_rate.value()),
                       speed_mps=float(self.ds_speed_kts.value()) * KTS_TO_MPS, racetrack_long_m=float(self.ds_rt_long.value()),
@@ -750,7 +1028,9 @@ class DifarSimWindow(QtWidgets.QMainWindow):
                       cavitation_mix_db_rel=float(self.ds_cav_db.value()), max_vp=float(self.ds_vp.value()), vp_mode=self.cb_vp_mode.currentText(),
                       start_epoch_s=time.time(), seed=int(time.time()) & 0xFFFF, water_density_kgm3=float(self.ds_rho.value()),
                       output_track_hz=float(self.ds_track_hz.value()), export_mode=self.cb_export_mode.currentText(), target_full_scale=0.8,
-                      racetrack_center_east_m=float(self.ds_rt_center_e.value()), racetrack_center_north_m=float(self.ds_rt_center_n.value()))
+                      racetrack_center_east_m=float(self.ds_rt_center_e.value()), racetrack_center_north_m=float(self.ds_rt_center_n.value()),
+                      multi_target_enable=self.ck_multi_targets.isChecked(), target_schedule_specs="",
+                      target_queue_json=json.dumps(self._target_queue))
         self._gen_thread = GenerateThread(kwargs, self)
         self._gen_thread.finished_ok.connect(self._on_generate_done)
         self._gen_thread.failed.connect(self._on_generate_error)
@@ -791,24 +1071,11 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         conn.commit()
 
     def _save_debug_track_to_db(self, result):
+        self._sync_context_from_host()
         if self.project_id is None:
             self.append_log("GPS DB note: no selected project, skipping GPS track DB save.")
             return
         if not os.path.isfile(result.debug_csv_path):
-            return
-
-        points = []
-        try:
-            df = pd.read_csv(result.debug_csv_path)
-            for i, row in df.iterrows():
-                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
-                points.append((i, ts_iso, float(row["lat"]), float(row["lon"]), None))
-        except Exception as exc:
-            self.append_log(f"GPS DB warning: failed reading debug track CSV: {exc}")
-            return
-
-        if not points:
-            self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
             return
 
         try:
@@ -823,13 +1090,35 @@ class DifarSimWindow(QtWidgets.QMainWindow):
                 (int(self.project_id), track_name, os.path.abspath(result.gga_path), color),
             )
             track_id = cur.lastrowid
-            cur.executemany(
-                "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
-                [(track_id, idx, ts, lat, lon, ele) for idx, ts, lat, lon, ele in points],
-            )
+            point_count = 0
+            batch = []
+            with open(result.debug_csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for i, row in enumerate(reader):
+                    ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(row["timestamp_s"])))
+                    batch.append((track_id, i, ts_iso, float(row["lat"]), float(row["lon"]), None))
+                    if len(batch) >= 2000:
+                        cur.executemany(
+                            "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                            batch,
+                        )
+                        point_count += len(batch)
+                        batch.clear()
+                if batch:
+                    cur.executemany(
+                        "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                        batch,
+                    )
+                    point_count += len(batch)
+
+            if point_count == 0:
+                conn.rollback()
+                conn.close()
+                self.append_log("GPS DB note: no track points parsed; skipping GPS track DB save.")
+                return
             conn.commit()
             conn.close()
-            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={len(points)}).")
+            self.append_log(f"GPS track saved to project DB (track_id={track_id}, points={point_count}).")
             if self.host_window is not None and hasattr(self.host_window, "refresh_chart_tracks"):
                 try:
                     self.host_window.refresh_chart_tracks(select_id=track_id)
