@@ -335,7 +335,7 @@ def _parse_target_schedule_specs(spec_text: str) -> List[Dict[str, float]]:
     """Parse scheduled targets text block.
 
     One target per line, CSV format:
-    start_s,duration_s,bearing_deg,range_m,f0_hz,sl_db,sig_type,bw_hz,elevation_deg
+    start_s,duration_s,bearing_deg,range_m,speed_kts,f0_hz,sl_db,sig_type,bw_hz,elevation_deg
 
     Last three fields are optional.
     """
@@ -343,8 +343,8 @@ def _parse_target_schedule_specs(spec_text: str) -> List[Dict[str, float]]:
     out = []
     for ln in lines:
         parts = [p.strip() for p in ln.split(",")]
-        if len(parts) < 7:
-            raise ValueError(f"Invalid target schedule line: '{ln}'. Need at least 7 comma-separated fields.")
+        if len(parts) < 8:
+            raise ValueError(f"Invalid target schedule line: '{ln}'. Need at least 8 comma-separated fields.")
         start_s = float(parts[0])
         duration_s = float(parts[1])
         if duration_s <= 0:
@@ -354,11 +354,12 @@ def _parse_target_schedule_specs(spec_text: str) -> List[Dict[str, float]]:
             "duration_s": duration_s,
             "bearing_deg": float(parts[2]),
             "range_m": float(parts[3]),
-            "f0_hz": float(parts[4]),
-            "sl_db": float(parts[5]),
-            "sig_type": str(parts[6]),
-            "bw_hz": float(parts[7]) if len(parts) >= 8 and parts[7] != "" else None,
-            "elevation_deg": float(parts[8]) if len(parts) >= 9 and parts[8] != "" else None,
+            "speed_mps": float(parts[4]) * KTS_TO_MPS,
+            "f0_hz": float(parts[5]),
+            "sl_db": float(parts[6]),
+            "sig_type": str(parts[7]),
+            "bw_hz": float(parts[8]) if len(parts) >= 9 and parts[8] != "" else None,
+            "elevation_deg": float(parts[9]) if len(parts) >= 10 and parts[9] != "" else None,
         })
     return out
 
@@ -378,6 +379,7 @@ def _normalize_target_queue(queue_items: List[Dict[str, Any]]) -> List[Dict[str,
             "duration_s": duration_s,
             "bearing_deg": float(item.get("bearing_deg", 0.0) or 0.0),
             "range_m": float(item.get("range_m", 1000.0) or 1000.0),
+            "speed_mps": float(item.get("speed_kts", 10.0) or 10.0) * KTS_TO_MPS,
             "f0_hz": float(item.get("f0_hz", 800.0) or 800.0),
             "sl_db": float(item.get("sl_db", 175.0) or 175.0),
             "sig_type": str(item.get("sig_type", "tone") or "tone"),
@@ -472,6 +474,7 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
         "duration_s": duration_s,
         "bearing_deg": bearing0_deg,
         "range_m": range_m,
+        "speed_mps": speed_mps,
         "f0_hz": f0_hz,
         "sl_db": sl_db_re_1upa_1m,
         "sig_type": sig_type,
@@ -511,9 +514,10 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
     v_z = np.zeros_like(t)
 
     for ti, td in enumerate(target_defs):
+        target_speed_mps = float(td.get("speed_mps", speed_mps))
         br_i, rr_i = choose_motion(t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
                                    range_m=float(td.get("range_m", range_m)), period_s=period_s, swing_deg=swing_deg,
-                                   rate_hz=rate_hz, speed_mps=speed_mps, racetrack_long_m=racetrack_long_m,
+                                   rate_hz=rate_hz, speed_mps=target_speed_mps, racetrack_long_m=racetrack_long_m,
                                    racetrack_short_m=racetrack_short_m, spiral_r_start_m=spiral_r_start_m,
                                    spiral_r_end_m=spiral_r_end_m, spiral_revs=spiral_revs,
                                    racetrack_center_east_m=racetrack_center_east_m,
@@ -614,7 +618,7 @@ def generate_scenario(out_prefix: str, cal: CalData, fs: int, duration_s: float,
             br_i, rr_i = choose_motion(
                 t=t, pattern_name=pattern_name, bearing0_deg=float(td.get("bearing_deg", bearing0_deg)),
                 range_m=float(td.get("range_m", range_m)), period_s=period_s, swing_deg=swing_deg,
-                rate_hz=rate_hz, speed_mps=speed_mps, racetrack_long_m=racetrack_long_m,
+                rate_hz=rate_hz, speed_mps=float(td.get("speed_mps", speed_mps)), racetrack_long_m=racetrack_long_m,
                 racetrack_short_m=racetrack_short_m, spiral_r_start_m=spiral_r_start_m,
                 spiral_r_end_m=spiral_r_end_m, spiral_revs=spiral_revs,
                 racetrack_center_east_m=racetrack_center_east_m, racetrack_center_north_m=racetrack_center_north_m,
@@ -821,6 +825,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
 
     def build_source_group(self, parent_layout):
         gb = QtWidgets.QGroupBox("Acoustic Source"); g = QtWidgets.QGridLayout(gb)
+        self.cb_target_mode = QtWidgets.QComboBox(); self.cb_target_mode.addItems(["Single Target", "Multi-Target Queue"])
         self.cb_sig = QtWidgets.QComboBox(); self.cb_sig.addItems(["tone", "am_tone", "band_noise", "vessel_noise"])
         self.ds_f0 = QtWidgets.QDoubleSpinBox(); self.ds_f0.setRange(1, 200000); self.ds_f0.setDecimals(2); self.ds_f0.setValue(800.0)
         self.ds_bw = QtWidgets.QDoubleSpinBox(); self.ds_bw.setRange(1, 50000); self.ds_bw.setDecimals(2); self.ds_bw.setValue(300.0)
@@ -829,16 +834,18 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         self.ds_constant_rl = QtWidgets.QDoubleSpinBox(); self.ds_constant_rl.setRange(60, 220); self.ds_constant_rl.setDecimals(2); self.ds_constant_rl.setValue(120.0)
         self.ds_c = QtWidgets.QDoubleSpinBox(); self.ds_c.setRange(1200, 1700); self.ds_c.setDecimals(1); self.ds_c.setValue(1500.0)
         self.ds_rho = QtWidgets.QDoubleSpinBox(); self.ds_rho.setRange(900, 1200); self.ds_rho.setDecimals(1); self.ds_rho.setValue(1025.0)
-        g.addWidget(QtWidgets.QLabel("Signal Type"), 0, 0); g.addWidget(self.cb_sig, 0, 1, 1, 3)
-        g.addWidget(QtWidgets.QLabel("Center Frequency (Hz)"), 1, 0); g.addWidget(self.ds_f0, 1, 1); g.addWidget(QtWidgets.QLabel("Bandwidth (Hz)"), 1, 2); g.addWidget(self.ds_bw, 1, 3)
-        g.addWidget(QtWidgets.QLabel("Level Mode"), 2, 0); g.addWidget(self.cb_level_mode, 2, 1); self.lbl_sl = QtWidgets.QLabel("Source Level (dB re 1 µPa @1m)"); g.addWidget(self.lbl_sl, 2, 2); g.addWidget(self.ds_sl, 2, 3)
-        g.addWidget(QtWidgets.QLabel("Sound Speed (m/s)"), 3, 0); g.addWidget(self.ds_c, 3, 1); self.lbl_constant_rl = QtWidgets.QLabel("Constant RL (dB re 1 µPa)"); g.addWidget(self.lbl_constant_rl, 3, 2); g.addWidget(self.ds_constant_rl, 3, 3)
-        g.addWidget(QtWidgets.QLabel("Water Density (kg/m³)"), 4, 0); g.addWidget(self.ds_rho, 4, 1)
+        g.addWidget(QtWidgets.QLabel("Target Input Mode"), 0, 0); g.addWidget(self.cb_target_mode, 0, 1, 1, 3)
+        g.addWidget(QtWidgets.QLabel("Signal Type"), 1, 0); g.addWidget(self.cb_sig, 1, 1, 1, 3)
+        g.addWidget(QtWidgets.QLabel("Center Frequency (Hz)"), 2, 0); g.addWidget(self.ds_f0, 2, 1); g.addWidget(QtWidgets.QLabel("Bandwidth (Hz)"), 2, 2); g.addWidget(self.ds_bw, 2, 3)
+        g.addWidget(QtWidgets.QLabel("Level Mode"), 3, 0); g.addWidget(self.cb_level_mode, 3, 1); self.lbl_sl = QtWidgets.QLabel("Source Level (dB re 1 µPa @1m)"); g.addWidget(self.lbl_sl, 3, 2); g.addWidget(self.ds_sl, 3, 3)
+        g.addWidget(QtWidgets.QLabel("Sound Speed (m/s)"), 4, 0); g.addWidget(self.ds_c, 4, 1); self.lbl_constant_rl = QtWidgets.QLabel("Constant RL (dB re 1 µPa)"); g.addWidget(self.lbl_constant_rl, 4, 2); g.addWidget(self.ds_constant_rl, 4, 3)
+        g.addWidget(QtWidgets.QLabel("Water Density (kg/m³)"), 5, 0); g.addWidget(self.ds_rho, 5, 1)
         self.ck_multi_targets = QtWidgets.QCheckBox("Enable multi-target / sequence schedule")
         self.ds_tgt_gap = QtWidgets.QDoubleSpinBox(); self.ds_tgt_gap.setRange(0, 36000); self.ds_tgt_gap.setDecimals(1); self.ds_tgt_gap.setValue(60.0)
         self.ds_tgt_dur = QtWidgets.QDoubleSpinBox(); self.ds_tgt_dur.setRange(1, 36000); self.ds_tgt_dur.setDecimals(1); self.ds_tgt_dur.setValue(600.0)
         self.ds_tgt_bearing = QtWidgets.QDoubleSpinBox(); self.ds_tgt_bearing.setRange(0, 360); self.ds_tgt_bearing.setDecimals(1); self.ds_tgt_bearing.setValue(20.0)
         self.ds_tgt_range = QtWidgets.QDoubleSpinBox(); self.ds_tgt_range.setRange(1, 100000); self.ds_tgt_range.setDecimals(1); self.ds_tgt_range.setValue(2500.0)
+        self.ds_tgt_speed_kts = QtWidgets.QDoubleSpinBox(); self.ds_tgt_speed_kts.setRange(0.0, 80.0); self.ds_tgt_speed_kts.setDecimals(2); self.ds_tgt_speed_kts.setValue(10.0)
         self.ds_tgt_f0 = QtWidgets.QDoubleSpinBox(); self.ds_tgt_f0.setRange(1, 200000); self.ds_tgt_f0.setDecimals(1); self.ds_tgt_f0.setValue(90.0)
         self.ds_tgt_sl = QtWidgets.QDoubleSpinBox(); self.ds_tgt_sl.setRange(80, 250); self.ds_tgt_sl.setDecimals(1); self.ds_tgt_sl.setValue(178.0)
         self.cb_tgt_sig = QtWidgets.QComboBox(); self.cb_tgt_sig.addItems(["tone", "am_tone", "band_noise", "vessel_noise"])
@@ -854,22 +861,29 @@ class DifarSimWindow(QtWidgets.QMainWindow):
         qrow1.addWidget(QtWidgets.QLabel("Duration (s)"), 0, 2); qrow1.addWidget(self.ds_tgt_dur, 0, 3)
         qrow1.addWidget(QtWidgets.QLabel("Bearing (deg)"), 1, 0); qrow1.addWidget(self.ds_tgt_bearing, 1, 1)
         qrow1.addWidget(QtWidgets.QLabel("Range (m)"), 1, 2); qrow1.addWidget(self.ds_tgt_range, 1, 3)
-        qrow1.addWidget(QtWidgets.QLabel("f0 (Hz)"), 2, 0); qrow1.addWidget(self.ds_tgt_f0, 2, 1)
-        qrow1.addWidget(QtWidgets.QLabel("SL (dB)"), 2, 2); qrow1.addWidget(self.ds_tgt_sl, 2, 3)
-        qrow1.addWidget(QtWidgets.QLabel("Signal Type"), 3, 0); qrow1.addWidget(self.cb_tgt_sig, 3, 1)
-        qrow1.addWidget(QtWidgets.QLabel("BW (Hz)"), 3, 2); qrow1.addWidget(self.ds_tgt_bw, 3, 3)
-        qrow1.addWidget(QtWidgets.QLabel("Elevation (deg)"), 4, 0); qrow1.addWidget(self.ds_tgt_elev, 4, 1)
+        qrow1.addWidget(QtWidgets.QLabel("Speed (kts)"), 2, 0); qrow1.addWidget(self.ds_tgt_speed_kts, 2, 1)
+        qrow1.addWidget(QtWidgets.QLabel("f0 (Hz)"), 2, 2); qrow1.addWidget(self.ds_tgt_f0, 2, 3)
+        qrow1.addWidget(QtWidgets.QLabel("SL (dB)"), 3, 0); qrow1.addWidget(self.ds_tgt_sl, 3, 1)
+        qrow1.addWidget(QtWidgets.QLabel("Signal Type"), 3, 2); qrow1.addWidget(self.cb_tgt_sig, 3, 3)
+        qrow1.addWidget(QtWidgets.QLabel("BW (Hz)"), 4, 0); qrow1.addWidget(self.ds_tgt_bw, 4, 1)
+        qrow1.addWidget(QtWidgets.QLabel("Elevation (deg)"), 4, 2); qrow1.addWidget(self.ds_tgt_elev, 4, 3)
         br = QtWidgets.QHBoxLayout(); br.addWidget(self.btn_add_target); br.addWidget(self.btn_remove_target); br.addWidget(self.btn_clear_targets)
         qwrap = QtWidgets.QWidget(); qwrap.setLayout(qrow1)
         brow = QtWidgets.QWidget(); brow.setLayout(br)
-        g.addWidget(self.ck_multi_targets, 5, 0, 1, 4)
-        g.addWidget(qwrap, 6, 0, 1, 4)
-        g.addWidget(brow, 7, 0, 1, 4)
-        g.addWidget(self.lw_target_queue, 8, 0, 1, 4)
+        self.queue_widget = QtWidgets.QWidget()
+        qv = QtWidgets.QVBoxLayout(self.queue_widget)
+        qv.setContentsMargins(0, 0, 0, 0)
+        qv.addWidget(self.ck_multi_targets)
+        qv.addWidget(qwrap)
+        qv.addWidget(brow)
+        qv.addWidget(self.lw_target_queue)
+        g.addWidget(self.queue_widget, 6, 0, 1, 4)
         self.btn_add_target.clicked.connect(self._add_target_to_queue)
         self.btn_remove_target.clicked.connect(self._remove_selected_target)
         self.btn_clear_targets.clicked.connect(self._clear_target_queue)
+        self.cb_target_mode.currentTextChanged.connect(self._on_target_mode_changed)
         self._refresh_target_queue_view()
+        self._on_target_mode_changed(self.cb_target_mode.currentText())
         parent_layout.addWidget(gb); self.on_level_mode_changed(self.cb_level_mode.currentText())
 
     def build_effects_group(self, parent_layout):
@@ -926,6 +940,11 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+    def _on_target_mode_changed(self, mode_text: str):
+        is_multi = str(mode_text).lower().startswith("multi")
+        self.ck_multi_targets.setChecked(is_multi)
+        self.queue_widget.setVisible(is_multi)
+
     def _refresh_target_queue_view(self):
         if not hasattr(self, "lw_target_queue"):
             return
@@ -937,7 +956,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             dur = float(t.get("duration_s", 0.0))
             end = start + dur
             txt = (f"T{i}: start={start:.1f}s dur={dur:.1f}s gap={float(t.get('gap_s',0.0)):.1f}s "
-                   f"brg={float(t.get('bearing_deg',0.0)):.1f}° range={float(t.get('range_m',0.0)):.0f}m "
+                   f"brg={float(t.get('bearing_deg',0.0)):.1f}° range={float(t.get('range_m',0.0)):.0f}m speed={float(t.get('speed_kts',0.0)):.1f}kts "
                    f"f0={float(t.get('f0_hz',0.0)):.1f}Hz {str(t.get('sig_type','tone'))}")
             item = QtWidgets.QListWidgetItem(txt)
             item.setData(QtCore.Qt.UserRole, i - 1)
@@ -950,6 +969,7 @@ class DifarSimWindow(QtWidgets.QMainWindow):
             "duration_s": float(self.ds_tgt_dur.value()),
             "bearing_deg": float(self.ds_tgt_bearing.value()),
             "range_m": float(self.ds_tgt_range.value()),
+            "speed_kts": float(self.ds_tgt_speed_kts.value()),
             "f0_hz": float(self.ds_tgt_f0.value()),
             "sl_db": float(self.ds_tgt_sl.value()),
             "sig_type": self.cb_tgt_sig.currentText(),

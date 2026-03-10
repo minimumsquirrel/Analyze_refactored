@@ -562,6 +562,52 @@ class DifarToolsMixin:
         return None
 
 
+    def _ensure_difar_rays_table_compat(self, conn):
+        """Call `_ensure_difar_rays_table` across legacy/new signatures."""
+        ensure = getattr(self, "_ensure_difar_rays_table", None)
+        if not callable(ensure):
+            return
+        try:
+            n_params = len(inspect.signature(ensure).parameters)
+        except Exception:
+            n_params = 1
+        if n_params == 0:
+            ensure()
+        else:
+            ensure(conn)
+
+    def _resolve_active_project_id(self):
+        """Best-effort resolve of currently selected project id."""
+        pid = getattr(self, "current_project_id", None)
+        try:
+            if pid is not None:
+                return int(pid)
+        except Exception:
+            pass
+
+        pname = (getattr(self, "current_project_name", None) or "").strip()
+        if not pname and hasattr(self, "project_combo") and self.project_combo is not None:
+            try:
+                pname = (self.project_combo.currentText() or "").strip()
+            except Exception:
+                pname = ""
+
+        if pname in ("", "(No project)", "➕ Add project…"):
+            return None
+
+        getter = getattr(self, "_get_project_id", None)
+        if callable(getter):
+            try:
+                resolved = getter(pname)
+                if resolved is not None:
+                    self.current_project_id = int(resolved)
+                    self.current_project_name = pname
+                    return int(resolved)
+            except Exception:
+                pass
+        return None
+
+
     @staticmethod
     def _make_difar_config_compat(**kwargs):
         """Build DifarConfig while tolerating older/newer parameter names."""
