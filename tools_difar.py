@@ -1189,11 +1189,12 @@ class DifarToolsMixin:
             series_combo = QtWidgets.QComboBox()
             refresh_series_btn = QtWidgets.QPushButton("Refresh")
             load_btn = QtWidgets.QPushButton("Load Selected")
+            save_jpg_btn = QtWidgets.QPushButton("Save JPG...")
             t_bins = QtWidgets.QSpinBox(); t_bins.setRange(10, 600); t_bins.setValue(120)
             b_bins = QtWidgets.QSpinBox(); b_bins.setRange(12, 360); b_bins.setValue(72)
             metric_combo = QtWidgets.QComboBox(); metric_combo.addItems(["Count", "Confidence-weighted"])
             ctl.addWidget(QtWidgets.QLabel("Saved runs")); ctl.addWidget(series_combo, 1)
-            ctl.addWidget(refresh_series_btn); ctl.addWidget(load_btn)
+            ctl.addWidget(refresh_series_btn); ctl.addWidget(load_btn); ctl.addWidget(save_jpg_btn)
             ctl.addWidget(QtWidgets.QLabel("Time bins")); ctl.addWidget(t_bins)
             ctl.addWidget(QtWidgets.QLabel("Bearing bins")); ctl.addWidget(b_bins)
             ctl.addWidget(QtWidgets.QLabel("Color metric")); ctl.addWidget(metric_combo)
@@ -1206,12 +1207,15 @@ class DifarToolsMixin:
             canvas = None
             fig = None
             ax = None
+            cax = None
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                ax = fig.add_subplot(111)
+                gs = fig.add_gridspec(1, 2, width_ratios=[30, 1], wspace=0.08)
+                ax = fig.add_subplot(gs[0, 0])
+                cax = fig.add_subplot(gs[0, 1])
                 lay.addWidget(canvas, 1)
             except Exception:
                 status_lbl.setText("Heatmap unavailable (matplotlib Qt backend not available).")
@@ -1221,7 +1225,7 @@ class DifarToolsMixin:
 
             def _render(payload: dict, label: str):
                 nonlocal current_payload, current_label
-                if canvas is None or ax is None or payload is None:
+                if canvas is None or ax is None or fig is None or payload is None:
                     return
                 time_s = [float(v) for v in payload.get("time_s", [])]
                 bearing = [float(v) % 360.0 for v in payload.get("bearing_true_deg", [])]
@@ -1255,14 +1259,14 @@ class DifarToolsMixin:
                 for sp in ax.spines.values():
                     sp.set_color(gui_grid)
 
-                if hasattr(pop, "_heat_cb") and pop._heat_cb is not None:
-                    try:
-                        pop._heat_cb.remove()
-                    except Exception:
-                        pass
-                pop._heat_cb = fig.colorbar(im, ax=ax)
-                pop._heat_cb.set_label("Weighted density" if weighted else "Sample count", color=gui_fg)
-                for tick in pop._heat_cb.ax.get_yticklabels():
+                if cax is not None:
+                    cax.clear()
+                    cb = fig.colorbar(im, cax=cax)
+                else:
+                    cb = fig.colorbar(im, ax=ax)
+                cb.set_label("Weighted density" if weighted else "Sample count", color=gui_fg)
+                cb.ax.yaxis.set_tick_params(color=gui_fg)
+                for tick in cb.ax.get_yticklabels():
                     tick.set_color(gui_fg)
                 canvas.draw_idle()
                 metric = "confidence-weighted" if weighted else "count"
@@ -1327,8 +1331,41 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Failed loading saved heatmap: {e}")
 
+            def _save_current_heatmap_jpg():
+                if canvas is None or fig is None or current_payload is None:
+                    status_lbl.setText("Nothing to save yet. Load or render a heatmap first.")
+                    return
+                default_dir = ""
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        default_dir = self._project_subdir("difar_heatmaps") or ""
+                    except Exception:
+                        default_dir = ""
+                if not default_dir:
+                    default_dir = os.getcwd()
+
+                raw = (current_label or "difar_heatmap").strip() or "difar_heatmap"
+                safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in raw).strip("_") or "difar_heatmap"
+                default_path = os.path.join(default_dir, f"{safe}.jpg")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    pop,
+                    "Save DIFAR Heatmap as JPG",
+                    default_path,
+                    "JPEG Files (*.jpg *.jpeg)",
+                )
+                if not path:
+                    return
+                if not path.lower().endswith((".jpg", ".jpeg")):
+                    path = f"{path}.jpg"
+                try:
+                    fig.savefig(path, format="jpg", dpi=180, bbox_inches="tight")
+                    status_lbl.setText(f"Saved heatmap JPG: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed to save heatmap JPG: {e}")
+
             refresh_series_btn.clicked.connect(_load_saved_series)
             load_btn.clicked.connect(_load_selected)
+            save_jpg_btn.clicked.connect(_save_current_heatmap_jpg)
             t_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
             b_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
             metric_combo.currentIndexChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
