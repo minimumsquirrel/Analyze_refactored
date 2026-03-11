@@ -1120,9 +1120,20 @@ class DifarToolsMixin:
             cal_canvas.draw_idle()
 
         def _result_to_heatmap_payload(result: dict):
-            time_s = [float(v) for v in list(result.get("time_s", []) or [])]
-            bearing = [float(v) % 360.0 for v in list(result.get("bearing_true_deg", []) or [])]
-            conf_raw = list(result.get("confidence", []) or [])
+            time_raw = result.get("time_s", [])
+            bearing_raw = result.get("bearing_true_deg", [])
+            conf_raw = result.get("confidence", [])
+
+            if time_raw is None:
+                time_raw = []
+            if bearing_raw is None:
+                bearing_raw = []
+            if conf_raw is None:
+                conf_raw = []
+
+            time_s = [float(v) for v in list(time_raw)]
+            bearing = [float(v) % 360.0 for v in list(bearing_raw)]
+            conf_raw = list(conf_raw)
             n = min(len(time_s), len(bearing))
             if n <= 1:
                 return None
@@ -1139,7 +1150,7 @@ class DifarToolsMixin:
             }
 
         def _save_heatmap_payload(payload: dict, run_id: int, label: str):
-            if not payload:
+            if payload is None:
                 return
             try:
                 project_id = self._resolve_active_project_id()
@@ -1205,12 +1216,12 @@ class DifarToolsMixin:
             except Exception:
                 status_lbl.setText("Heatmap unavailable (matplotlib Qt backend not available).")
 
-            current_payload = initial_payload if initial_payload else getattr(self, "_difar_last_heatmap_payload", None)
+            current_payload = initial_payload if initial_payload is not None else getattr(self, "_difar_last_heatmap_payload", None)
             current_label = initial_label if initial_label else getattr(self, "_difar_last_heatmap_label", "latest run")
 
             def _render(payload: dict, label: str):
                 nonlocal current_payload, current_label
-                if canvas is None or ax is None or not payload:
+                if canvas is None or ax is None or payload is None:
                     return
                 time_s = [float(v) for v in payload.get("time_s", [])]
                 bearing = [float(v) % 360.0 for v in payload.get("bearing_true_deg", [])]
@@ -1318,12 +1329,12 @@ class DifarToolsMixin:
 
             refresh_series_btn.clicked.connect(_load_saved_series)
             load_btn.clicked.connect(_load_selected)
-            t_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload else None)
-            b_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload else None)
-            metric_combo.currentIndexChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload else None)
+            t_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+            b_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+            metric_combo.currentIndexChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
 
             _load_saved_series()
-            if current_payload:
+            if current_payload is not None:
                 _render(current_payload, current_label)
             pop.exec_()
 
@@ -1708,7 +1719,7 @@ class DifarToolsMixin:
 
                     heatmap_payload = _result_to_heatmap_payload(result)
                     heatmap_label = f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]"
-                    if heatmap_payload:
+                    if heatmap_payload is not None:
                         self._difar_last_heatmap_payload = heatmap_payload
                         self._difar_last_heatmap_label = heatmap_label
 
@@ -1754,7 +1765,7 @@ class DifarToolsMixin:
                         conn.close()
                         out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
 
-                    if heatmap_payload:
+                    if heatmap_payload is not None:
                         _save_heatmap_payload(heatmap_payload, run_id=run_id, label=heatmap_label)
                         out.appendPlainText("Saved heatmap data to DB for project-scoped recall.")
 
