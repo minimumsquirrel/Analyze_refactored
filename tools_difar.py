@@ -987,6 +987,16 @@ class DifarToolsMixin:
         show_on_chart_chk.setChecked(True)
         proc_form.addRow("", show_on_chart_chk)
 
+        animate_map_chk = QtWidgets.QCheckBox("Animate DIFAR detections on Chart map")
+        animate_map_chk.setChecked(False)
+        proc_form.addRow("", animate_map_chk)
+
+        anim_step_spin = QtWidgets.QSpinBox(); anim_step_spin.setRange(1, 200); anim_step_spin.setValue(8); anim_step_spin.setSuffix(" rays/step")
+        anim_ms_spin = QtWidgets.QSpinBox(); anim_ms_spin.setRange(20, 5000); anim_ms_spin.setValue(250); anim_ms_spin.setSuffix(" ms")
+        anim_row = QtWidgets.QHBoxLayout(); anim_row.addWidget(anim_step_spin); anim_row.addWidget(anim_ms_spin)
+        anim_w = QtWidgets.QWidget(); anim_w.setLayout(anim_row)
+        proc_form.addRow("Animation settings:", anim_w)
+
         save_db_chk = QtWidgets.QCheckBox("Save analyzed DIFAR output to database")
         save_db_chk.setChecked(True)
         proc_form.addRow("", save_db_chk)
@@ -1642,6 +1652,66 @@ class DifarToolsMixin:
                 bands_combo.setEditText(selected_target_bands_text)
             pop.exec_()
 
+        def _stop_difar_map_animation():
+            tmr = getattr(self, "_difar_overlay_timer", None)
+            if tmr is not None:
+                try:
+                    tmr.stop()
+                except Exception:
+                    pass
+                try:
+                    tmr.deleteLater()
+                except Exception:
+                    pass
+            self._difar_overlay_timer = None
+
+        def _push_overlay_to_chart(overlay: dict):
+            self._difar_chart_overlay = overlay
+            if hasattr(self, "refresh_chart_tracks"):
+                try:
+                    self.refresh_chart_tracks()
+                except Exception:
+                    pass
+
+        def _start_difar_map_animation(base_overlay: dict, out_box):
+            if not base_overlay:
+                return
+            lat2 = list(base_overlay.get("lat2") or [])
+            lon2 = list(base_overlay.get("lon2") or [])
+            time_s = list(base_overlay.get("time_s") or [])
+            bearing = list(base_overlay.get("bearing_true_deg") or [])
+            n = min(len(lat2), len(lon2), len(time_s), len(bearing))
+            if n <= 0:
+                out_box.appendPlainText("Animation skipped: no rays available.")
+                return
+
+            _stop_difar_map_animation()
+            idx = {"i": 0}
+            step = max(1, int(anim_step_spin.value()))
+            interval_ms = max(20, int(anim_ms_spin.value()))
+
+            def _tick():
+                i = idx["i"]
+                if i >= n:
+                    _stop_difar_map_animation()
+                    out_box.appendPlainText("DIFAR map animation completed.")
+                    return
+                j = min(n, i + step)
+                ov = dict(base_overlay)
+                ov["lat2"] = lat2[:j]
+                ov["lon2"] = lon2[:j]
+                ov["time_s"] = time_s[:j]
+                ov["bearing_true_deg"] = bearing[:j]
+                _push_overlay_to_chart(ov)
+                idx["i"] = j
+
+            tmr = QtCore.QTimer(dlg)
+            tmr.timeout.connect(_tick)
+            self._difar_overlay_timer = tmr
+            _tick()
+            tmr.start(interval_ms)
+            out_box.appendPlainText(f"Animating DIFAR rays on Chart map ({n} rays, step={step}, interval={interval_ms} ms).")
+
         def _run_processing():
             wav_path = (loaded_wav or "").strip() or wav_edit.text().strip()
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
@@ -1861,7 +1931,7 @@ class DifarToolsMixin:
                         out.appendPlainText(f"Warning: could not save rays to DB: {e}")
 
                     if show_on_chart_chk.isChecked():
-                        self._difar_chart_overlay = {
+                        base_overlay = {
                             "sensor_lat": lat,
                             "sensor_lon": lon,
                             "lat2": rays.get("lat2"),
@@ -1870,12 +1940,12 @@ class DifarToolsMixin:
                             "bearing_true_deg": rays.get("bearing_true_deg"),
                             "label": f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                         }
-                        if hasattr(self, "refresh_chart_tracks"):
-                            try:
-                                self.refresh_chart_tracks()
-                            except Exception:
-                                pass
-                        out.appendPlainText("DIFAR rays pushed to Chart tab overlay.")
+                        if animate_map_chk.isChecked():
+                            _start_difar_map_animation(base_overlay, out)
+                        else:
+                            _stop_difar_map_animation()
+                            _push_overlay_to_chart(base_overlay)
+                            out.appendPlainText("DIFAR rays pushed to Chart tab overlay.")
 
             except Exception as e:
                 out.appendPlainText(f"Run failed: {e}")
@@ -1914,6 +1984,7 @@ class DifarToolsMixin:
         open_heatmap_btn.clicked.connect(lambda: _open_heatmap_popup())
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
+        dlg.finished.connect(lambda *_: _stop_difar_map_animation())
         cal_combo.currentIndexChanged.connect(_update_calibration_plots)
         if hasattr(self, "color_combo"):
             try:
