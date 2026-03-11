@@ -745,6 +745,26 @@ class DifarToolsMixin:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_map_rays_project ON difar_map_rays(project_id, created_utc)")
         conn.commit()
 
+    @staticmethod
+    def _ensure_difar_heatmap_table(conn):
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS difar_heatmap_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                project_id INTEGER,
+                run_id INTEGER,
+                label TEXT,
+                time_s_json TEXT,
+                bearing_true_deg_json TEXT,
+                confidence_json TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_heatmap_project ON difar_heatmap_data(project_id, created_utc)")
+        conn.commit()
+
     def _difar_calibration_import_dialog(self, parent=None, on_imported=None):
         dlg = QtWidgets.QDialog(parent or self)
         dlg.setWindowTitle("DIFAR Calibration Import")
@@ -981,6 +1001,12 @@ class DifarToolsMixin:
         out.setPlaceholderText("Status output...")
         left_layout.addWidget(out, stretch=1)
 
+        heat_btn_row = QtWidgets.QHBoxLayout()
+        open_heatmap_btn = QtWidgets.QPushButton("Open Time vs Bearing Heatmap...")
+        heat_btn_row.addWidget(open_heatmap_btn)
+        heat_btn_row.addStretch(1)
+        left_layout.addLayout(heat_btn_row)
+
         close_btn = QtWidgets.QPushButton("Close")
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
         left_layout.addLayout(close_row)
@@ -1092,6 +1118,262 @@ class DifarToolsMixin:
             cal_fig.tight_layout(pad=1.2)
             cal_plot_status.setText(f"Calibration preview: {cal_name}")
             cal_canvas.draw_idle()
+
+        def _result_to_heatmap_payload(result: dict):
+            time_raw = result.get("time_s", [])
+            bearing_raw = result.get("bearing_true_deg", [])
+            conf_raw = result.get("confidence", [])
+
+            if time_raw is None:
+                time_raw = []
+            if bearing_raw is None:
+                bearing_raw = []
+            if conf_raw is None:
+                conf_raw = []
+
+            time_s = [float(v) for v in list(time_raw)]
+            bearing = [float(v) % 360.0 for v in list(bearing_raw)]
+            conf_raw = list(conf_raw)
+            n = min(len(time_s), len(bearing))
+            if n <= 1:
+                return None
+            conf = []
+            for i in range(n):
+                try:
+                    conf.append(float(conf_raw[i]))
+                except Exception:
+                    conf.append(1.0)
+            return {
+                "time_s": time_s[:n],
+                "bearing_true_deg": bearing[:n],
+                "confidence": conf,
+            }
+
+        def _save_heatmap_payload(payload: dict, run_id: int, label: str):
+            if payload is None:
+                return
+            try:
+                project_id = self._resolve_active_project_id()
+                conn = sqlite3.connect(DB_FILENAME)
+                self._ensure_difar_heatmap_table(conn)
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO difar_heatmap_data (
+                        created_utc, project_id, run_id, label,
+                        time_s_json, bearing_true_deg_json, confidence_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        project_id,
+                        run_id,
+                        label,
+                        json.dumps([float(v) for v in payload.get("time_s", [])]),
+                        json.dumps([float(v) for v in payload.get("bearing_true_deg", [])]),
+                        json.dumps([float(v) for v in payload.get("confidence", [])]),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                out.appendPlainText(f"Warning: could not save heatmap data to DB: {e}")
+
+        def _open_heatmap_popup(initial_payload: dict = None, initial_label: str = ""):
+            pop = QtWidgets.QDialog(dlg)
+            pop.setWindowTitle("DIFAR Time vs Bearing Heatmap")
+            pop.resize(1100, 720)
+            lay = QtWidgets.QVBoxLayout(pop)
+
+            ctl = QtWidgets.QHBoxLayout()
+            series_combo = QtWidgets.QComboBox()
+            refresh_series_btn = QtWidgets.QPushButton("Refresh")
+            load_btn = QtWidgets.QPushButton("Load Selected")
+            save_jpg_btn = QtWidgets.QPushButton("Save JPG...")
+            t_bins = QtWidgets.QSpinBox(); t_bins.setRange(10, 600); t_bins.setValue(120)
+            b_bins = QtWidgets.QSpinBox(); b_bins.setRange(12, 360); b_bins.setValue(72)
+            metric_combo = QtWidgets.QComboBox(); metric_combo.addItems(["Count", "Confidence-weighted"])
+            ctl.addWidget(QtWidgets.QLabel("Saved runs")); ctl.addWidget(series_combo, 1)
+            ctl.addWidget(refresh_series_btn); ctl.addWidget(load_btn); ctl.addWidget(save_jpg_btn)
+            ctl.addWidget(QtWidgets.QLabel("Time bins")); ctl.addWidget(t_bins)
+            ctl.addWidget(QtWidgets.QLabel("Bearing bins")); ctl.addWidget(b_bins)
+            ctl.addWidget(QtWidgets.QLabel("Color metric")); ctl.addWidget(metric_combo)
+            lay.addLayout(ctl)
+
+            status_lbl = QtWidgets.QLabel("Select a saved run (filtered by active project) or process new data.")
+            status_lbl.setWordWrap(True)
+            lay.addWidget(status_lbl)
+
+            canvas = None
+            fig = None
+            ax = None
+            cax = None
+            try:
+                from matplotlib.figure import Figure
+                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+                fig = Figure(facecolor=gui_panel_bg)
+                canvas = FigureCanvas(fig)
+                gs = fig.add_gridspec(1, 2, width_ratios=[30, 1], wspace=0.08)
+                ax = fig.add_subplot(gs[0, 0])
+                cax = fig.add_subplot(gs[0, 1])
+                lay.addWidget(canvas, 1)
+            except Exception:
+                status_lbl.setText("Heatmap unavailable (matplotlib Qt backend not available).")
+
+            current_payload = initial_payload if initial_payload is not None else getattr(self, "_difar_last_heatmap_payload", None)
+            current_label = initial_label if initial_label else getattr(self, "_difar_last_heatmap_label", "latest run")
+
+            def _render(payload: dict, label: str):
+                nonlocal current_payload, current_label
+                if canvas is None or ax is None or fig is None or payload is None:
+                    return
+                time_s = [float(v) for v in payload.get("time_s", [])]
+                bearing = [float(v) % 360.0 for v in payload.get("bearing_true_deg", [])]
+                conf = [float(v) for v in payload.get("confidence", [])]
+                n = min(len(time_s), len(bearing), len(conf))
+                if n <= 1:
+                    status_lbl.setText("No data available for heatmap.")
+                    return
+                time_s = time_s[:n]; bearing = bearing[:n]; conf = conf[:n]
+                t_min, t_max = min(time_s), max(time_s)
+                if t_max <= t_min:
+                    t_max = t_min + 1.0
+                tb = int(t_bins.value()); bb = int(b_bins.value())
+                weighted = (metric_combo.currentText() == "Confidence-weighted")
+                grid = [[0.0 for _ in range(tb)] for _ in range(bb)]
+                span = (t_max - t_min)
+                for i in range(n):
+                    ti = int((time_s[i] - t_min) / span * tb)
+                    bi = int((bearing[i] / 360.0) * bb)
+                    ti = 0 if ti < 0 else (tb - 1 if ti >= tb else ti)
+                    bi = 0 if bi < 0 else (bb - 1 if bi >= bb else bi)
+                    grid[bi][ti] += (conf[i] if weighted else 1.0)
+
+                ax.clear()
+                ax.set_facecolor(gui_bg)
+                im = ax.imshow(grid, origin="lower", aspect="auto", extent=[t_min, t_max, 0.0, 360.0], interpolation="nearest", cmap="plasma")
+                ax.set_xlabel("Time (s)", color=gui_fg)
+                ax.set_ylabel("Bearing True (deg)", color=gui_fg)
+                ax.set_title(f"DIFAR Heatmap [{label}]", color=gui_fg)
+                ax.tick_params(colors=gui_fg)
+                for sp in ax.spines.values():
+                    sp.set_color(gui_grid)
+
+                if cax is not None:
+                    cax.clear()
+                    cb = fig.colorbar(im, cax=cax)
+                else:
+                    cb = fig.colorbar(im, ax=ax)
+                cb.set_label("Weighted density" if weighted else "Sample count", color=gui_fg)
+                cb.ax.yaxis.set_tick_params(color=gui_fg)
+                for tick in cb.ax.get_yticklabels():
+                    tick.set_color(gui_fg)
+                canvas.draw_idle()
+                metric = "confidence-weighted" if weighted else "count"
+                status_lbl.setText(f"Showing: {label} | {n} samples | {tb}x{bb} bins | {metric}")
+                current_payload = payload
+                current_label = label
+
+            def _load_saved_series():
+                series_combo.clear()
+                try:
+                    pid = self._resolve_active_project_id()
+                    conn = sqlite3.connect(DB_FILENAME)
+                    self._ensure_difar_heatmap_table(conn)
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        SELECT id, created_utc, COALESCE(label, ''), COALESCE(run_id, -1)
+                        FROM difar_heatmap_data
+                        WHERE (project_id IS NULL AND ? IS NULL) OR project_id = ?
+                        ORDER BY id DESC
+                        LIMIT 300
+                        """,
+                        (pid, pid),
+                    )
+                    rows = cur.fetchall()
+                    conn.close()
+                except Exception as e:
+                    rows = []
+                    status_lbl.setText(f"Could not load saved heatmaps: {e}")
+                for hid, created, label, run_id in rows:
+                    text = f"#{hid} | run {run_id if int(run_id) >= 0 else '-'} | {created} | {label}"
+                    series_combo.addItem(text, int(hid))
+                if series_combo.count() == 0:
+                    series_combo.addItem("(No saved heatmaps for current project)", None)
+
+            def _load_selected():
+                hid = series_combo.currentData()
+                if hid is None:
+                    return
+                try:
+                    conn = sqlite3.connect(DB_FILENAME)
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        SELECT label, time_s_json, bearing_true_deg_json, confidence_json
+                        FROM difar_heatmap_data WHERE id = ?
+                        """,
+                        (int(hid),),
+                    )
+                    row = cur.fetchone()
+                    conn.close()
+                    if not row:
+                        status_lbl.setText("Saved heatmap row not found.")
+                        return
+                    label, t_js, b_js, c_js = row
+                    payload = {
+                        "time_s": json.loads(t_js or "[]"),
+                        "bearing_true_deg": json.loads(b_js or "[]"),
+                        "confidence": json.loads(c_js or "[]"),
+                    }
+                    _render(payload, label or f"saved #{hid}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed loading saved heatmap: {e}")
+
+            def _save_current_heatmap_jpg():
+                if canvas is None or fig is None or current_payload is None:
+                    status_lbl.setText("Nothing to save yet. Load or render a heatmap first.")
+                    return
+                default_dir = ""
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        default_dir = self._project_subdir("difar_heatmaps") or ""
+                    except Exception:
+                        default_dir = ""
+                if not default_dir:
+                    default_dir = os.getcwd()
+
+                raw = (current_label or "difar_heatmap").strip() or "difar_heatmap"
+                safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in raw).strip("_") or "difar_heatmap"
+                default_path = os.path.join(default_dir, f"{safe}.jpg")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    pop,
+                    "Save DIFAR Heatmap as JPG",
+                    default_path,
+                    "JPEG Files (*.jpg *.jpeg)",
+                )
+                if not path:
+                    return
+                if not path.lower().endswith((".jpg", ".jpeg")):
+                    path = f"{path}.jpg"
+                try:
+                    fig.savefig(path, format="jpg", dpi=180, bbox_inches="tight")
+                    status_lbl.setText(f"Saved heatmap JPG: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed to save heatmap JPG: {e}")
+
+            refresh_series_btn.clicked.connect(_load_saved_series)
+            load_btn.clicked.connect(_load_selected)
+            save_jpg_btn.clicked.connect(_save_current_heatmap_jpg)
+            t_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+            b_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+            metric_combo.currentIndexChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+
+            _load_saved_series()
+            if current_payload is not None:
+                _render(current_payload, current_label)
+            pop.exec_()
 
         def _refresh_calibration_list(select_name: str = ""):
             cal_combo.clear()
@@ -1472,6 +1754,12 @@ class DifarToolsMixin:
                     if run_export_path:
                         out.appendPlainText(f"Saved CSV: {run_export_path}")
 
+                    heatmap_payload = _result_to_heatmap_payload(result)
+                    heatmap_label = f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]"
+                    if heatmap_payload is not None:
+                        self._difar_last_heatmap_payload = heatmap_payload
+                        self._difar_last_heatmap_label = heatmap_label
+
                     run_id = None
                     if save_db_chk.isChecked():
                         serializable = {}
@@ -1513,6 +1801,10 @@ class DifarToolsMixin:
                         conn.commit()
                         conn.close()
                         out.appendPlainText(f"Saved analyzed DIFAR run to DB (difar_results.id={run_id}).")
+
+                    if heatmap_payload is not None:
+                        _save_heatmap_payload(heatmap_payload, run_id=run_id, label=heatmap_label)
+                        out.appendPlainText("Saved heatmap data to DB for project-scoped recall.")
 
                     lat_txt, lon_txt = lat_edit.text().strip(), lon_edit.text().strip()
                     if not (lat_txt and lon_txt and "bearing_true_deg" in result and "time_s" in result):
@@ -1619,6 +1911,7 @@ class DifarToolsMixin:
         compass_browse.clicked.connect(_browse_compass)
         export_browse.clicked.connect(_browse_export)
         manage_profiles_btn.clicked.connect(_open_target_profiles_popup)
+        open_heatmap_btn.clicked.connect(lambda: _open_heatmap_popup())
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
         cal_combo.currentIndexChanged.connect(_update_calibration_plots)
