@@ -1674,12 +1674,16 @@ class DifarToolsMixin:
                     pass
 
         def _start_difar_map_animation(base_overlay: dict, out_box):
-            if not base_overlay:
+            if base_overlay is None:
                 return
-            lat2 = list(base_overlay.get("lat2") or [])
-            lon2 = list(base_overlay.get("lon2") or [])
-            time_s = list(base_overlay.get("time_s") or [])
-            bearing = list(base_overlay.get("bearing_true_deg") or [])
+            lat2_raw = base_overlay.get("lat2")
+            lon2_raw = base_overlay.get("lon2")
+            time_raw = base_overlay.get("time_s")
+            bearing_raw = base_overlay.get("bearing_true_deg")
+            lat2 = list([] if lat2_raw is None else lat2_raw)
+            lon2 = list([] if lon2_raw is None else lon2_raw)
+            time_s = list([] if time_raw is None else time_raw)
+            bearing = list([] if bearing_raw is None else bearing_raw)
             n = min(len(lat2), len(lon2), len(time_s), len(bearing))
             if n <= 0:
                 out_box.appendPlainText("Animation skipped: no rays available.")
