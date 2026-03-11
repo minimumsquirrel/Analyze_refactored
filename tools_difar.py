@@ -1200,11 +1200,17 @@ class DifarToolsMixin:
             refresh_series_btn = QtWidgets.QPushButton("Refresh")
             load_btn = QtWidgets.QPushButton("Load Selected")
             save_jpg_btn = QtWidgets.QPushButton("Save JPG...")
+            play_btn = QtWidgets.QPushButton("▶ Play")
+            stop_btn = QtWidgets.QPushButton("■ Stop")
+            play_step_spin = QtWidgets.QSpinBox(); play_step_spin.setRange(1, 200); play_step_spin.setValue(8); play_step_spin.setSuffix(" bins/step")
+            play_ms_spin = QtWidgets.QSpinBox(); play_ms_spin.setRange(20, 3000); play_ms_spin.setValue(200); play_ms_spin.setSuffix(" ms")
             t_bins = QtWidgets.QSpinBox(); t_bins.setRange(10, 600); t_bins.setValue(120)
             b_bins = QtWidgets.QSpinBox(); b_bins.setRange(12, 360); b_bins.setValue(72)
             metric_combo = QtWidgets.QComboBox(); metric_combo.addItems(["Count", "Confidence-weighted"])
             ctl.addWidget(QtWidgets.QLabel("Saved runs")); ctl.addWidget(series_combo, 1)
             ctl.addWidget(refresh_series_btn); ctl.addWidget(load_btn); ctl.addWidget(save_jpg_btn)
+            ctl.addWidget(play_btn); ctl.addWidget(stop_btn)
+            ctl.addWidget(play_step_spin); ctl.addWidget(play_ms_spin)
             ctl.addWidget(QtWidgets.QLabel("Time bins")); ctl.addWidget(t_bins)
             ctl.addWidget(QtWidgets.QLabel("Bearing bins")); ctl.addWidget(b_bins)
             ctl.addWidget(QtWidgets.QLabel("Color metric")); ctl.addWidget(metric_combo)
@@ -1232,8 +1238,10 @@ class DifarToolsMixin:
 
             current_payload = initial_payload if initial_payload is not None else getattr(self, "_difar_last_heatmap_payload", None)
             current_label = initial_label if initial_label else getattr(self, "_difar_last_heatmap_label", "latest run")
+            play_timer = QtCore.QTimer(pop)
+            play_state = {"idx": 0}
 
-            def _render(payload: dict, label: str):
+            def _render(payload: dict, label: str, max_time_bin: int = None):
                 nonlocal current_payload, current_label
                 if canvas is None or ax is None or fig is None or payload is None:
                     return
@@ -1252,12 +1260,16 @@ class DifarToolsMixin:
                 weighted = (metric_combo.currentText() == "Confidence-weighted")
                 grid = [[0.0 for _ in range(tb)] for _ in range(bb)]
                 span = (t_max - t_min)
+                used = 0
                 for i in range(n):
                     ti = int((time_s[i] - t_min) / span * tb)
                     bi = int((bearing[i] / 360.0) * bb)
                     ti = 0 if ti < 0 else (tb - 1 if ti >= tb else ti)
                     bi = 0 if bi < 0 else (bb - 1 if bi >= bb else bi)
+                    if max_time_bin is not None and ti > int(max_time_bin):
+                        continue
                     grid[bi][ti] += (conf[i] if weighted else 1.0)
+                    used += 1
 
                 ax.clear()
                 ax.set_facecolor(gui_bg)
@@ -1280,7 +1292,7 @@ class DifarToolsMixin:
                     tick.set_color(gui_fg)
                 canvas.draw_idle()
                 metric = "confidence-weighted" if weighted else "count"
-                status_lbl.setText(f"Showing: {label} | {n} samples | {tb}x{bb} bins | {metric}")
+                status_lbl.setText(f"Showing: {label} | {used}/{n} samples | {tb}x{bb} bins | {metric}")
                 current_payload = payload
                 current_label = label
 
@@ -1341,6 +1353,38 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Failed loading saved heatmap: {e}")
 
+            def _stop_heatmap_playback():
+                if play_timer.isActive():
+                    play_timer.stop()
+                play_state["idx"] = 0
+
+            def _play_heatmap():
+                if current_payload is None:
+                    status_lbl.setText("Nothing to animate. Load or process a heatmap first.")
+                    return
+                tb = int(t_bins.value())
+                step = max(1, int(play_step_spin.value()))
+                interval = max(20, int(play_ms_spin.value()))
+                _stop_heatmap_playback()
+                play_state["idx"] = 0
+
+                def _tick():
+                    i = int(play_state["idx"])
+                    if i >= tb:
+                        play_timer.stop()
+                        status_lbl.setText("Heatmap animation complete.")
+                        return
+                    _render(current_payload, current_label, max_time_bin=i)
+                    play_state["idx"] = i + step
+
+                try:
+                    play_timer.timeout.disconnect()
+                except Exception:
+                    pass
+                play_timer.timeout.connect(_tick)
+                _tick()
+                play_timer.start(interval)
+
             def _save_current_heatmap_jpg():
                 if canvas is None or fig is None or current_payload is None:
                     status_lbl.setText("Nothing to save yet. Load or render a heatmap first.")
@@ -1376,13 +1420,16 @@ class DifarToolsMixin:
             refresh_series_btn.clicked.connect(_load_saved_series)
             load_btn.clicked.connect(_load_selected)
             save_jpg_btn.clicked.connect(_save_current_heatmap_jpg)
-            t_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
-            b_bins.valueChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
-            metric_combo.currentIndexChanged.connect(lambda *_: _render(current_payload, current_label) if current_payload is not None else None)
+            play_btn.clicked.connect(_play_heatmap)
+            stop_btn.clicked.connect(lambda *_: (_stop_heatmap_playback(), _render(current_payload, current_label) if current_payload is not None else None))
+            t_bins.valueChanged.connect(lambda *_: (_stop_heatmap_playback(), _render(current_payload, current_label) if current_payload is not None else None))
+            b_bins.valueChanged.connect(lambda *_: (_stop_heatmap_playback(), _render(current_payload, current_label) if current_payload is not None else None))
+            metric_combo.currentIndexChanged.connect(lambda *_: (_stop_heatmap_playback(), _render(current_payload, current_label) if current_payload is not None else None))
 
             _load_saved_series()
             if current_payload is not None:
                 _render(current_payload, current_label)
+            pop.finished.connect(lambda *_: _stop_heatmap_playback())
             pop.exec_()
 
         def _refresh_calibration_list(select_name: str = ""):
@@ -1650,6 +1697,7 @@ class DifarToolsMixin:
             _refresh_profiles()
             if selected_target_bands_text:
                 bands_combo.setEditText(selected_target_bands_text)
+            pop.finished.connect(lambda *_: _stop_heatmap_playback())
             pop.exec_()
 
         def _stop_difar_map_animation():
@@ -1944,12 +1992,13 @@ class DifarToolsMixin:
                             "bearing_true_deg": rays.get("bearing_true_deg"),
                             "label": f"DIFAR: {os.path.basename(wav_path)} [{run_tag}]",
                         }
-                        if animate_map_chk.isChecked():
-                            _start_difar_map_animation(base_overlay, out)
-                        else:
-                            _stop_difar_map_animation()
-                            _push_overlay_to_chart(base_overlay)
-                            out.appendPlainText("DIFAR rays pushed to Chart tab overlay.")
+                        self._difar_chart_overlay = base_overlay
+                        if hasattr(self, "refresh_chart_tracks"):
+                            try:
+                                self.refresh_chart_tracks()
+                            except Exception:
+                                pass
+                        out.appendPlainText("DIFAR rays pushed to Chart tab overlay.")
 
             except Exception as e:
                 out.appendPlainText(f"Run failed: {e}")
