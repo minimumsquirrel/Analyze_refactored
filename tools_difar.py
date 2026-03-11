@@ -981,6 +981,52 @@ class DifarToolsMixin:
         out.setPlaceholderText("Status output...")
         left_layout.addWidget(out, stretch=1)
 
+        heatmap_box = QtWidgets.QGroupBox("Time vs Bearing Heatmap")
+        heatmap_layout = QtWidgets.QVBoxLayout(heatmap_box)
+        heatmap_note = QtWidgets.QLabel(
+            "2D density of bearing over time. Color shows sample density (optionally weighted by confidence)."
+        )
+        heatmap_note.setWordWrap(True)
+        heatmap_layout.addWidget(heatmap_note)
+
+        heatmap_ctl = QtWidgets.QHBoxLayout()
+        heat_time_bins = QtWidgets.QSpinBox(); heat_time_bins.setRange(10, 600); heat_time_bins.setValue(120)
+        heat_bearing_bins = QtWidgets.QSpinBox(); heat_bearing_bins.setRange(12, 360); heat_bearing_bins.setValue(72)
+        heat_weight_combo = QtWidgets.QComboBox(); heat_weight_combo.addItems(["Count", "Confidence-weighted"])
+        heatmap_ctl.addWidget(QtWidgets.QLabel("Time bins")); heatmap_ctl.addWidget(heat_time_bins)
+        heatmap_ctl.addWidget(QtWidgets.QLabel("Bearing bins")); heatmap_ctl.addWidget(heat_bearing_bins)
+        heatmap_ctl.addWidget(QtWidgets.QLabel("Color metric")); heatmap_ctl.addWidget(heat_weight_combo)
+        heatmap_ctl.addStretch(1)
+        heatmap_layout.addLayout(heatmap_ctl)
+
+        heatmap_status = QtWidgets.QLabel("Run DIFAR Processing to populate the heatmap.")
+        heatmap_status.setWordWrap(True)
+        heatmap_layout.addWidget(heatmap_status)
+
+        heat_canvas = None
+        heat_fig = None
+        heat_ax = None
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+
+            heat_fig = Figure(facecolor=gui_panel_bg)
+            heat_canvas = FigureCanvas(heat_fig)
+            heat_ax = heat_fig.add_subplot(111)
+            heat_ax.set_facecolor(gui_bg)
+            heat_ax.grid(True, alpha=0.2)
+            heat_ax.tick_params(colors=gui_fg)
+            for sp in heat_ax.spines.values():
+                sp.set_color(gui_grid)
+            heat_ax.set_xlabel("Time (s)", color=gui_fg)
+            heat_ax.set_ylabel("Bearing (deg)", color=gui_fg)
+            heat_ax.set_title("Time vs Bearing", color=gui_fg)
+            heatmap_layout.addWidget(heat_canvas, stretch=1)
+        except Exception:
+            heatmap_status.setText("Heatmap unavailable (matplotlib Qt backend not available).")
+
+        left_layout.addWidget(heatmap_box, stretch=2)
+
         close_btn = QtWidgets.QPushButton("Close")
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
         left_layout.addLayout(close_row)
@@ -1092,6 +1138,83 @@ class DifarToolsMixin:
             cal_fig.tight_layout(pad=1.2)
             cal_plot_status.setText(f"Calibration preview: {cal_name}")
             cal_canvas.draw_idle()
+
+        def _update_bearing_heatmap(result: dict, run_tag: str):
+            if heat_canvas is None or heat_ax is None:
+                return
+
+            time_s = [float(v) for v in list(result.get("time_s", []) or [])]
+            bearing = [float(v) % 360.0 for v in list(result.get("bearing_true_deg", []) or [])]
+            conf_raw = list(result.get("confidence", []) or [])
+
+            n = min(len(time_s), len(bearing))
+            if n <= 1:
+                heat_ax.clear()
+                heat_ax.text(0.5, 0.5, "No bearing/time samples", ha="center", va="center", transform=heat_ax.transAxes, color=gui_fg)
+                heat_ax.set_facecolor(gui_bg)
+                heat_canvas.draw_idle()
+                heatmap_status.setText("Heatmap not updated: missing time/bearing samples.")
+                return
+
+            time_s = time_s[:n]
+            bearing = bearing[:n]
+            conf = []
+            for i in range(n):
+                try:
+                    conf.append(float(conf_raw[i]))
+                except Exception:
+                    conf.append(1.0)
+
+            t_min, t_max = min(time_s), max(time_s)
+            if t_max <= t_min:
+                t_max = t_min + 1.0
+
+            t_bins = int(heat_time_bins.value())
+            b_bins = int(heat_bearing_bins.value())
+            grid = [[0.0 for _ in range(t_bins)] for _ in range(b_bins)]
+            weighted = (heat_weight_combo.currentText() == "Confidence-weighted")
+            t_span = (t_max - t_min)
+
+            for i in range(n):
+                ti = int((time_s[i] - t_min) / t_span * t_bins)
+                bi = int((bearing[i] / 360.0) * b_bins)
+                ti = 0 if ti < 0 else (t_bins - 1 if ti >= t_bins else ti)
+                bi = 0 if bi < 0 else (b_bins - 1 if bi >= b_bins else bi)
+                w = conf[i] if weighted else 1.0
+                grid[bi][ti] += w
+
+            heat_ax.clear()
+            heat_ax.set_facecolor(gui_bg)
+            im = heat_ax.imshow(
+                grid,
+                origin="lower",
+                aspect="auto",
+                extent=[t_min, t_max, 0.0, 360.0],
+                interpolation="nearest",
+                cmap="plasma",
+            )
+            heat_ax.set_xlabel("Time (s)", color=gui_fg)
+            heat_ax.set_ylabel("Bearing True (deg)", color=gui_fg)
+            heat_ax.set_title(f"DIFAR Heatmap [{run_tag}]", color=gui_fg)
+            heat_ax.tick_params(colors=gui_fg)
+            for sp in heat_ax.spines.values():
+                sp.set_color(gui_grid)
+
+            for old_cb in list(getattr(heat_fig, "axes", []))[1:]:
+                if getattr(old_cb, "get_label", lambda: "")() == "<colorbar>":
+                    try:
+                        old_cb.remove()
+                    except Exception:
+                        pass
+            cb = heat_fig.colorbar(im, ax=heat_ax)
+            cb.set_label("Weighted density" if weighted else "Sample count", color=gui_fg)
+            cb.ax.yaxis.set_tick_params(color=gui_fg)
+            for tick in cb.ax.get_yticklabels():
+                tick.set_color(gui_fg)
+
+            heat_canvas.draw_idle()
+            metric = "confidence-weighted" if weighted else "count"
+            heatmap_status.setText(f"Heatmap updated: {n} samples, {t_bins}x{b_bins} bins, metric={metric}.")
 
         def _refresh_calibration_list(select_name: str = ""):
             cal_combo.clear()
@@ -1471,6 +1594,8 @@ class DifarToolsMixin:
                     out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                     if run_export_path:
                         out.appendPlainText(f"Saved CSV: {run_export_path}")
+
+                    _update_bearing_heatmap(result, run_tag=run_tag)
 
                     run_id = None
                     if save_db_chk.isChecked():
