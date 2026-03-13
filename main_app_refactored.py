@@ -15393,6 +15393,22 @@ class MainWindow(
         poly.append(poly[0])
         return poly
 
+    def _corridor_strips_for_track(self, lat_list, lon_list, half_width_m):
+        left_ll, right_ll = self._corridor_edges_for_track(lat_list, lon_list, half_width_m)
+        n = min(len(left_ll), len(right_ll))
+        if n < 2:
+            return []
+        strips = []
+        for i in range(n - 1):
+            # Small quad centered on track segment: this keeps highlight symmetric
+            # around the source track even on curved tracks.
+            a = left_ll[i]
+            b = left_ll[i + 1]
+            c = right_ll[i + 1]
+            d = right_ll[i]
+            strips.append([a, b, c, d, a])
+        return strips
+
     def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, difar_overlay=None, propagation_overlay=None):
         if self.gps_map_view is None or folium is None:
             return
@@ -15508,17 +15524,30 @@ class MainWindow(
                     lat = [float(p[0]) for p in _pts]
                     lon = [float(p[1]) for p in _pts]
                     edge_l, edge_r = self._corridor_edges_for_track(lat, lon, buff_m)
-                    corridor = self._corridor_polygon_for_track(lat, lon, buff_m)
-                    if corridor:
-                        folium.Polygon(
-                            locations=corridor,
-                            color=col,
-                            weight=2,
-                            fill=True,
-                            fill_color=col,
-                            fill_opacity=0.22,
-                            tooltip=lbl,
-                        ).add_to(m)
+                    strips = self._corridor_strips_for_track(lat, lon, buff_m)
+                    if strips:
+                        for si, strip in enumerate(strips):
+                            folium.Polygon(
+                                locations=strip,
+                                color=col,
+                                weight=0,
+                                fill=True,
+                                fill_color=col,
+                                fill_opacity=0.20,
+                                tooltip=(lbl if si == 0 else None),
+                            ).add_to(m)
+                    else:
+                        corridor = self._corridor_polygon_for_track(lat, lon, buff_m)
+                        if corridor:
+                            folium.Polygon(
+                                locations=corridor,
+                                color=col,
+                                weight=2,
+                                fill=True,
+                                fill_color=col,
+                                fill_opacity=0.22,
+                                tooltip=lbl,
+                            ).add_to(m)
                     if edge_l:
                         folium.PolyLine(edge_l, color=col, weight=2, opacity=0.9, tooltip='Propagation distance (+)').add_to(m)
                     if edge_r:
