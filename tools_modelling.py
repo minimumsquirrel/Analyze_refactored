@@ -2806,6 +2806,8 @@ class ModellingToolsMixin:
             if tr_created:
                 lbl += f" ({str(tr_created).split(' ')[0]})"
             map_track_cb.addItem(lbl, userData=int(tr_id))
+        if map_track_cb.count() > 1:
+            map_track_cb.setCurrentIndex(1)
         top.addSpacing(10)
         top.addWidget(QtWidgets.QLabel("Map Track:"))
         top.addWidget(map_track_cb)

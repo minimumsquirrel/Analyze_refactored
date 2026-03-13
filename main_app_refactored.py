@@ -14499,11 +14499,6 @@ class MainWindow(
         overlay_row.addWidget(self.chart_show_propagation_cb)
         sidebar.addLayout(overlay_row)
 
-        self.chart_show_propagation_cb = QtWidgets.QCheckBox("Show Propagation Corridor")
-        self.chart_show_propagation_cb.setChecked(True)
-        self.chart_show_propagation_cb.toggled.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(self.chart_show_propagation_cb)
-
         sidebar.addWidget(QtWidgets.QLabel("DIFAR Bearing Events"))
         self.difar_event_list = QtWidgets.QListWidget()
         self.difar_event_list.setMinimumHeight(110)
@@ -15862,9 +15857,9 @@ class MainWindow(
             except Exception:
                 pass
 
-        prop_overlay = getattr(self, '_propagation_corridor_overlay', None)
-        if hasattr(self, 'chart_show_propagation_cb') and not self.chart_show_propagation_cb.isChecked():
-            prop_overlay = None
+        prop_overlay_raw = getattr(self, '_propagation_corridor_overlay', None)
+        prop_enabled = True if (not hasattr(self, 'chart_show_propagation_cb')) else bool(self.chart_show_propagation_cb.isChecked())
+        prop_overlay = prop_overlay_raw if prop_enabled else None
         if isinstance(prop_overlay, dict):
             try:
                 tr_id = prop_overlay.get('track_id')
@@ -16005,13 +16000,16 @@ class MainWindow(
                 self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
                 self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
 
-        if not tracks and ctd_count == 0 and wp_count == 0:
+        if not tracks and ctd_count == 0 and wp_count == 0 and not isinstance(prop_overlay, dict):
             self.gps_info_label.setText('No tracks selected')
             return
 
         backend = 'Folium' if use_web_map else 'PyQtGraph'
         difar_n = sum(len((ov or {}).get('time_s', [])) for ov in difar_overlays)
-        prop_txt = "On" if isinstance(prop_overlay, dict) else "Off"
+        if isinstance(prop_overlay_raw, dict):
+            prop_txt = "On" if prop_enabled else "Hidden"
+        else:
+            prop_txt = "Not modelled"
         self.gps_info_label.setText(
             f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
         )
