@@ -8605,7 +8605,8 @@ class MainWindow(
             self.tool_combo.addItems([
                 "Wenz Curves",
                 "Propagation Modelling",
-                "Cable Loss & Hydro Sensitivity"                
+                "Cable Loss & Hydro Sensitivity",
+                "Simulated GPS Track Generator"
             ])
         
         elif category == "Detection & Classification Tools":  # "Detection & Classification Tools"
@@ -8739,6 +8740,8 @@ class MainWindow(
                 self.ltsa_psd_popup()
             elif tool=="Cable Loss & Hydro Sensitivity":
                 self.cable_loss_and_hydro_popup()
+            elif tool=="Simulated GPS Track Generator":
+                self.simulated_gps_track_popup()
 
                 
 
