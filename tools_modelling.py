@@ -4809,6 +4809,7 @@ class ModellingToolsMixin:
         btn_mid = QtWidgets.QPushButton('Add Mid Point (click map)')
         btn_end = QtWidgets.QPushButton('Set End (click map)')
         btn_clear = QtWidgets.QPushButton('Clear Points')
+        btn_preview = QtWidgets.QPushButton('Preview on Map')
         btn_gen = QtWidgets.QPushButton('Generate + Save')
         info = QtWidgets.QLabel('Tip: choose Set Start/Mid/End, then click map. For pattern modes only start is required.')
         info.setWordWrap(True)
@@ -4822,7 +4823,7 @@ class ModellingToolsMixin:
         form.addRow('Pattern size:', size_sb)
         left.addLayout(form)
         left.addWidget(btn_start); left.addWidget(btn_mid); left.addWidget(btn_end); left.addWidget(btn_clear)
-        left.addWidget(btn_gen); left.addWidget(info)
+        left.addWidget(btn_preview); left.addWidget(btn_gen); left.addWidget(info)
         left.addStretch(1)
 
         def _waypoints_for_overlay():
@@ -4923,8 +4924,7 @@ class ModellingToolsMixin:
                     state['mid'].append((lat, lon))
                 elif state['mode'] == 'end':
                     state['end'] = (lat, lon)
-                info.setText(_status_txt())
-                _render_map()
+                info.setText(_status_txt() + '  (click Preview on Map to refresh markers)')
             except Exception:
                 pass
 
@@ -4987,6 +4987,7 @@ class ModellingToolsMixin:
         btn_mid.clicked.connect(lambda: (state.__setitem__('mode', 'mid'), info.setText('Click map to add MID point')))
         btn_end.clicked.connect(lambda: (state.__setitem__('mode', 'end'), info.setText('Click map to set END')))
         btn_clear.clicked.connect(lambda: (state.__setitem__('start', None), state.__setitem__('mid', []), state.__setitem__('end', None), state.__setitem__('track', []), _render_map(), info.setText('Cleared')))
+        btn_preview.clicked.connect(lambda: (_render_map(), info.setText(_status_txt() + '  (map preview refreshed)')))
         btn_gen.clicked.connect(_save_generated)
         pattern_cb.currentIndexChanged.connect(lambda *_: info.setText('User route uses start/mid/end; patterns need start+size.'))
 
