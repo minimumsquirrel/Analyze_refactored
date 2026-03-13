@@ -14487,10 +14487,17 @@ class MainWindow(
         self.chart_interactive_mode_cb.toggled.connect(self._plot_selected_gps_tracks)
         sidebar.addWidget(self.chart_interactive_mode_cb)
 
+        overlay_row = QtWidgets.QHBoxLayout()
         self.chart_show_difar_cb = QtWidgets.QCheckBox("Show DIFAR Rays")
         self.chart_show_difar_cb.setChecked(True)
         self.chart_show_difar_cb.toggled.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(self.chart_show_difar_cb)
+        overlay_row.addWidget(self.chart_show_difar_cb)
+
+        self.chart_show_propagation_cb = QtWidgets.QCheckBox("Show Propagation Corridor")
+        self.chart_show_propagation_cb.setChecked(True)
+        self.chart_show_propagation_cb.toggled.connect(self._plot_selected_gps_tracks)
+        overlay_row.addWidget(self.chart_show_propagation_cb)
+        sidebar.addLayout(overlay_row)
 
         self.chart_show_propagation_cb = QtWidgets.QCheckBox("Show Propagation Corridor")
         self.chart_show_propagation_cb.setChecked(True)
@@ -15398,6 +15405,20 @@ class MainWindow(
         for _, _, lat, lon, _, _ in waypoint_rows:
             try:
                 all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
+
+        if isinstance(propagation_overlay, dict):
+            try:
+                tr_id0 = propagation_overlay.get('track_id')
+                if tr_id0 is not None:
+                    _n0, _c0, pts0, _det0 = self._fetch_track_points(int(tr_id0))
+                    lat0 = [float(p[0]) for p in pts0]
+                    lon0 = [float(p[1]) for p in pts0]
+                    all_lat.extend(lat0); all_lon.extend(lon0)
+                    poly0 = self._corridor_polygon_for_track(lat0, lon0, float(propagation_overlay.get('buffer_m', 0.0)))
+                    for la0, lo0 in poly0:
+                        all_lat.append(float(la0)); all_lon.append(float(lo0))
             except Exception:
                 pass
 
