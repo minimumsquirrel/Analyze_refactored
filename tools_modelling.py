@@ -4877,12 +4877,16 @@ class ModellingToolsMixin:
                 pts = [(r[2], r[3]) for r in state['track']]
                 folium.PolyLine(pts, color='magenta', weight=2, opacity=0.8, tooltip='Generated track').add_to(m)
 
-            click_js = """
-            function onMapClick(e) {
-              var u = 'https://simgps.local/click?lat=' + e.latlng.lat.toFixed(8) + '&lon=' + e.latlng.lng.toFixed(8);
-              window.location.href = u;
-            }
-            map.on('click', onMapClick);
+            map_var = m.get_name()
+            click_js = f"""
+            (function() {{
+              var mapObj = {map_var};
+              if (!mapObj) return;
+              mapObj.on('click', function(e) {{
+                var u = 'https://simgps.local/click?lat=' + e.latlng.lat.toFixed(8) + '&lon=' + e.latlng.lng.toFixed(8);
+                window.location.href = u;
+              }});
+            }})();
             """
             m.get_root().script.add_child(folium.Element(click_js))
             plugins.MousePosition().add_to(m)
