@@ -3859,6 +3859,18 @@ class ModellingToolsMixin:
 
             try:
                 track_id = map_track_cb.currentData()
+                if track_id is None:
+                    # Fallback 1: currently selected chart track
+                    if hasattr(self, 'gps_track_list') and self.gps_track_list.selectedItems():
+                        sid = self.gps_track_list.selectedItems()[0].data(QtCore.Qt.UserRole)
+                        if sid is not None:
+                            track_id = int(sid)
+                    # Fallback 2: first available track in Map Track combobox
+                    if track_id is None and map_track_cb.count() > 1:
+                        t1 = map_track_cb.itemData(1)
+                        if t1 is not None:
+                            track_id = int(t1)
+
                 if track_id is not None:
                     setattr(self, "_propagation_corridor_overlay", {
                         "track_id": int(track_id),
@@ -3868,6 +3880,7 @@ class ModellingToolsMixin:
                     })
                 else:
                     setattr(self, "_propagation_corridor_overlay", None)
+
                 if hasattr(self, "_plot_selected_gps_tracks"):
                     self._plot_selected_gps_tracks()
             except Exception:
