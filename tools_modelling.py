@@ -3883,9 +3883,16 @@ class ModellingToolsMixin:
                             track_id = int(prev.get("track_id"))
 
                 if track_id is not None:
+                    echo_buffer_m = 0.0
+                    try:
+                        if echo_thresh_pt is not None:
+                            echo_buffer_m = max(0.0, float(echo_thresh_pt[0]))
+                    except Exception:
+                        echo_buffer_m = 0.0
                     ov = {
                         "track_id": int(track_id),
                         "buffer_m": float(np.max(rr)),
+                        "echo_buffer_m": float(echo_buffer_m),
                         "color": str(_sel_color()),
                         "label": f"Propagation corridor ±{float(np.max(rr)):.1f} m",
                     }
