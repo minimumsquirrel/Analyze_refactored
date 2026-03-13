@@ -3883,12 +3883,18 @@ class ModellingToolsMixin:
                             track_id = int(prev.get("track_id"))
 
                 if track_id is not None:
-                    setattr(self, "_propagation_corridor_overlay", {
+                    ov = {
                         "track_id": int(track_id),
                         "buffer_m": float(np.max(rr)),
                         "color": str(_sel_color()),
                         "label": f"Propagation corridor ±{float(np.max(rr)):.1f} m",
-                    })
+                    }
+                    setattr(self, "_propagation_corridor_overlay", ov)
+                    try:
+                        if hasattr(self, "_save_propagation_overlay_to_db"):
+                            self._save_propagation_overlay_to_db(ov)
+                    except Exception:
+                        pass
                 else:
                     setattr(self, "_propagation_corridor_overlay", None)
 

@@ -15695,6 +15695,77 @@ class MainWindow(
         cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_map_rays_project ON difar_map_rays(project_id, created_utc)")
         conn.commit(); conn.close()
 
+    def _ensure_propagation_overlays_table(self):
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS propagation_map_overlays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                project_id INTEGER,
+                track_id INTEGER,
+                buffer_m REAL,
+                color TEXT,
+                label TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_prop_map_overlays_project ON propagation_map_overlays(project_id, created_utc)")
+        conn.commit(); conn.close()
+
+    def _save_propagation_overlay_to_db(self, overlay):
+        if not isinstance(overlay, dict):
+            return
+        self._ensure_propagation_overlays_table()
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO propagation_map_overlays(created_utc, project_id, track_id, buffer_m, color, label)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                None if pid is None else int(pid),
+                None if overlay.get('track_id') is None else int(overlay.get('track_id')),
+                float(overlay.get('buffer_m', 0.0)),
+                str(overlay.get('color') or '#03DFE2'),
+                str(overlay.get('label') or 'Propagation corridor'),
+            ),
+        )
+        conn.commit(); conn.close()
+
+    def _load_latest_propagation_overlay_from_db(self):
+        self._ensure_propagation_overlays_table()
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT track_id, buffer_m, color, label
+            FROM propagation_map_overlays
+            WHERE ((project_id IS NULL) AND (? IS NULL)) OR project_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (pid, pid),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        tr_id, buffer_m, color, label = row
+        if tr_id is None:
+            return None
+        return {
+            'track_id': int(tr_id),
+            'buffer_m': float(buffer_m or 0.0),
+            'color': str(color or '#03DFE2'),
+            'label': str(label or 'Propagation corridor'),
+        }
+
     @staticmethod
     def _decode_json_float_list(raw):
         if raw in (None, ""):
@@ -15858,6 +15929,13 @@ class MainWindow(
                 pass
 
         prop_overlay_raw = getattr(self, '_propagation_corridor_overlay', None)
+        if not isinstance(prop_overlay_raw, dict):
+            try:
+                prop_overlay_raw = self._load_latest_propagation_overlay_from_db()
+                if isinstance(prop_overlay_raw, dict):
+                    self._propagation_corridor_overlay = prop_overlay_raw
+            except Exception:
+                prop_overlay_raw = None
         prop_enabled = True if (not hasattr(self, 'chart_show_propagation_cb')) else bool(self.chart_show_propagation_cb.isChecked())
         prop_overlay = prop_overlay_raw if prop_enabled else None
         if isinstance(prop_overlay, dict):
