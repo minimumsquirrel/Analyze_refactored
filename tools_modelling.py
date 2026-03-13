@@ -2246,6 +2246,26 @@ class ModellingToolsMixin:
                     p["t_mid_s"] = float(i)
             return pts
 
+        def _list_project_tracks():
+            out = []
+            pid = getattr(self, 'current_project_id', None)
+            try:
+                conn = sqlite3.connect(_db_path()); cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT id, name, created_at
+                    FROM gps_tracks
+                    WHERE ((project_id IS NULL) AND (? IS NULL)) OR project_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    (pid, pid),
+                )
+                out = [(int(r[0]), (r[1] or f"Track {r[0]}"), (r[2] or "")) for r in cur.fetchall()]
+                conn.close()
+            except Exception:
+                out = []
+            return out
+
         # ------------------------------------------------------------
         # CTD schema: separate *_json columns (your table)
         # ------------------------------------------------------------
@@ -2778,6 +2798,17 @@ class ModellingToolsMixin:
         top.addSpacing(10)
         top.addWidget(QtWidgets.QLabel("Distance Unit:"))
         top.addWidget(dist_unit_cb)
+
+        map_track_cb = QtWidgets.QComboBox()
+        map_track_cb.addItem("<No map corridor>", userData=None)
+        for tr_id, tr_name, tr_created in _list_project_tracks():
+            lbl = f"{tr_name}"
+            if tr_created:
+                lbl += f" ({str(tr_created).split(' ')[0]})"
+            map_track_cb.addItem(lbl, userData=int(tr_id))
+        top.addSpacing(10)
+        top.addWidget(QtWidgets.QLabel("Map Track:"))
+        top.addWidget(map_track_cb)
 
         top.addStretch(1)
         top.addWidget(btn_cfg)
@@ -3825,6 +3856,22 @@ class ModellingToolsMixin:
             _plot_pyqtgraph(rr, RL_med, RL_min, RL_max, echo_RL, echo_thresh_pt, f_u, RL_mat, single_freq_mode)
 
             try:
+                track_id = map_track_cb.currentData()
+                if track_id is not None:
+                    setattr(self, "_propagation_corridor_overlay", {
+                        "track_id": int(track_id),
+                        "buffer_m": float(np.max(rr)),
+                        "color": str(_sel_color()),
+                        "label": f"Propagation corridor ±{float(np.max(rr)):.1f} m",
+                    })
+                else:
+                    setattr(self, "_propagation_corridor_overlay", None)
+                if hasattr(self, "_plot_selected_gps_tracks"):
+                    self._plot_selected_gps_tracks()
+            except Exception:
+                pass
+
+            try:
                 fig.tight_layout()
             except Exception:
                 pass
@@ -3854,6 +3901,16 @@ class ModellingToolsMixin:
         btn_compute.clicked.connect(_compute_and_plot)
         btn_export_img.clicked.connect(_export_graphs_jpg)
         btn_close.clicked.connect(dlg.accept)
+
+        def _clear_prop_overlay():
+            try:
+                setattr(self, "_propagation_corridor_overlay", None)
+                if hasattr(self, "_plot_selected_gps_tracks"):
+                    self._plot_selected_gps_tracks()
+            except Exception:
+                pass
+
+        dlg.finished.connect(lambda *_: _clear_prop_overlay())
 
         _refresh_all()
         dlg.exec_()
