@@ -16006,8 +16006,11 @@ class MainWindow(
 
         backend = 'Folium' if use_web_map else 'PyQtGraph'
         difar_n = sum(len((ov or {}).get('time_s', [])) for ov in difar_overlays)
+        prop_meta = getattr(self, '_propagation_model_meta', None)
         if isinstance(prop_overlay_raw, dict):
             prop_txt = "On" if prop_enabled else "Hidden"
+        elif isinstance(prop_meta, dict) and bool(prop_meta.get('has_result')):
+            prop_txt = "Modelled (no track selected)"
         else:
             prop_txt = "Not modelled"
         self.gps_info_label.setText(

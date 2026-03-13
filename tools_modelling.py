@@ -3858,6 +3858,12 @@ class ModellingToolsMixin:
             _plot_pyqtgraph(rr, RL_med, RL_min, RL_max, echo_RL, echo_thresh_pt, f_u, RL_mat, single_freq_mode)
 
             try:
+                setattr(self, "_propagation_model_meta", {
+                    "buffer_m": float(np.max(rr)),
+                    "color": str(_sel_color()),
+                    "has_result": True,
+                })
+
                 track_id = map_track_cb.currentData()
                 if track_id is None:
                     # Fallback 1: currently selected chart track
@@ -3870,6 +3876,11 @@ class ModellingToolsMixin:
                         t1 = map_track_cb.itemData(1)
                         if t1 is not None:
                             track_id = int(t1)
+                    # Fallback 3: previously selected propagation overlay track
+                    if track_id is None:
+                        prev = getattr(self, "_propagation_corridor_overlay", None)
+                        if isinstance(prev, dict) and prev.get("track_id") is not None:
+                            track_id = int(prev.get("track_id"))
 
                 if track_id is not None:
                     setattr(self, "_propagation_corridor_overlay", {
