@@ -32,7 +32,7 @@ from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QUrl, Qt, QTimer
 from PyQt5.QtGui import QDesktopServices, QFont, QPixmap
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 # ── Shared utilities (DB, helpers, base UI classes) ──────────────────────────
@@ -4660,3 +4660,336 @@ class ModellingToolsMixin:
 
 
 
+
+    # ---------------- Simulated GPS Track Generator ----------------
+    @staticmethod
+    def _sim_offset_latlon(lat_deg, lon_deg, east_m, north_m):
+        r = 6378137.0
+        dlat = (north_m / r) * (180.0 / math.pi)
+        dlon = (east_m / (r * max(1e-9, math.cos(math.radians(lat_deg))))) * (180.0 / math.pi)
+        return float(lat_deg + dlat), float(lon_deg + dlon)
+
+    @staticmethod
+    def _sim_haversine_m(lat1, lon1, lat2, lon2):
+        p1 = math.radians(float(lat1)); p2 = math.radians(float(lat2))
+        dp = math.radians(float(lat2) - float(lat1)); dl = math.radians(float(lon2) - float(lon1))
+        a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+        return 2.0 * 6371000.0 * math.asin(min(1.0, math.sqrt(max(0.0, a))))
+
+    @staticmethod
+    def _sim_decimal_to_nmea_lat(lat_deg):
+        hemi = 'N' if lat_deg >= 0 else 'S'
+        v = abs(float(lat_deg))
+        d = int(v)
+        m = (v - d) * 60.0
+        return f"{d:02d}{m:07.4f}", hemi
+
+    @staticmethod
+    def _sim_decimal_to_nmea_lon(lon_deg):
+        hemi = 'E' if lon_deg >= 0 else 'W'
+        v = abs(float(lon_deg))
+        d = int(v)
+        m = (v - d) * 60.0
+        return f"{d:03d}{m:07.4f}", hemi
+
+    @staticmethod
+    def _sim_nmea_checksum(sentence_wo_dollar):
+        chk = 0
+        for ch in sentence_wo_dollar:
+            chk ^= ord(ch)
+        return f"{chk:02X}"
+
+    def _sim_build_gga(self, talker, dt_utc, lat_deg, lon_deg, alt_m=0.0, fix_q=1, sats=8, hdop=0.9):
+        hhmmss = dt_utc.strftime('%H%M%S') + f".{int(dt_utc.microsecond/10000):02d}"
+        lat_s, lat_h = self._sim_decimal_to_nmea_lat(lat_deg)
+        lon_s, lon_h = self._sim_decimal_to_nmea_lon(lon_deg)
+        body = (
+            f"{talker},{hhmmss},{lat_s},{lat_h},{lon_s},{lon_h},"
+            f"{int(fix_q)},{int(sats):02d},{float(hdop):.1f},{float(alt_m):.1f},M,0.0,M,,"
+        )
+        return f"${body}*{self._sim_nmea_checksum(body)}"
+
+    def _sim_generate_polyline_track(self, waypoints, speed_kts, sample_hz):
+        if len(waypoints) < 2:
+            return []
+        v = max(0.05, float(speed_kts)) * 0.514444
+        dt = 1.0 / max(0.2, float(sample_hz))
+        out = []
+        now = datetime.now(timezone.utc)
+        idx = 0
+        for a, b in zip(waypoints[:-1], waypoints[1:]):
+            d = self._sim_haversine_m(a[0], a[1], b[0], b[1])
+            steps = max(1, int(math.ceil(d / max(1e-6, v * dt))))
+            for i in range(steps):
+                u = i / float(steps)
+                lat = a[0] + (b[0] - a[0]) * u
+                lon = a[1] + (b[1] - a[1]) * u
+                out.append((idx, now + timedelta(seconds=idx * dt), lat, lon))
+                idx += 1
+        out.append((idx, now + timedelta(seconds=idx * dt), waypoints[-1][0], waypoints[-1][1]))
+        return out
+
+    def _sim_pattern_points(self, pattern, start_lat, start_lon, size_nm, speed_kts, sample_hz):
+        size_m = max(100.0, float(size_nm) * 1852.0)
+        if pattern == 'Straight line':
+            end = self._sim_offset_latlon(start_lat, start_lon, size_m, 0.0)
+            return self._sim_generate_polyline_track([(start_lat, start_lon), end], speed_kts, sample_hz)
+        if pattern == 'Back and forth':
+            a = self._sim_offset_latlon(start_lat, start_lon, -size_m / 2.0, 0.0)
+            b = self._sim_offset_latlon(start_lat, start_lon, +size_m / 2.0, 0.0)
+            return self._sim_generate_polyline_track([a, b, a, b], speed_kts, sample_hz)
+        if pattern == 'Square':
+            h = size_m / 2.0
+            p1 = self._sim_offset_latlon(start_lat, start_lon, -h, -h)
+            p2 = self._sim_offset_latlon(start_lat, start_lon, +h, -h)
+            p3 = self._sim_offset_latlon(start_lat, start_lon, +h, +h)
+            p4 = self._sim_offset_latlon(start_lat, start_lon, -h, +h)
+            return self._sim_generate_polyline_track([p1, p2, p3, p4, p1], speed_kts, sample_hz)
+        if pattern == 'Circle':
+            v = max(0.05, float(speed_kts)) * 0.514444
+            dt = 1.0 / max(0.2, float(sample_hz))
+            circumference = 2.0 * math.pi * (size_m / 2.0)
+            n = max(60, int(math.ceil(circumference / max(1e-6, v * dt))))
+            now = datetime.now(timezone.utc)
+            out = []
+            for i in range(n + 1):
+                ang = 2.0 * math.pi * (i / float(n))
+                east = (size_m / 2.0) * math.cos(ang)
+                north = (size_m / 2.0) * math.sin(ang)
+                lat, lon = self._sim_offset_latlon(start_lat, start_lon, east, north)
+                out.append((i, now + timedelta(seconds=i * dt), lat, lon))
+            return out
+        if pattern == 'Figure 8':
+            v = max(0.05, float(speed_kts)) * 0.514444
+            dt = 1.0 / max(0.2, float(sample_hz))
+            n = max(120, int(math.ceil((8.0 * size_m) / max(1e-6, v * dt))))
+            now = datetime.now(timezone.utc)
+            out = []
+            a = size_m / 2.0
+            for i in range(n + 1):
+                t = 2.0 * math.pi * (i / float(n))
+                east = a * math.sin(t)
+                north = 0.5 * a * math.sin(2.0 * t)
+                lat, lon = self._sim_offset_latlon(start_lat, start_lon, east, north)
+                out.append((i, now + timedelta(seconds=i * dt), lat, lon))
+            return out
+        return []
+
+    def simulated_gps_track_popup(self):
+        from PyQt5 import QtWebEngineWidgets
+        import folium
+        from folium import plugins
+        from datetime import timedelta
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('Simulated GPS Track Generator')
+        dlg.resize(1200, 760)
+
+        state = {
+            'mode': None,
+            'start': None,
+            'mid': [],
+            'end': None,
+            'track': [],
+            'last_html': None,
+        }
+
+        root = QtWidgets.QHBoxLayout(dlg)
+        left = QtWidgets.QVBoxLayout(); root.addLayout(left, 0)
+        map_view = QtWebEngineWidgets.QWebEngineView(); root.addWidget(map_view, 1)
+
+        talker_cb = QtWidgets.QComboBox(); talker_cb.addItems(['GPGGA', 'GNGGA', 'GLGGA', 'GAGGA'])
+        pattern_cb = QtWidgets.QComboBox(); pattern_cb.addItems(['User route (start/mid/end)', 'Straight line', 'Back and forth', 'Square', 'Circle', 'Figure 8'])
+        speed_sb = QtWidgets.QDoubleSpinBox(); speed_sb.setRange(0.1, 80.0); speed_sb.setDecimals(2); speed_sb.setValue(8.0); speed_sb.setSuffix(' kts')
+        rate_sb = QtWidgets.QDoubleSpinBox(); rate_sb.setRange(0.2, 20.0); rate_sb.setDecimals(2); rate_sb.setValue(1.0); rate_sb.setSuffix(' Hz')
+        size_sb = QtWidgets.QDoubleSpinBox(); size_sb.setRange(0.1, 200.0); size_sb.setDecimals(2); size_sb.setValue(8.0); size_sb.setSuffix(' NM')
+        name_e = QtWidgets.QLineEdit(f"Sim GPS {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        btn_start = QtWidgets.QPushButton('Set Start (click map)')
+        btn_mid = QtWidgets.QPushButton('Add Mid Point (click map)')
+        btn_end = QtWidgets.QPushButton('Set End (click map)')
+        btn_clear = QtWidgets.QPushButton('Clear Points')
+        btn_preview = QtWidgets.QPushButton('Preview on Map')
+        btn_gen = QtWidgets.QPushButton('Generate + Save')
+        info = QtWidgets.QLabel('Tip: choose Set Start/Mid/End, then click map. For pattern modes only start is required.')
+        info.setWordWrap(True)
+
+        form = QtWidgets.QFormLayout()
+        form.addRow('Track name:', name_e)
+        form.addRow('NMEA sentence:', talker_cb)
+        form.addRow('Mode:', pattern_cb)
+        form.addRow('Speed:', speed_sb)
+        form.addRow('Output rate:', rate_sb)
+        form.addRow('Pattern size:', size_sb)
+        left.addLayout(form)
+        left.addWidget(btn_start); left.addWidget(btn_mid); left.addWidget(btn_end); left.addWidget(btn_clear)
+        left.addWidget(btn_preview); left.addWidget(btn_gen); left.addWidget(info)
+        left.addStretch(1)
+
+        def _waypoints_for_overlay():
+            rows = []
+            try:
+                if hasattr(self, '_fetch_waypoints_for_chart'):
+                    rows = self._fetch_waypoints_for_chart() or []
+            except Exception:
+                rows = []
+            return rows
+
+        def _center_guess():
+            pts = []
+            for _, _, la, lo, *_ in _waypoints_for_overlay():
+                try:
+                    pts.append((float(la), float(lo)))
+                except Exception:
+                    pass
+            for p in [state['start'], state['end']] + list(state['mid']):
+                if p:
+                    pts.append((float(p[0]), float(p[1])))
+            if pts:
+                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+            return (0.0, 0.0)
+
+        def _render_map():
+            c = _center_guess()
+            m = folium.Map(location=[c[0], c[1]], zoom_start=3, tiles='OpenStreetMap')
+            folium.Marker(c, tooltip='Map center').add_to(m)
+
+            for _id, nm, la, lo, proj_id, sym in _waypoints_for_overlay():
+                scope = 'Global' if proj_id is None else 'Project'
+                folium.Marker([float(la), float(lo)], tooltip=f"{nm} [{scope}]", icon=folium.Icon(color='green' if proj_id is None else 'blue', icon='flag')).add_to(m)
+
+            if state['start']:
+                folium.Marker(state['start'], tooltip='Start', icon=folium.Icon(color='green', icon='play')).add_to(m)
+            for i, p in enumerate(state['mid']):
+                folium.Marker(p, tooltip=f'Mid {i+1}', icon=folium.Icon(color='orange', icon='circle')).add_to(m)
+            if state['end']:
+                folium.Marker(state['end'], tooltip='End', icon=folium.Icon(color='red', icon='stop')).add_to(m)
+
+            route = []
+            if state['start']:
+                route.append(state['start'])
+            route.extend(state['mid'])
+            if state['end']:
+                route.append(state['end'])
+            if len(route) >= 2:
+                folium.PolyLine(route, color='cyan', weight=3, tooltip='Route').add_to(m)
+
+            if state['track']:
+                pts = [(r[2], r[3]) for r in state['track']]
+                folium.PolyLine(pts, color='magenta', weight=2, opacity=0.8, tooltip='Generated track').add_to(m)
+
+            map_var = m.get_name()
+            click_js = f"""
+            (function() {{
+              function bindClick() {{
+                var mapObj = (typeof {map_var} !== 'undefined') ? {map_var} : null;
+                if (!mapObj) return false;
+                mapObj.on('click', function(e) {{
+                  var payload = 'simgps=' + e.latlng.lat.toFixed(8) + ',' + e.latlng.lng.toFixed(8) + ',' + Date.now();
+                  window.location.hash = payload;
+                }});
+                return true;
+              }}
+              if (!bindClick()) {{
+                window.addEventListener('load', function() {{ bindClick(); }});
+                setTimeout(bindClick, 250);
+              }}
+            }})();
+            """
+            m.get_root().script.add_child(folium.Element(click_js))
+            plugins.MousePosition().add_to(m)
+            out = tempfile.NamedTemporaryFile(prefix='simgps_', suffix='.html', delete=False)
+            out.close(); m.save(out.name)
+            state['last_html'] = out.name
+            map_view.setUrl(QUrl.fromLocalFile(out.name))
+
+        def _status_txt():
+            return f"Start={state['start']}  Mid={len(state['mid'])}  End={state['end']}  TrackPts={len(state['track'])}"
+
+        def _on_url_changed(qurl):
+            try:
+                if not qurl:
+                    return
+                frag = (qurl.fragment() or '').strip()
+                if not frag.startswith('simgps='):
+                    return
+                vals = frag.split('=', 1)[1].split(',')
+                if len(vals) < 2:
+                    return
+                lat = float(vals[0])
+                lon = float(vals[1])
+                if state['mode'] == 'start':
+                    state['start'] = (lat, lon)
+                elif state['mode'] == 'mid':
+                    state['mid'].append((lat, lon))
+                elif state['mode'] == 'end':
+                    state['end'] = (lat, lon)
+                info.setText(_status_txt() + '  (click Preview on Map to refresh markers)')
+            except Exception:
+                pass
+
+        def _build_track():
+            mode = pattern_cb.currentText()
+            if mode == 'User route (start/mid/end)':
+                if not state['start'] or not state['end']:
+                    QtWidgets.QMessageBox.warning(dlg, 'Sim GPS', 'Set at least start and end points.')
+                    return None
+                route = [state['start']] + list(state['mid']) + [state['end']]
+                return self._sim_generate_polyline_track(route, speed_sb.value(), rate_sb.value())
+            if not state['start']:
+                QtWidgets.QMessageBox.warning(dlg, 'Sim GPS', 'Set a start point for pattern generation.')
+                return None
+            return self._sim_pattern_points(mode, state['start'][0], state['start'][1], size_sb.value(), speed_sb.value(), rate_sb.value())
+
+        def _save_generated():
+            if getattr(self, 'current_project_id', None) is None:
+                QtWidgets.QMessageBox.warning(dlg, 'Sim GPS', 'Select a project first.')
+                return
+            track = _build_track()
+            if not track:
+                return
+            state['track'] = track
+            talker = talker_cb.currentText().strip() or 'GPGGA'
+            track_name = (name_e.text() or '').strip() or f'Sim GPS {datetime.now().isoformat()}'
+
+            lines = [self._sim_build_gga(talker, ts, lat, lon) for _, ts, lat, lon in track]
+
+            # save DB
+            conn = sqlite3.connect(DB_FILENAME)
+            cur = conn.cursor()
+            cur.execute("INSERT INTO gps_tracks (project_id, name, source_file, color) VALUES (?, ?, ?, ?)",
+                        (int(self.current_project_id), track_name, 'simulated_gps', '#FF4FD8'))
+            tid = cur.lastrowid
+            cur.executemany(
+                "INSERT INTO gps_track_points (track_id, point_index, timestamp_utc, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?, ?)",
+                [(int(tid), int(i), ts.isoformat().replace('+00:00', 'Z'), float(lat), float(lon), 0.0) for i, ts, lat, lon in track]
+            )
+            conn.commit(); conn.close()
+
+            # save TXT into project/simulated_gps
+            out_dir = self._project_subdir('simulated_gps') if hasattr(self, '_project_subdir') else None
+            if not out_dir:
+                out_dir = os.path.join(os.getcwd(), 'simulated_gps')
+                os.makedirs(out_dir, exist_ok=True)
+            ts_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+            out_txt = os.path.join(out_dir, f"sim_gps_{ts_tag}_{talker}.txt")
+            with open(out_txt, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+
+            if hasattr(self, 'refresh_chart_tracks'):
+                self.refresh_chart_tracks(select_id=tid)
+            _render_map()
+            info.setText(f"Saved {len(lines)} points to DB track #{tid} and {out_txt}")
+            QtWidgets.QMessageBox.information(dlg, 'Sim GPS', f'Simulated track created.\n\nDB track id: {tid}\nTXT: {out_txt}')
+
+        map_view.urlChanged.connect(_on_url_changed)
+        btn_start.clicked.connect(lambda: (state.__setitem__('mode', 'start'), info.setText('Click map to set START')))
+        btn_mid.clicked.connect(lambda: (state.__setitem__('mode', 'mid'), info.setText('Click map to add MID point')))
+        btn_end.clicked.connect(lambda: (state.__setitem__('mode', 'end'), info.setText('Click map to set END')))
+        btn_clear.clicked.connect(lambda: (state.__setitem__('start', None), state.__setitem__('mid', []), state.__setitem__('end', None), state.__setitem__('track', []), _render_map(), info.setText('Cleared')))
+        btn_preview.clicked.connect(lambda: (_render_map(), info.setText(_status_txt() + '  (map preview refreshed)')))
+        btn_gen.clicked.connect(_save_generated)
+        pattern_cb.currentIndexChanged.connect(lambda *_: info.setText('User route uses start/mid/end; patterns need start+size.'))
+
+        _render_map()
+        dlg.exec_()
