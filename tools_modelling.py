@@ -3902,6 +3902,16 @@ class ModellingToolsMixin:
         btn_export_img.clicked.connect(_export_graphs_jpg)
         btn_close.clicked.connect(dlg.accept)
 
+        def _clear_prop_overlay():
+            try:
+                setattr(self, "_propagation_corridor_overlay", None)
+                if hasattr(self, "_plot_selected_gps_tracks"):
+                    self._plot_selected_gps_tracks()
+            except Exception:
+                pass
+
+        dlg.finished.connect(lambda *_: _clear_prop_overlay())
+
         _refresh_all()
         dlg.exec_()
 
