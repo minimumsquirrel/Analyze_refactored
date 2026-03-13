@@ -8605,7 +8605,8 @@ class MainWindow(
             self.tool_combo.addItems([
                 "Wenz Curves",
                 "Propagation Modelling",
-                "Cable Loss & Hydro Sensitivity"                
+                "Cable Loss & Hydro Sensitivity",
+                "Simulated GPS Track Generator"
             ])
         
         elif category == "Detection & Classification Tools":  # "Detection & Classification Tools"
@@ -8739,6 +8740,8 @@ class MainWindow(
                 self.ltsa_psd_popup()
             elif tool=="Cable Loss & Hydro Sensitivity":
                 self.cable_loss_and_hydro_popup()
+            elif tool=="Simulated GPS Track Generator":
+                self.simulated_gps_track_popup()
 
                 
 
@@ -14484,10 +14487,17 @@ class MainWindow(
         self.chart_interactive_mode_cb.toggled.connect(self._plot_selected_gps_tracks)
         sidebar.addWidget(self.chart_interactive_mode_cb)
 
+        overlay_row = QtWidgets.QHBoxLayout()
         self.chart_show_difar_cb = QtWidgets.QCheckBox("Show DIFAR Rays")
         self.chart_show_difar_cb.setChecked(True)
         self.chart_show_difar_cb.toggled.connect(self._plot_selected_gps_tracks)
-        sidebar.addWidget(self.chart_show_difar_cb)
+        overlay_row.addWidget(self.chart_show_difar_cb)
+
+        self.chart_show_propagation_cb = QtWidgets.QCheckBox("Show Propagation Corridor")
+        self.chart_show_propagation_cb.setChecked(True)
+        self.chart_show_propagation_cb.toggled.connect(self._plot_selected_gps_tracks)
+        overlay_row.addWidget(self.chart_show_propagation_cb)
+        sidebar.addLayout(overlay_row)
 
         sidebar.addWidget(QtWidgets.QLabel("DIFAR Bearing Events"))
         self.difar_event_list = QtWidgets.QListWidget()
@@ -15327,7 +15337,79 @@ class MainWindow(
         dlg.exec_()
 
 
-    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, difar_overlay=None):
+    def _corridor_edges_for_track(self, lat_list, lon_list, half_width_m):
+        try:
+            half_w = float(half_width_m)
+        except Exception:
+            return [], []
+        if half_w <= 0:
+            return [], []
+        try:
+            pts = [(float(a), float(b)) for a, b in zip(lat_list, lon_list)]
+        except Exception:
+            return [], []
+        if len(pts) < 2:
+            return [], []
+        lat0 = sum(p[0] for p in pts) / len(pts)
+        lon0 = sum(p[1] for p in pts) / len(pts)
+        r = 6378137.0
+        xys = []
+        for la, lo in pts:
+            x = math.radians(lo - lon0) * math.cos(math.radians(lat0)) * r
+            y = math.radians(la - lat0) * r
+            xys.append((x, y))
+
+        left_pts, right_pts = [], []
+        n = len(xys)
+        for i in range(n):
+            if i == 0:
+                dx = xys[1][0] - xys[0][0]; dy = xys[1][1] - xys[0][1]
+            elif i == n - 1:
+                dx = xys[-1][0] - xys[-2][0]; dy = xys[-1][1] - xys[-2][1]
+            else:
+                dx = xys[i + 1][0] - xys[i - 1][0]; dy = xys[i + 1][1] - xys[i - 1][1]
+            norm = max(1e-9, math.hypot(dx, dy))
+            nx = -dy / norm
+            ny = dx / norm
+            left_pts.append((xys[i][0] + nx * half_w, xys[i][1] + ny * half_w))
+            right_pts.append((xys[i][0] - nx * half_w, xys[i][1] - ny * half_w))
+
+        left_ll, right_ll = [], []
+        for x, y in left_pts:
+            la = lat0 + math.degrees(y / r)
+            lo = lon0 + math.degrees(x / (r * max(1e-9, math.cos(math.radians(lat0)))))
+            left_ll.append((la, lo))
+        for x, y in right_pts:
+            la = lat0 + math.degrees(y / r)
+            lo = lon0 + math.degrees(x / (r * max(1e-9, math.cos(math.radians(lat0)))))
+            right_ll.append((la, lo))
+        return left_ll, right_ll
+
+    def _corridor_polygon_for_track(self, lat_list, lon_list, half_width_m):
+        left_ll, right_ll = self._corridor_edges_for_track(lat_list, lon_list, half_width_m)
+        if not left_ll or not right_ll:
+            return []
+        poly = list(left_ll) + list(reversed(right_ll))
+        poly.append(poly[0])
+        return poly
+
+    def _corridor_strips_for_track(self, lat_list, lon_list, half_width_m):
+        left_ll, right_ll = self._corridor_edges_for_track(lat_list, lon_list, half_width_m)
+        n = min(len(left_ll), len(right_ll))
+        if n < 2:
+            return []
+        strips = []
+        for i in range(n - 1):
+            # Small quad centered on track segment: this keeps highlight symmetric
+            # around the source track even on curved tracks.
+            a = left_ll[i]
+            b = left_ll[i + 1]
+            c = right_ll[i + 1]
+            d = right_ll[i]
+            strips.append([a, b, c, d, a])
+        return strips
+
+    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, difar_overlay=None, propagation_overlay=None):
         if self.gps_map_view is None or folium is None:
             return
 
@@ -15343,6 +15425,23 @@ class MainWindow(
         for _, _, lat, lon, _, _ in waypoint_rows:
             try:
                 all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
+
+        if isinstance(propagation_overlay, dict):
+            try:
+                tr_id0 = propagation_overlay.get('track_id')
+                if tr_id0 is not None:
+                    _n0, _c0, pts0, _det0 = self._fetch_track_points(int(tr_id0))
+                    lat0 = [float(p[0]) for p in pts0]
+                    lon0 = [float(p[1]) for p in pts0]
+                    all_lat.extend(lat0); all_lon.extend(lon0)
+                    poly0 = self._corridor_polygon_for_track(lat0, lon0, float(propagation_overlay.get('buffer_m', 0.0)))
+                    for la0, lo0 in poly0:
+                        all_lat.append(float(la0)); all_lon.append(float(lo0))
+                    ep0 = self._corridor_polygon_for_track(lat0, lon0, float(propagation_overlay.get('echo_buffer_m', 0.0) or 0.0))
+                    for la0, lo0 in ep0:
+                        all_lat.append(float(la0)); all_lon.append(float(lo0))
             except Exception:
                 pass
 
@@ -15410,6 +15509,62 @@ class MainWindow(
                         [plat, plon], radius=3, color=tr.get("color", '#03DFE2'), fill=True,
                         fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)
                     ).add_to(m)
+
+        if isinstance(propagation_overlay, dict):
+            try:
+                tr_id = int(propagation_overlay.get('track_id')) if propagation_overlay.get('track_id') is not None else None
+                buff_m = float(propagation_overlay.get('buffer_m', 0.0))
+                col = str(propagation_overlay.get('color') or '#03DFE2')
+                lbl = str(propagation_overlay.get('label') or 'Propagation corridor')
+            except Exception:
+                tr_id = None; buff_m = 0.0; col = '#03DFE2'; lbl = 'Propagation corridor'
+            if tr_id is not None and buff_m > 0:
+                try:
+                    _nm, _c0, _pts, _detailed = self._fetch_track_points(int(tr_id))
+                    lat = [float(p[0]) for p in _pts]
+                    lon = [float(p[1]) for p in _pts]
+                    edge_l, edge_r = self._corridor_edges_for_track(lat, lon, buff_m)
+                    strips = self._corridor_strips_for_track(lat, lon, buff_m)
+                    if strips:
+                        for si, strip in enumerate(strips):
+                            folium.Polygon(
+                                locations=strip,
+                                color=col,
+                                weight=0,
+                                fill=True,
+                                fill_color=col,
+                                fill_opacity=0.20,
+                                tooltip=(lbl if si == 0 else None),
+                            ).add_to(m)
+                    else:
+                        corridor = self._corridor_polygon_for_track(lat, lon, buff_m)
+                        if corridor:
+                            folium.Polygon(
+                                locations=corridor,
+                                color=col,
+                                weight=2,
+                                fill=True,
+                                fill_color=col,
+                                fill_opacity=0.22,
+                                tooltip=lbl,
+                            ).add_to(m)
+                    if edge_l:
+                        folium.PolyLine(edge_l, color=col, weight=2, opacity=0.9, tooltip='Propagation distance (+)').add_to(m)
+                    if edge_r:
+                        folium.PolyLine(edge_r, color=col, weight=2, opacity=0.9, tooltip='Propagation distance (-)').add_to(m)
+                    folium.PolyLine(list(zip(lat, lon)), color=col, weight=2, opacity=0.95, tooltip='Propagation reference track').add_to(m)
+
+                    echo_m = float(propagation_overlay.get('echo_buffer_m', 0.0) or 0.0)
+                    if echo_m > 0:
+                        e_l, e_r = self._corridor_edges_for_track(lat, lon, echo_m)
+                        if e_l:
+                            folium.PolyLine(e_l, color=col, weight=2, opacity=0.95, dash_array='8,8',
+                                            tooltip='Echo receive threshold (+)').add_to(m)
+                        if e_r:
+                            folium.PolyLine(e_r, color=col, weight=2, opacity=0.95, dash_array='8,8',
+                                            tooltip='Echo receive threshold (-)').add_to(m)
+                except Exception:
+                    pass
 
         # Always provide CTD preview graph popups (user-facing requirement).
         enable_ctd_popup_graphs = True
@@ -15596,6 +15751,84 @@ class MainWindow(
         cur.execute("CREATE INDEX IF NOT EXISTS idx_difar_map_rays_project ON difar_map_rays(project_id, created_utc)")
         conn.commit(); conn.close()
 
+    def _ensure_propagation_overlays_table(self):
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS propagation_map_overlays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_utc TEXT,
+                project_id INTEGER,
+                track_id INTEGER,
+                buffer_m REAL,
+                echo_buffer_m REAL,
+                color TEXT,
+                label TEXT
+            )
+            """
+        )
+        cur.execute("PRAGMA table_info(propagation_map_overlays)")
+        cols = {r[1] for r in cur.fetchall()}
+        if 'echo_buffer_m' not in cols:
+            cur.execute("ALTER TABLE propagation_map_overlays ADD COLUMN echo_buffer_m REAL")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_prop_map_overlays_project ON propagation_map_overlays(project_id, created_utc)")
+        conn.commit(); conn.close()
+
+    def _save_propagation_overlay_to_db(self, overlay):
+        if not isinstance(overlay, dict):
+            return
+        self._ensure_propagation_overlays_table()
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO propagation_map_overlays(created_utc, project_id, track_id, buffer_m, echo_buffer_m, color, label)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                None if pid is None else int(pid),
+                None if overlay.get('track_id') is None else int(overlay.get('track_id')),
+                float(overlay.get('buffer_m', 0.0)),
+                float(overlay.get('echo_buffer_m', 0.0) or 0.0),
+                str(overlay.get('color') or '#03DFE2'),
+                str(overlay.get('label') or 'Propagation corridor'),
+            ),
+        )
+        conn.commit(); conn.close()
+
+    def _load_latest_propagation_overlay_from_db(self):
+        self._ensure_propagation_overlays_table()
+        pid = getattr(self, 'current_project_id', None)
+        conn = sqlite3.connect(DB_FILENAME)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT track_id, buffer_m, COALESCE(echo_buffer_m, 0.0), color, label
+            FROM propagation_map_overlays
+            WHERE ((project_id IS NULL) AND (? IS NULL)) OR project_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (pid, pid),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        tr_id, buffer_m, echo_buffer_m, color, label = row
+        if tr_id is None:
+            return None
+        return {
+            'track_id': int(tr_id),
+            'buffer_m': float(buffer_m or 0.0),
+            'echo_buffer_m': float(echo_buffer_m or 0.0),
+            'color': str(color or '#03DFE2'),
+            'label': str(label or 'Propagation corridor'),
+        }
+
     @staticmethod
     def _decode_json_float_list(raw):
         if raw in (None, ""):
@@ -15758,11 +15991,45 @@ class MainWindow(
             except Exception:
                 pass
 
+        prop_overlay_raw = getattr(self, '_propagation_corridor_overlay', None)
+        if not isinstance(prop_overlay_raw, dict):
+            try:
+                prop_overlay_raw = self._load_latest_propagation_overlay_from_db()
+                if isinstance(prop_overlay_raw, dict):
+                    self._propagation_corridor_overlay = prop_overlay_raw
+            except Exception:
+                prop_overlay_raw = None
+        prop_enabled = True if (not hasattr(self, 'chart_show_propagation_cb')) else bool(self.chart_show_propagation_cb.isChecked())
+        prop_overlay = prop_overlay_raw if prop_enabled else None
+        if isinstance(prop_overlay, dict):
+            try:
+                tr_id = prop_overlay.get('track_id')
+                if tr_id is not None:
+                    _n, _c, pts, _det = self._fetch_track_points(int(tr_id))
+                    for la, lo in pts:
+                        all_lat.append(float(la)); all_lon.append(float(lo))
+                    corridor = self._corridor_polygon_for_track(
+                        [float(p[0]) for p in pts],
+                        [float(p[1]) for p in pts],
+                        float(prop_overlay.get('buffer_m', 0.0)),
+                    )
+                    for la, lo in corridor:
+                        all_lat.append(float(la)); all_lon.append(float(lo))
+                    echo_poly = self._corridor_polygon_for_track(
+                        [float(p[0]) for p in pts],
+                        [float(p[1]) for p in pts],
+                        float(prop_overlay.get('echo_buffer_m', 0.0) or 0.0),
+                    )
+                    for la, lo in echo_poly:
+                        all_lat.append(float(la)); all_lon.append(float(lo))
+            except Exception:
+                pass
+
         use_web_map = bool(self.gps_map_view is not None and folium is not None)
 
         if use_web_map:
             try:
-                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlays)
+                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlays, propagation_overlay=prop_overlay)
                 if hasattr(self, 'gps_map_stack'):
                     self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 if hasattr(self, 'gps_cursor_label'):
@@ -15857,18 +16124,64 @@ class MainWindow(
                 except Exception:
                     pass
 
+            if isinstance(prop_overlay, dict):
+                try:
+                    tr_id = prop_overlay.get('track_id')
+                    if tr_id is not None:
+                        _n, _c, pts, _det = self._fetch_track_points(int(tr_id))
+                        lat = [float(p[0]) for p in pts]
+                        lon = [float(p[1]) for p in pts]
+                        col = str(prop_overlay.get('color') or '#03DFE2')
+                        buff = float(prop_overlay.get('buffer_m', 0.0))
+                        edge_l, edge_r = self._corridor_edges_for_track(lat, lon, buff)
+                        poly = self._corridor_polygon_for_track(lat, lon, buff)
+                        if poly:
+                            plon = [p[1] for p in poly]
+                            plat = [p[0] for p in poly]
+                            self.gps_plot.plot(plon, plat, pen=pg.mkPen(col, width=3),
+                                               name='Propagation corridor')
+                        if edge_l:
+                            self.gps_plot.plot([p[1] for p in edge_l], [p[0] for p in edge_l], pen=pg.mkPen(col, width=2),
+                                               name='Propagation distance (+)')
+                        if edge_r:
+                            self.gps_plot.plot([p[1] for p in edge_r], [p[0] for p in edge_r], pen=pg.mkPen(col, width=2),
+                                               name='Propagation distance (-)')
+
+                        echo_m = float(prop_overlay.get('echo_buffer_m', 0.0) or 0.0)
+                        if echo_m > 0:
+                            e_l, e_r = self._corridor_edges_for_track(lat, lon, echo_m)
+                            if e_l:
+                                self.gps_plot.plot([p[1] for p in e_l], [p[0] for p in e_l],
+                                                   pen=pg.mkPen(col, width=2, style=QtCore.Qt.DotLine),
+                                                   name='Echo threshold (+)')
+                            if e_r:
+                                self.gps_plot.plot([p[1] for p in e_r], [p[0] for p in e_r],
+                                                   pen=pg.mkPen(col, width=2, style=QtCore.Qt.DotLine),
+                                                   name='Echo threshold (-)')
+                        self.gps_plot.plot(lon, lat, pen=pg.mkPen(col, width=2, style=QtCore.Qt.DashLine),
+                                           name='Propagation ref track')
+                except Exception:
+                    pass
+
             if all_lon and all_lat:
                 self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
                 self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
 
-        if not tracks and ctd_count == 0 and wp_count == 0:
+        if not tracks and ctd_count == 0 and wp_count == 0 and not isinstance(prop_overlay, dict):
             self.gps_info_label.setText('No tracks selected')
             return
 
         backend = 'Folium' if use_web_map else 'PyQtGraph'
         difar_n = sum(len((ov or {}).get('time_s', [])) for ov in difar_overlays)
+        prop_meta = getattr(self, '_propagation_model_meta', None)
+        if isinstance(prop_overlay_raw, dict):
+            prop_txt = "On" if prop_enabled else "Hidden"
+        elif isinstance(prop_meta, dict) and bool(prop_meta.get('has_result')):
+            prop_txt = "Modelled (no track selected)"
+        else:
+            prop_txt = "Not modelled"
         self.gps_info_label.setText(
-            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}"
+            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
         )
 
 
