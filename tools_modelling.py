@@ -4880,12 +4880,19 @@ class ModellingToolsMixin:
             map_var = m.get_name()
             click_js = f"""
             (function() {{
-              var mapObj = {map_var};
-              if (!mapObj) return;
-              mapObj.on('click', function(e) {{
-                var u = 'https://simgps.local/click?lat=' + e.latlng.lat.toFixed(8) + '&lon=' + e.latlng.lng.toFixed(8);
-                window.location.href = u;
-              }});
+              function bindClick() {{
+                var mapObj = (typeof {map_var} !== 'undefined') ? {map_var} : null;
+                if (!mapObj) return false;
+                mapObj.on('click', function(e) {{
+                  var payload = 'simgps=' + e.latlng.lat.toFixed(8) + ',' + e.latlng.lng.toFixed(8) + ',' + Date.now();
+                  window.location.hash = payload;
+                }});
+                return true;
+              }}
+              if (!bindClick()) {{
+                window.addEventListener('load', function() {{ bindClick(); }});
+                setTimeout(bindClick, 250);
+              }}
             }})();
             """
             m.get_root().script.add_child(folium.Element(click_js))
@@ -4902,11 +4909,14 @@ class ModellingToolsMixin:
             try:
                 if not qurl:
                     return
-                if (qurl.host() or '').lower() != 'simgps.local':
+                frag = (qurl.fragment() or '').strip()
+                if not frag.startswith('simgps='):
                     return
-                q = QtCore.QUrlQuery(qurl)
-                lat = float(q.queryItemValue('lat'))
-                lon = float(q.queryItemValue('lon'))
+                vals = frag.split('=', 1)[1].split(',')
+                if len(vals) < 2:
+                    return
+                lat = float(vals[0])
+                lon = float(vals[1])
                 if state['mode'] == 'start':
                     state['start'] = (lat, lon)
                 elif state['mode'] == 'mid':
