@@ -10142,10 +10142,27 @@ class MainWindow(
             preview_plot.addItem(pulse_line)
             preview_plot.addItem(region)
             ws = max(0.0, min(state["window_start"], total_duration - win_spin.value()))
-            region.setRegion((ws, ws + win_spin.value()))
+            we = min(total_duration, ws + win_spin.value())
+            region.setRegion((ws, we))
+
+            # Match popup viewport to current FFT-tab start/end selection
+            preview_plot.setXRange(ws, we, padding=0.0)
+            y0 = max(0, int(ws * self.sample_rate))
+            y1 = min(len(channel_data), int(we * self.sample_rate))
+            if y1 > y0:
+                yseg = np.asarray(channel_data[y0:y1], dtype=np.float64)
+                ymin = float(np.min(yseg))
+                ymax = float(np.max(yseg))
+                if ymax <= ymin:
+                    pad = max(1.0, abs(ymax) * 0.05)
+                else:
+                    pad = (ymax - ymin) * 0.12
+                preview_plot.setYRange(ymin - pad, ymax + pad, padding=0.0)
+
             status_label.setText(
                 f"Preview pulse {state['preview_index'] + 1}/{len(self.pulse_indices)} · "
-                f"channel {state['preview_channel'] + 1}/{n_channels} · start {ws:.6f}s"
+                f"channel {state['preview_channel'] + 1}/{n_channels} · "
+                f"window {ws:.6f}s → {we:.6f}s"
             )
 
         def _sync_region_from_mode():
