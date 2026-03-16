@@ -3983,14 +3983,6 @@ class ModellingToolsMixin:
             )
             return
 
-        if not getattr(self, "current_project_name", None):
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Project Required",
-                "Please select a project before opening Wenz Curves.",
-            )
-            return
-
         # -------- SciPy Welch (fallback) ----------
         try:
             from scipy.signal import welch
