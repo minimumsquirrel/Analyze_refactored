@@ -3973,7 +3973,15 @@ class ModellingToolsMixin:
         - CTD panel: use active CTD or load any saved CTD from sqlite
         """
         from PyQt5 import QtWidgets, QtCore
-        import numpy as np, os, json, ast, sqlite3, csv
+        import numpy as np, os, re, json, ast, sqlite3, csv
+
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Project Required",
+                "Please select a project before opening Wenz Curves.",
+            )
+            return
 
         # -------- SciPy Welch (fallback) ----------
         try:
@@ -4278,8 +4286,10 @@ class ModellingToolsMixin:
         plot_btn = QtWidgets.QPushButton("Update"); plot_btn.setStyleSheet("background:#6EEB83;color:#111;padding:6px 12px;border-radius:6px;font-weight:bold;")
         save_btn = QtWidgets.QPushButton("Save Plot"); save_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 12px;border-radius:4px;")
         csv_btn  = QtWidgets.QPushButton("Export CSV"); csv_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 12px;border-radius:4px;")
+        save_db_btn = QtWidgets.QPushButton("Save Run"); save_db_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 12px;border-radius:4px;")
+        hist_btn = QtWidgets.QPushButton("History / Compare"); hist_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 12px;border-radius:4px;")
         close_btn= QtWidgets.QPushButton("Close"); close_btn.setStyleSheet("background:#3E6C8A;color:white;padding:6px 12px;border-radius:4px;")
-        btnrow.addStretch(); btnrow.addWidget(plot_btn); btnrow.addWidget(save_btn); btnrow.addWidget(csv_btn); btnrow.addWidget(close_btn)
+        btnrow.addStretch(); btnrow.addWidget(plot_btn); btnrow.addWidget(save_btn); btnrow.addWidget(csv_btn); btnrow.addWidget(save_db_btn); btnrow.addWidget(hist_btn); btnrow.addWidget(close_btn)
         vbox.addLayout(btnrow)
 
         # Theme colors
@@ -4406,8 +4416,7 @@ class ModellingToolsMixin:
             if ship_cb.isChecked(): comps.append(Ns); labels.append("Shipping")
             if wind_cb.isChecked(): comps.append(Nw); labels.append("Wind/Weather")
             if therm_cb.isChecked(): comps.append(Nth); labels.append("Thermal")
-            if not comps: comps, labels = [Nt, Ns, Nw, Nth], ["Turbulence","Shipping","Wind/Weather","Thermal"]
-            Ntot = _logsum_db(*comps) + off
+            Ntot = (_logsum_db(*comps) + off) if comps else None
 
             meas = []
             source_mode = meas_source_cb.currentText() if 'meas_source_cb' in locals() else 'WAV PSD'
@@ -4552,7 +4561,8 @@ class ModellingToolsMixin:
             ax = axes["main"]; cols = _component_colors()
             for L, lab in zip(comps, labels):
                 ax.plot(fHz, L, lw=1.6, label=lab, color=cols.get(lab))
-            ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
+            if Ntot is not None:
+                ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
             if meas is not None:
                 for idx, entry in enumerate(meas):
                     color = cols.get("Measured PSD")
@@ -4587,6 +4597,39 @@ class ModellingToolsMixin:
             canvas.draw()
 
         # Save (Color/B&W; legend to the right)
+        def _safe_name(text):
+            base = (text or "current_file").strip()
+            base = re.sub(r"[^\w\-. ]+", "_", base)
+            return base or "current_file"
+
+        def _selected_file_label():
+            selected = spl_file_cb.currentData() if 'spl_file_cb' in locals() else None
+            if selected:
+                return os.path.basename(str(selected))
+            if meas_path.get("path"):
+                return os.path.basename(meas_path["path"])
+            current = getattr(self, "file_name", None) or "current_file"
+            return os.path.basename(str(current))
+
+        def _wenz_export_dir():
+            root = None
+            if hasattr(self, "_project_subdir"):
+                try:
+                    root = self._project_subdir("wenz_curves")
+                except Exception:
+                    root = None
+            if not root:
+                QtWidgets.QMessageBox.warning(
+                    dlg,
+                    "Export Error",
+                    "Unable to resolve the selected project's export folder.",
+                )
+                return None
+
+            file_dir = os.path.join(root, _safe_name(_selected_file_label()))
+            os.makedirs(file_dir, exist_ok=True)
+            return file_dir
+
         def _choose_save_style(parent):
             choice, ok = QtWidgets.QInputDialog.getItem(
                 parent, "Save Plot", "Style:", ["Color (theme)", "Black & White (print)"], 0, False
@@ -4624,7 +4667,8 @@ class ModellingToolsMixin:
             styles = ["-", "--", "-.", ":", (0, (5, 1, 1, 1))]
             for i, (L, lab) in enumerate(zip(comps, labels)):
                 ax_bw.plot(fHz, L, linestyle=styles[i % len(styles)], color="black", lw=1.8, label=lab)
-            ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
+            if Ntot is not None:
+                ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
             if meas is not None:
                 for entry in meas:
                     ax_bw.plot(entry["f"], entry["L"], linestyle="-", color="black", lw=2.0,
@@ -4646,31 +4690,41 @@ class ModellingToolsMixin:
         def _save_plot():
             style = _choose_save_style(dlg)
             if style is None: return
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Plot", "", "PNG (*.png);;JPEG (*.jpg)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_{style}_{stamp}.png")
             if style == "color":
                 _plot(); _make_legend_outside(axes["main"], fig, on_white=False)
                 fig.savefig(p, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight")
                 _plot()
             else:
                 _render_bw_and_save(p)
+            QtWidgets.QMessageBox.information(dlg, "Saved", f"Plot saved to:\n{p}")
 
         def _export_csv():
             res = _compute_all()
             if res is None: return
             fHz, labels, comps, Ntot, meas, sea_state_totals = res
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export CSV", "", "CSV (*.csv)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_data_{stamp}.csv")
             with open(p, "w", newline="") as fh:
                 w = csv.writer(fh)
-                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + ["Total_dB"]
+                total_cols = ["Total_dB"] if Ntot is not None else []
+                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + total_cols
                 if meas is not None:
                     header += [f"Measured_{entry['label']}_dB" for entry in meas]
                 if sea_state_totals:
                     header += [f"Total_SS{ss}_dB" for ss in sorted(sea_state_totals.keys())]
                 w.writerow(header)
                 for i in range(len(fHz)):
-                    row = [fHz[i]] + [col[i] for col in comps] + [Ntot[i]]
+                    row = [fHz[i]] + [col[i] for col in comps]
+                    if Ntot is not None:
+                        row.append(Ntot[i])
                     if meas is not None:
                         row.extend([entry["L"][i] for entry in meas])
                     if sea_state_totals:
@@ -4682,6 +4736,149 @@ class ModellingToolsMixin:
                     w.writerow([]); w.writerow(["Depth_m", "SoundSpeed_m_s"])
                     for d, c in zip(prof["depth_m"], prof["sound_speed_m_s"]):
                         w.writerow([d, c])
+            QtWidgets.QMessageBox.information(dlg, "Exported", f"CSV saved to:\n{p}")
+
+
+        def _project_id():
+            pid = getattr(self, "current_project_id", None)
+            if isinstance(pid, int):
+                return pid
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if not pname:
+                return None
+            try:
+                conn = sqlite3.connect(_db_path()); cur = conn.cursor()
+                cur.execute("SELECT id FROM projects WHERE name=?", (pname,))
+                row = cur.fetchone(); conn.close()
+                return int(row[0]) if row else None
+            except Exception:
+                return None
+
+        def _ensure_wenz_tables(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS wenz_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER,
+                    project_name TEXT,
+                    file_name TEXT,
+                    fmin REAL,
+                    fmax REAL,
+                    wind_speed REAL,
+                    shipping_b REAL,
+                    env_offset REAL,
+                    total_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS wenz_run_curves (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER,
+                    curve_label TEXT,
+                    freq_json TEXT,
+                    value_json TEXT,
+                    FOREIGN KEY(run_id) REFERENCES wenz_runs(id) ON DELETE CASCADE
+                )
+            """)
+            conn.commit()
+
+        def _save_wenz_run_to_db():
+            res = _compute_all()
+            if res is None:
+                return
+            fHz, labels, comps, Ntot, meas, sea_state_totals = res
+            pid = _project_id()
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project before saving.")
+                return
+            try:
+                fmin = float(fmin_edit.text()); fmax = float(fmax_edit.text())
+                v_w = float(wind_edit.text()); b = float(ship_edit.text()); off = float(env_off.text())
+            except Exception:
+                fmin, fmax, v_w, b, off = 0.0, 0.0, 0.0, 0.0, 0.0
+            fname = os.path.basename((spl_file_cb.currentData() or getattr(self, "file_name", None) or "current"))
+            conn = sqlite3.connect(_db_path())
+            _ensure_wenz_tables(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO wenz_runs(project_id, project_name, file_name, fmin, fmax, wind_speed, shipping_b, env_offset, total_json)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (pid, pname, fname, fmin, fmax, v_w, b, off, None if Ntot is None else json.dumps(np.asarray(Ntot, float).tolist())),
+            )
+            run_id = int(cur.lastrowid)
+            freq_json = json.dumps(np.asarray(fHz, float).tolist())
+            for lab, arr in zip(labels, comps):
+                cur.execute("INSERT INTO wenz_run_curves(run_id, curve_label, freq_json, value_json) VALUES(?,?,?,?)",
+                            (run_id, lab, freq_json, json.dumps(np.asarray(arr, float).tolist())))
+            if Ntot is not None:
+                cur.execute("INSERT INTO wenz_run_curves(run_id, curve_label, freq_json, value_json) VALUES(?,?,?,?)",
+                            (run_id, "Total (log-sum)", freq_json, json.dumps(np.asarray(Ntot, float).tolist())))
+            conn.commit(); conn.close()
+            QtWidgets.QMessageBox.information(dlg, "Saved", "Wenz run saved to database.")
+
+        def _wenz_history_compare_dialog():
+            pid = _project_id()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project first.")
+                return
+            conn = sqlite3.connect(_db_path())
+            _ensure_wenz_tables(conn)
+            cur = conn.cursor()
+            cur.execute("SELECT id, file_name, created_at FROM wenz_runs WHERE project_id=? ORDER BY id DESC", (pid,))
+            runs = cur.fetchall()
+            if not runs:
+                conn.close(); QtWidgets.QMessageBox.information(dlg, "History", "No saved Wenz runs for this project."); return
+
+            hd = QtWidgets.QDialog(dlg)
+            hd.setWindowTitle("Wenz History / Compare")
+            hd.resize(1000, 700)
+            v = QtWidgets.QVBoxLayout(hd)
+            lw = QtWidgets.QListWidget(); lw.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            for rid, fn, ts in runs:
+                it = QtWidgets.QListWidgetItem(f"#{rid} | {fn} | {ts}")
+                it.setData(QtCore.Qt.UserRole, int(rid)); lw.addItem(it)
+            v.addWidget(lw)
+
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            fig_h = Figure(facecolor="#19232D"); ax_h = fig_h.add_subplot(111); can_h = FigureCanvas(fig_h)
+            v.addWidget(can_h, 1)
+            for s in ax_h.spines.values(): s.set_color("white")
+            ax_h.set_facecolor("#19232D"); ax_h.tick_params(colors="white"); ax_h.grid(True, ls="--", alpha=0.35, color="gray")
+            ax_h.set_xscale("log"); ax_h.set_xlabel("Frequency (Hz)", color="white"); ax_h.set_ylabel("Level (dB)", color="white")
+
+            b = QtWidgets.QPushButton("Overlay Selected")
+            v.addWidget(b)
+
+            def _draw():
+                ax_h.clear(); ax_h.set_facecolor("#19232D"); ax_h.tick_params(colors="white")
+                for s in ax_h.spines.values(): s.set_color("white")
+                ax_h.grid(True, ls="--", alpha=0.35, color="gray"); ax_h.set_xscale("log")
+                ax_h.set_xlabel("Frequency (Hz)", color="white"); ax_h.set_ylabel("Level (dB)", color="white")
+                colors = _theme_palette(); c=0
+                for it in lw.selectedItems():
+                    rid = int(it.data(QtCore.Qt.UserRole))
+                    cur.execute("SELECT curve_label, freq_json, value_json FROM wenz_run_curves WHERE run_id=?", (rid,))
+                    for lab, fjs, vjs in cur.fetchall():
+                        if lab != "Total (log-sum)":
+                            continue
+                        try:
+                            f = np.asarray(json.loads(fjs), float)
+                            y = np.asarray(json.loads(vjs), float)
+                        except Exception:
+                            continue
+                        m = np.isfinite(f) & np.isfinite(y) & (f > 0)
+                        if np.any(m):
+                            ax_h.plot(f[m], y[m], lw=2.0, color=colors[c % len(colors)], label=f"run {rid}")
+                            c += 1
+                if c:
+                    ax_h.legend(facecolor="#222", edgecolor="#444", labelcolor="white")
+                can_h.draw()
+
+            b.clicked.connect(_draw)
+            hd.exec_(); conn.close()
 
         # Status text
         def _update_ctd_status():
@@ -4732,6 +4929,8 @@ class ModellingToolsMixin:
         plot_btn.clicked.connect(_plot)
         save_btn.clicked.connect(_save_plot)
         csv_btn.clicked.connect(_export_csv)
+        save_db_btn.clicked.connect(_save_wenz_run_to_db)
+        hist_btn.clicked.connect(_wenz_history_compare_dialog)
         close_btn.clicked.connect(dlg.accept)
 
         for w in (wind_edit, ship_edit, fmin_edit, fmax_edit, env_off, start_edit, dur_edit, seglen_edit, ovlp_edit):

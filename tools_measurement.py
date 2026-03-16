@@ -5102,16 +5102,74 @@ class MeasurementToolsMixin:
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        # ── Populate File & Method ─────────────────────────────────────────
-        files = [r[0] for r in cur.execute(
-            "SELECT DISTINCT file_name FROM measurements ORDER BY file_name")]
+        # ── Populate File & Method (project-scoped when available) ────────
+        project_name = (getattr(self, "current_project_name", None) or "").strip()
+
+        if project_name:
+            files = [
+                r[0]
+                for r in cur.execute(
+                    """
+                    SELECT DISTINCT m.file_name
+                    FROM measurements m
+                    JOIN project_items pi
+                      ON pi.file_name = m.file_name
+                     AND pi.method = m.method
+                    JOIN projects p
+                      ON p.id = pi.project_id
+                    WHERE p.name = ?
+                    ORDER BY m.file_name
+                    """,
+                    (project_name,),
+                )
+            ]
+        else:
+            files = [
+                r[0]
+                for r in cur.execute(
+                    "SELECT DISTINCT file_name FROM measurements ORDER BY file_name"
+                )
+            ]
+
         file_cb.addItems(files)
+
         def update_methods(fn):
             method_cb.clear()
-            methods = [m[0] for m in cur.execute(
-                "SELECT DISTINCT method FROM measurements WHERE file_name=? ORDER BY id", (fn,))]
+            if not fn:
+                generate_btn.setEnabled(False)
+                return
+
+            if project_name:
+                methods = [
+                    m[0]
+                    for m in cur.execute(
+                        """
+                        SELECT DISTINCT m.method
+                        FROM measurements m
+                        JOIN project_items pi
+                          ON pi.file_name = m.file_name
+                         AND pi.method = m.method
+                        JOIN projects p
+                          ON p.id = pi.project_id
+                        WHERE p.name = ?
+                          AND m.file_name = ?
+                        ORDER BY m.method
+                        """,
+                        (project_name, fn),
+                    )
+                ]
+            else:
+                methods = [
+                    m[0]
+                    for m in cur.execute(
+                        "SELECT DISTINCT method FROM measurements WHERE file_name=? ORDER BY id",
+                        (fn,),
+                    )
+                ]
+
             method_cb.addItems(methods)
             generate_btn.setEnabled(False)
+
         file_cb.currentTextChanged.connect(update_methods)
         if files:
             update_methods(files[0])
@@ -5398,6 +5456,454 @@ class MeasurementToolsMixin:
 
         dlg2.exec_()
 
+
+
+
+    def electrical_noise_popup(self):
+        import os
+        import re
+        import csv
+        import json
+        import sqlite3
+        import numpy as np
+        from datetime import datetime
+        from PyQt5 import QtWidgets
+        import pyqtgraph as pg
+        from pyqtgraph.exporters import ImageExporter
+        from scipy.signal import welch
+
+        raw = getattr(self, "full_data", None)
+        fs = float(getattr(self, "sample_rate", 0.0) or 0.0)
+        if raw is None or fs <= 0:
+            QtWidgets.QMessageBox.information(self, "Electrical Noise", "No waveform loaded.")
+            return
+
+        X = np.asarray(raw)
+        if X.ndim == 1:
+            X = X[:, None]
+        if X.shape[0] < X.shape[1]:
+            X = X.T
+        if X.shape[0] < 64:
+            QtWidgets.QMessageBox.information(self, "Electrical Noise", "Waveform too short.")
+            return
+
+        mask = getattr(self, "channel_mask", None) or [True] * X.shape[1]
+        names = getattr(self, "channel_names", None) or []
+        channels, labels = [], []
+        for i in range(X.shape[1]):
+            if i < len(mask) and not mask[i]:
+                continue
+            channels.append(X[:, i])
+            labels.append(names[i] if i < len(names) else f"Ch {i+1}")
+        if not channels:
+            QtWidgets.QMessageBox.information(self, "Electrical Noise", "No active channels.")
+            return
+
+        def _sel_color():
+            c = getattr(self, "graph_color", None)
+            return c.strip() if isinstance(c, str) and c.strip() else "#03DFE2"
+
+        def _palette(n_needed=12):
+            colors = []
+            cb = getattr(self, "graph_color_cb", None)
+            if cb is not None and hasattr(cb, "count") and hasattr(cb, "itemText"):
+                for i in range(cb.count()):
+                    t = str(cb.itemText(i)).strip()
+                    if t.startswith("#") and len(t) >= 7:
+                        colors.append(t)
+            if not colors:
+                colors = ["#33C3F0", "#6EEB83", "#FF5964", "#FFD166", "#C792EA", "#4DD0E1", "#03DFE2"]
+            sel = _sel_color()
+            start = colors.index(sel) if sel in colors else 0
+            return [colors[(start + k) % len(colors)] for k in range(max(1, n_needed))]
+
+        pal = _palette(256)
+
+        def _to_volts(sig):
+            v = np.asarray(sig)
+            range_v = None
+            for attr in ("input_range_v", "ai_range_v", "daq_range_v", "voltage_range_v"):
+                if hasattr(self, attr):
+                    try:
+                        range_v = float(getattr(self, attr))
+                        break
+                    except Exception:
+                        pass
+            if range_v is None or not np.isfinite(range_v) or range_v <= 0:
+                range_v = 10.0
+            maxabs = float(np.nanmax(np.abs(v))) if v.size else 0.0
+            if maxabs > 50.0:
+                return v.astype(np.float64, copy=False) * (range_v / 32767.0)
+            return v.astype(np.float64, copy=False)
+
+        def _safe(name):
+            s = str(name or "").strip()
+            s = re.sub(r'[<>:"/\\|?*\n\r\t]+', "_", s)
+            s = re.sub(r"\s+", " ", s).strip()
+            return s or "electrical_noise"
+
+        def _current_file_stem():
+            pth = getattr(self, "current_file_path", None) or getattr(self, "file_name", None) or "current_file.wav"
+            return os.path.splitext(os.path.basename(str(pth)))[0]
+
+        def _export_dir():
+            base = self._project_subdir("electrical_noise") if hasattr(self, "_project_subdir") else None
+            if not base:
+                base = os.path.join(os.getcwd(), "electrical_noise")
+            out = os.path.join(base, _safe(_current_file_stem()))
+            os.makedirs(out, exist_ok=True)
+            return out
+
+        def _project_id():
+            pid = getattr(self, "current_project_id", None)
+            if isinstance(pid, int):
+                return pid
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if not pname:
+                return None
+            try:
+                conn = sqlite3.connect(DB_FILENAME)
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM projects WHERE name=?", (pname,))
+                row = cur.fetchone()
+                conn.close()
+                return int(row[0]) if row else None
+            except Exception:
+                return None
+
+        def _ensure_noise_tables(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS electrical_noise_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER,
+                    project_name TEXT,
+                    file_name TEXT,
+                    units TEXT,
+                    fmin REAL,
+                    fmax REAL,
+                    vrms_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS electrical_noise_points (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER,
+                    channel_label TEXT,
+                    freq_json TEXT,
+                    value_json TEXT,
+                    FOREIGN KEY(run_id) REFERENCES electrical_noise_runs(id) ON DELETE CASCADE
+                )
+            """)
+            conn.commit()
+
+        def _save_run_to_db():
+            if plot_state["f"] is None or not plot_state["curves"]:
+                QtWidgets.QMessageBox.information(dlg, "Save Run", "Compute a run first.")
+                return
+            pid = _project_id()
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project before saving.")
+                return
+
+            try:
+                fmin = float(fmin_edit.text())
+            except Exception:
+                fmin = 0.0
+            try:
+                fmax = float(fmax_edit.text())
+            except Exception:
+                fmax = fs / 2.0
+
+            fname = _current_file_stem()
+            vrms_map = {lab: v for lab, v in zip(plot_state["labels"], plot_state["vrms"])}
+            conn = sqlite3.connect(DB_FILENAME)
+            _ensure_noise_tables(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO electrical_noise_runs(project_id, project_name, file_name, units, fmin, fmax, vrms_json)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (pid, pname, fname, units_cb.currentText().strip(), fmin, fmax, json.dumps(vrms_map)),
+            )
+            run_id = int(cur.lastrowid)
+            freq = plot_state["f"].tolist()
+            for lab, y in zip(plot_state["labels"], plot_state["curves"]):
+                cur.execute(
+                    "INSERT INTO electrical_noise_points(run_id, channel_label, freq_json, value_json) VALUES(?,?,?,?)",
+                    (run_id, lab, json.dumps(freq), json.dumps(np.asarray(y, float).tolist())),
+                )
+            conn.commit(); conn.close()
+            QtWidgets.QMessageBox.information(dlg, "Saved", "Electrical noise run saved to database.")
+
+        def _history_compare_dialog():
+            pid = _project_id()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project first.")
+                return
+
+            conn = sqlite3.connect(DB_FILENAME)
+            _ensure_noise_tables(conn)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, file_name, units, created_at FROM electrical_noise_runs WHERE project_id=? ORDER BY id DESC",
+                (pid,),
+            )
+            runs = cur.fetchall()
+            if not runs:
+                conn.close()
+                QtWidgets.QMessageBox.information(dlg, "History", "No saved runs for this project.")
+                return
+
+            hd = QtWidgets.QDialog(dlg)
+            hd.setWindowTitle("Electrical Noise History / Compare")
+            hd.resize(1000, 700)
+            hv = QtWidgets.QVBoxLayout(hd)
+            hl = QtWidgets.QListWidget()
+            hl.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            for rid, fn, units, ts in runs:
+                it = QtWidgets.QListWidgetItem(f"#{rid} | {fn} | {units} | {ts}")
+                it.setData(QtCore.Qt.UserRole, int(rid))
+                hl.addItem(it)
+            hv.addWidget(hl)
+
+            import pyqtgraph as pg
+            pw = pg.PlotWidget()
+            pw.setBackground("#19232D")
+            pi = pw.getPlotItem()
+            pi.showGrid(x=True, y=True, alpha=0.25)
+            pi.setLogMode(x=True, y=False)
+            pi.setLabel("bottom", "Frequency (Hz)", color="white")
+            pi.setLabel("left", "Noise density", color="white")
+            pi.getAxis("left").setPen(pg.mkPen("white"))
+            pi.getAxis("left").setTextPen(pg.mkPen("white"))
+            pi.getAxis("bottom").setPen(pg.mkPen("white"))
+            pi.getAxis("bottom").setTextPen(pg.mkPen("white"))
+            hv.addWidget(pw, 1)
+
+            btn = QtWidgets.QPushButton("Overlay Selected")
+            hv.addWidget(btn)
+
+            def _draw_selected():
+                pi.clear()
+                leg = pi.addLegend()
+                try:
+                    leg.setBrush(pg.mkBrush(25, 35, 45, 220)); leg.setPen(pg.mkPen("#555"))
+                except Exception:
+                    pass
+                selected = hl.selectedItems()
+                if not selected:
+                    return
+                colors = _palette(512)
+                cidx = 0
+                for it in selected:
+                    rid = int(it.data(QtCore.Qt.UserRole))
+                    cur.execute("SELECT channel_label, freq_json, value_json FROM electrical_noise_points WHERE run_id=?", (rid,))
+                    for ch, fjs, vjs in cur.fetchall():
+                        try:
+                            f = np.asarray(json.loads(fjs), float)
+                            y = np.asarray(json.loads(vjs), float)
+                        except Exception:
+                            continue
+                        m = np.isfinite(f) & np.isfinite(y) & (f > 0)
+                        if np.any(m):
+                            pi.plot(f[m], y[m], pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"run{rid}:{ch}")
+                            cidx += 1
+
+            btn.clicked.connect(_draw_selected)
+            hd.exec_()
+            conn.close()
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Electrical Noise")
+        dlg.resize(1100, 760)
+        dlg.setStyleSheet("background:#19232D;color:white;")
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        ctrl = QtWidgets.QHBoxLayout()
+        fmin_edit = QtWidgets.QLineEdit("10")
+        fmax_edit = QtWidgets.QLineEdit(str(int(fs / 2)))
+        for w in (fmin_edit, fmax_edit):
+            w.setMaximumWidth(90)
+            w.setStyleSheet("background:#2b2b2b;color:white;border:1px solid #444;padding:4px;")
+        ctrl.addWidget(QtWidgets.QLabel("fmin (Hz):")); ctrl.addWidget(fmin_edit)
+        ctrl.addSpacing(12); ctrl.addWidget(QtWidgets.QLabel("fmax (Hz):")); ctrl.addWidget(fmax_edit)
+
+        ctrl.addSpacing(18); ctrl.addWidget(QtWidgets.QLabel("Units:"))
+        units_cb = QtWidgets.QComboBox()
+        units_cb.addItems(["dBV/√Hz", "dB", "V/√Hz", "nV/√Hz", "V²/Hz"])
+        units_cb.setCurrentIndex(0)
+        units_cb.setStyleSheet("background:#2b2b2b;color:white;border:1px solid #444;padding:3px;")
+        units_cb.setMaximumWidth(140)
+        ctrl.addWidget(units_cb)
+
+        ctrl.addStretch(1)
+        btn_recalc = QtWidgets.QPushButton("Recompute")
+        btn_export_img = QtWidgets.QPushButton("Export JPG")
+        btn_export_csv = QtWidgets.QPushButton("Export CSV")
+        btn_save_db = QtWidgets.QPushButton("Save Run")
+        btn_history = QtWidgets.QPushButton("History / Compare")
+        for b in (btn_recalc, btn_export_img, btn_export_csv, btn_save_db, btn_history):
+            b.setStyleSheet("background:#2b2b2b;color:white;border:1px solid #555;padding:6px 10px;")
+            ctrl.addWidget(b)
+        lay.addLayout(ctrl)
+
+        plot = pg.PlotWidget()
+        plot.setBackground("#19232D")
+        lay.addWidget(plot, 1)
+        pitem = plot.getPlotItem()
+        pitem.showGrid(x=True, y=True, alpha=0.25)
+        pitem.setLogMode(x=True, y=False)
+        pitem.setLabel("bottom", "Frequency (Hz)", color="white")
+        pitem.setLabel("left", "Noise density", color="white")
+        pitem.setTitle("Electrical Noise Density", color="white")
+        pitem.getAxis("left").setPen(pg.mkPen("white"))
+        pitem.getAxis("left").setTextPen(pg.mkPen("white"))
+        pitem.getAxis("bottom").setPen(pg.mkPen("white"))
+        pitem.getAxis("bottom").setTextPen(pg.mkPen("white"))
+
+        legend = pitem.addLegend()
+        try:
+            legend.setBrush(pg.mkBrush(25, 35, 45, 220))
+            legend.setPen(pg.mkPen("#555"))
+        except Exception:
+            pass
+
+        info = QtWidgets.QLabel(); info.setStyleSheet("color:white;padding:6px;")
+        lay.addWidget(info)
+
+        row = QtWidgets.QHBoxLayout(); btn_close = QtWidgets.QPushButton("Close")
+        btn_close.setStyleSheet("background:#2b2b2b;color:white;border:1px solid #555;padding:6px 10px;")
+        row.addStretch(1); row.addWidget(btn_close); lay.addLayout(row)
+        btn_close.clicked.connect(dlg.accept)
+
+        plot_state = {"f": None, "labels": [], "curves": [], "vrms": []}
+
+        def _compute():
+            pitem.clear()
+            nonlocal legend
+            legend = pitem.addLegend()
+            try:
+                legend.setBrush(pg.mkBrush(25, 35, 45, 220))
+                legend.setPen(pg.mkPen("#555"))
+            except Exception:
+                pass
+
+            try:
+                fmin = float(fmin_edit.text()); fmax = float(fmax_edit.text())
+            except Exception:
+                fmin, fmax = 10.0, fs / 2.0
+            fmin = max(0.0, fmin)
+            fmax = min(fs / 2.0, max(fmin + 1e-6, fmax))
+            units = units_cb.currentText().strip()
+
+            lines_txt, curves = [], []
+            freq_axis = None
+            ylab = "Noise density"
+
+            for i, (sig, lab) in enumerate(zip(channels, labels)):
+                v = _to_volts(sig)
+                nper = max(256, min(8192, len(v)))
+                if nper > len(v):
+                    nper = int(len(v))
+                nover = max(0, min(nper // 2, nper - 1))
+                f, P = welch(v, fs, nperseg=nper, noverlap=nover, scaling="density")
+                P = np.maximum(P, 1e-30)
+                m = (f >= fmin) & (f <= fmax) & np.isfinite(P)
+                if np.count_nonzero(m) >= 2:
+                    vrms = float(np.sqrt(np.trapz(P[m], f[m])))
+                    lines_txt.append(f"{lab}: {vrms:.6g} Vrms")
+                else:
+                    vrms = None
+
+                if units == "V²/Hz":
+                    y = P; ylab = "PSD (V²/Hz)"
+                elif units == "V/√Hz":
+                    y = np.sqrt(P); ylab = "Noise density (V/√Hz)"
+                elif units == "nV/√Hz":
+                    y = np.sqrt(P) * 1e9; ylab = "Noise density (nV/√Hz)"
+                else:
+                    y = 20.0 * np.log10(np.sqrt(P))
+                    ylab = "Noise density (dB/√Hz)" if units == "dB" else "Noise density (dBV/√Hz)"
+
+                mask_plot = (f >= max(1e-6, fmin)) & (f <= fmax) & np.isfinite(f) & np.isfinite(y)
+                fp = f[mask_plot]
+                yp = y[mask_plot]
+                if fp.size:
+                    pitem.plot(fp, yp, pen=pg.mkPen(pal[i], width=2), name=lab)
+
+                freq_axis = f
+                curves.append((lab, y, vrms))
+
+            if not curves:
+                QtWidgets.QMessageBox.information(dlg, "Electrical Noise", "No valid data to plot.")
+                return
+
+            pitem.setLabel("left", ylab, color="white")
+            pitem.setLabel("bottom", "Frequency (Hz)", color="white")
+            pitem.setTitle("Electrical Noise Density", color="white")
+            xmin = max(1e-6, fmin)
+            xmax = min(fs / 2.0, max(xmin * 1.001, fmax))
+            # In pyqtgraph log-x mode, visible range is specified in log10 space.
+            pitem.setXRange(np.log10(xmin), np.log10(xmax), padding=0)
+            info.setText("\n".join(lines_txt) if lines_txt else "No valid band points")
+
+            plot_state["f"] = freq_axis
+            plot_state["labels"] = [c[0] for c in curves]
+            plot_state["curves"] = [c[1] for c in curves]
+            plot_state["vrms"] = [c[2] for c in curves]
+
+        def _export_jpg():
+            out_dir = _export_dir()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            units_tag = _safe(units_cb.currentText().replace("/", "_per_"))
+            path = os.path.join(out_dir, f"electrical_noise_{units_tag}_{stamp}.jpg")
+            try:
+                exporter = ImageExporter(pitem)
+                exporter.parameters()["width"] = 1800
+                exporter.export(path)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Export", f"Failed to export JPG:\n{e}")
+                return
+            QtWidgets.QMessageBox.information(dlg, "Exported", f"Saved JPG to:\n{path}")
+
+        def _export_csv():
+            if plot_state["f"] is None or not plot_state["curves"]:
+                QtWidgets.QMessageBox.information(dlg, "Export", "No computed data to export.")
+                return
+            out_dir = _export_dir()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            units = units_cb.currentText().strip()
+            units_tag = _safe(units.replace("/", "_per_"))
+            path = os.path.join(out_dir, f"electrical_noise_{units_tag}_{stamp}.csv")
+            try:
+                with open(path, "w", newline="", encoding="utf-8") as fh:
+                    w = csv.writer(fh)
+                    header = ["frequency_hz"] + [f"{lab}_{units}" for lab in plot_state["labels"]]
+                    w.writerow(header)
+                    F = plot_state["f"]
+                    Ys = plot_state["curves"]
+                    for i in range(len(F)):
+                        w.writerow([float(F[i])] + [float(y[i]) for y in Ys])
+                    w.writerow([])
+                    w.writerow(["channel", "vrms"])
+                    for lab, v in zip(plot_state["labels"], plot_state["vrms"]):
+                        w.writerow([lab, "" if v is None else float(v)])
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(dlg, "Export", f"Failed to export CSV:\n{e}")
+                return
+            QtWidgets.QMessageBox.information(dlg, "Exported", f"Saved CSV to:\n{path}")
+
+        btn_recalc.clicked.connect(_compute)
+        btn_export_img.clicked.connect(_export_jpg)
+        btn_export_csv.clicked.connect(_export_csv)
+        btn_save_db.clicked.connect(_save_run_to_db)
+        btn_history.clicked.connect(_history_compare_dialog)
+        units_cb.currentIndexChanged.connect(_compute)
+
+        _compute()
+        dlg.exec_()
 
 
 

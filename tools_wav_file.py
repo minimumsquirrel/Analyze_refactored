@@ -48,6 +48,28 @@ from shared import (
 class WavFileToolsMixin:
     """Mixin class providing all WAV File Tools for self."""
 
+    def _modified_output_dir(self):
+        """Return the project-scoped modified output directory (created if needed)."""
+        out_dir = None
+        if hasattr(self, "_project_subdir"):
+            try:
+                out_dir = self._project_subdir("modified")
+            except Exception:
+                out_dir = None
+        if not out_dir:
+            base = os.path.dirname(getattr(self, "current_file_path", "") or "") or os.getcwd()
+            out_dir = os.path.join(base, "analysis")
+        os.makedirs(out_dir, exist_ok=True)
+        return out_dir
+
+
+    def _ensure_wav_extension(self, filename):
+        """Ensure output filename has a .wav extension."""
+        name = (filename or "").strip()
+        if not name:
+            return "output.wav"
+        root, ext = os.path.splitext(name)
+        return name if ext else (name + ".wav")
     def normalize_file(self):
         """
         Scale the current WAV so that its maximum absolute sample
@@ -80,9 +102,10 @@ class WavFileToolsMixin:
             normed = normed.astype(np.float64)
 
         # Save into analysis subfolder
-        out_dir = self._project_subdir("modified") or os.path.join(os.path.dirname(self.current_file_path), "analysis")
+        out_dir = self._modified_output_dir()
         os.makedirs(out_dir, exist_ok=True)
         base, ext = os.path.splitext(self.file_name)
+        ext = ext or ".wav"
         new_name = f"{base}_normalized{ext}"
         new_path = os.path.join(out_dir, new_name)
 
@@ -119,7 +142,7 @@ class WavFileToolsMixin:
 
         # Create output path
         base, ext = os.path.splitext(self.file_name)
-        outpath = base + "_dc.wav"
+        outpath = os.path.join(self._modified_output_dir(), base + "_dc.wav")
 
         try:
             wavfile.write(outpath, sr, data_dc)
@@ -146,10 +169,7 @@ class WavFileToolsMixin:
             else:
                 denoised_data = denoised_data.astype(np.float64)
 
-            directory = os.path.dirname(self.current_file_path)
-            new_folder = os.path.join(directory, "analysis")
-            if not os.path.exists(new_folder):
-                os.makedirs(new_folder)
+            new_folder = self._modified_output_dir()
             base, _ = os.path.splitext(self.file_name)
             new_filename = base + "_denoised.wav"
             new_filepath = os.path.join(new_folder, new_filename)
@@ -222,10 +242,11 @@ class WavFileToolsMixin:
             trimmed = trimmed.astype(np.float64)
 
         # Save out a new file into a project-managed subfolder
-        out_dir = self._project_subdir("modified") or os.path.join(os.path.dirname(self.current_file_path), "analysis")
+        out_dir = self._modified_output_dir()
         os.makedirs(out_dir, exist_ok=True)
 
         base, ext = os.path.splitext(self.file_name)
+        ext = ext or ".wav"
         new_filename = f"{base}_trimmed_{start_trim_s:.2f}–{end_trim_s:.2f}{ext}"
         new_filepath = os.path.join(out_dir, new_filename)
 
@@ -282,7 +303,7 @@ class WavFileToolsMixin:
             target_cb.addItem(f"{bits}-bit ({subtype})", userData=subtype)
         form.addRow("Target Depth:", target_cb)
 
-        dir_le = QtWidgets.QLineEdit(os.getcwd())
+        dir_le = QtWidgets.QLineEdit(self._modified_output_dir())
         form.addRow("Output Directory:", dir_le)
         layout.addLayout(form)
 
@@ -316,7 +337,7 @@ class WavFileToolsMixin:
         def do_convert():
             subtype = target_cb.currentData()
             bit = bits_map.get(subtype, "")
-            out_dir = dir_le.text().strip()
+            out_dir = self._modified_output_dir()
             if not os.path.isdir(out_dir):
                 QtWidgets.QMessageBox.warning(dlg, "Invalid Directory",
                                             "Please choose a valid output directory.")
@@ -680,11 +701,9 @@ class WavFileToolsMixin:
                 QtWidgets.QMessageBox.critical(dlg, "Parameter Error", str(e))
                 return
 
-            out_path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save merged WAV", "", "WAV (*.wav)")
-            if not out_path:
-                return
-            if not out_path.lower().endswith(".wav"):
-                out_path += ".wav"
+            out_dir = self._modified_output_dir()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = os.path.join(out_dir, f"merged_{stamp}.wav")
 
             gap_seconds = float(gap_spin.value()) if add_gap_chk.isChecked() else 0.0
 
@@ -836,9 +855,9 @@ class WavFileToolsMixin:
                 s_file_list.item(r).setSelected(True)
 
         def _browse_out():
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save combined WAV", "combined.wav", "WAV Files (*.wav)")
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save combined WAV", os.path.join(self._modified_output_dir(), "combined.wav"), "WAV Files (*.wav)")
             if path:
-                out_path_edit.setText(path)
+                out_path_edit.setText(self._ensure_wav_extension(path))
 
         s_add_btn.clicked.connect(_add_files_dialog)
         s_remove_btn.clicked.connect(_remove)
@@ -902,11 +921,13 @@ class WavFileToolsMixin:
             else:
                 subtype = "FLOAT"
 
-            out_path = out_path_edit.text().strip()
-            if not out_path:
+            out_name = os.path.basename(out_path_edit.text().strip())
+            if not out_name:
                 base = os.path.splitext(os.path.basename(files[0]))[0]
-                out_path = os.path.join(os.path.dirname(files[0]), f"{base}_stacked.wav")
-                out_path_edit.setText(out_path)
+                out_name = f"{base}_stacked.wav"
+            out_name = self._ensure_wav_extension(out_name)
+            out_path = os.path.join(self._modified_output_dir(), out_name)
+            out_path_edit.setText(out_path)
 
             try:
                 sf.write(out_path, out, sr, subtype=subtype)
@@ -1124,12 +1145,10 @@ class WavFileToolsMixin:
             fac = factor_from_controls(rb_db.isChecked(), pct_spin.value(), db_spin.value())
             in_path = s_state["path"]; sr = s_state["sr"]; data = s_state["data"]; dt = s_state["dtype"]
 
-            base_dir = os.path.dirname(in_path)
             base, ext = os.path.splitext(os.path.basename(in_path))
+            ext = ext or ".wav"
             suffix = f"_scaled_{db_spin.value():.2f}dB" if rb_db.isChecked() else f"_scaled_{pct_spin.value():.2f}pct"
-            out_suggest = os.path.join(base_dir, base + suffix + ext)
-            out_path, _ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Scaled WAV", out_suggest, "WAV Files (*.wav)")
-            if not out_path: return
+            out_path = os.path.join(self._modified_output_dir(), base + suffix + ext)
 
             try:
                 scaled = apply_scale(data, fac, dt)
@@ -1309,8 +1328,9 @@ class WavFileToolsMixin:
             for i, it in enumerate(items):
                 # compute destination path
                 base, ext = os.path.splitext(os.path.basename(it["path"]))
+                ext = ext or ".wav"
                 suffix = f"_scaled_{b_db.value():.2f}dB" if b_rb_db.isChecked() else f"_scaled_{b_pct.value():.2f}pct"
-                dest_dir = os.path.dirname(it["path"]) if use_input_cb.isChecked() else out_edit.text().strip()
+                dest_dir = self._modified_output_dir()
                 os.makedirs(dest_dir, exist_ok=True)
                 out_path = os.path.join(dest_dir, base + suffix + ext)
 
@@ -1519,10 +1539,11 @@ class WavFileToolsMixin:
                     self.table.setItem(b, c, ia)
 
             def _browse_out(self):
-                path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Output WAV", "", "WAV Files (*.wav)")
+                host = self.parent()
+                default_dir = host._modified_output_dir() if host and hasattr(host, "_modified_output_dir") else os.getcwd()
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Output WAV", os.path.join(default_dir, "playlist.wav"), "WAV Files (*.wav)")
                 if path:
-                    if not path.lower().endswith(".wav"):
-                        path += ".wav"
+                    path = host._ensure_wav_extension(path) if host and hasattr(host, "_ensure_wav_extension") else (path if os.path.splitext(path)[1] else path + ".wav")
                     self.out_edit.setText(path)
 
             def playlist(self):
@@ -1561,7 +1582,9 @@ class WavFileToolsMixin:
             QtWidgets.QMessageBox.warning(self, "Empty", "No files in playlist.")
             return
 
-        out_path = dlg.out_edit.text().strip()
+        out_name = os.path.basename(dlg.out_edit.text().strip() or "playlist.wav")
+        out_name = self._ensure_wav_extension(out_name)
+        out_path = os.path.join(self._modified_output_dir(), out_name)
         sr = int(dlg.sr_spin.value()) if hasattr(dlg, "sr_spin") else 0
         if sr <= 0:
             sr = None
@@ -2604,11 +2627,7 @@ class WavFileToolsMixin:
             else:
                 out = out.astype(np.float64)
 
-            base_dir = os.path.dirname(getattr(self, "current_file_path", "") or "")
-            if not base_dir:
-                base_dir = os.getcwd()
-            out_dir = os.path.join(base_dir, "analysis")
-            os.makedirs(out_dir, exist_ok=True)
+            out_dir = self._modified_output_dir()
 
             base_name = getattr(self, "file_name", "waveform.wav")
             root, ext = os.path.splitext(base_name)
@@ -2801,10 +2820,9 @@ class WavFileToolsMixin:
             filtered = filtered.astype(np.float64)
 
         # Save out
-        directory = os.path.dirname(self.current_file_path)
-        out_dir   = os.path.join(directory, "analysis")
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = self._modified_output_dir()
         base, ext = os.path.splitext(self.file_name)
+        ext = ext or ".wav"
         fname     = f"{base}_aa_{int(cutoff)}Hz_x{decim}{ext}"
         path      = os.path.join(out_dir, fname)
         wavfile.write(path, new_sr, filtered)
@@ -2915,10 +2933,11 @@ class WavFileToolsMixin:
                 else:
                     down = down.astype(np.float64)
 
-                directory = os.path.dirname(self.current_file_path)
+                out_dir = self._modified_output_dir()
                 base, ext = os.path.splitext(self.file_name)
+                ext = ext or ".wav"
                 new_filename = f"{base}_down_{new_fs}Hz{ext}"
-                new_filepath = os.path.join(directory, new_filename)
+                new_filepath = os.path.join(out_dir, new_filename)
                 wavfile.write(new_filepath, new_fs, down)
                 QtWidgets.QMessageBox.information(
                     self,
@@ -2949,10 +2968,9 @@ class WavFileToolsMixin:
         else:
             filtered = filtered.astype(np.float64)
 
-        directory = os.path.dirname(self.current_file_path)
-        out_dir = os.path.join(directory, "analysis")
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = self._modified_output_dir()
         base, ext = os.path.splitext(self.file_name)
+        ext = ext or ".wav"
         new_filename = f"{base}_filtered{ext}"
         new_filepath = os.path.join(out_dir, new_filename)
         try:
@@ -2966,4 +2984,3 @@ class WavFileToolsMixin:
     # ---------------------
     # Measurement Tools Popups (continued)
     # ---------------------
-
