@@ -5466,8 +5466,8 @@ class MeasurementToolsMixin:
         import numpy as np
         from datetime import datetime
         from PyQt5 import QtWidgets
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        import pyqtgraph as pg
+        from pyqtgraph.exporters import ImageExporter
         from scipy.signal import welch
 
         raw = getattr(self, "full_data", None)
@@ -5510,7 +5510,7 @@ class MeasurementToolsMixin:
                     if t.startswith("#") and len(t) >= 7:
                         colors.append(t)
             if not colors:
-                colors = ["#03DFE2", "#A855F7", "#22C55E", "#F97316", "#EF4444", "#60A5FA", "#EAB308"]
+                colors = ["#33C3F0", "#6EEB83", "#FF5964", "#FFD166", "#C792EA", "#4DD0E1", "#03DFE2"]
             sel = _sel_color()
             start = colors.index(sel) if sel in colors else 0
             return [colors[(start + k) % len(colors)] for k in range(max(1, n_needed))]
@@ -5555,7 +5555,7 @@ class MeasurementToolsMixin:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Electrical Noise")
         dlg.resize(1100, 760)
-        dlg.setStyleSheet("background:#1e1e1e;color:white;")
+        dlg.setStyleSheet("background:#19232D;color:white;")
         lay = QtWidgets.QVBoxLayout(dlg)
 
         ctrl = QtWidgets.QHBoxLayout()
@@ -5584,11 +5584,26 @@ class MeasurementToolsMixin:
             ctrl.addWidget(b)
         lay.addLayout(ctrl)
 
-        fig = Figure(facecolor="#1e1e1e")
-        ax = fig.add_subplot(111)
-        canvas = FigureCanvas(fig)
-        canvas.setStyleSheet("background:#1e1e1e;")
-        lay.addWidget(canvas, 1)
+        plot = pg.PlotWidget()
+        plot.setBackground("#19232D")
+        lay.addWidget(plot, 1)
+        pitem = plot.getPlotItem()
+        pitem.showGrid(x=True, y=True, alpha=0.25)
+        pitem.setLogMode(x=True, y=False)
+        pitem.setLabel("bottom", "Frequency (Hz)", color="white")
+        pitem.setLabel("left", "Noise density", color="white")
+        pitem.setTitle("Electrical Noise Density", color="white")
+        pitem.getAxis("left").setPen(pg.mkPen("white"))
+        pitem.getAxis("left").setTextPen(pg.mkPen("white"))
+        pitem.getAxis("bottom").setPen(pg.mkPen("white"))
+        pitem.getAxis("bottom").setTextPen(pg.mkPen("white"))
+
+        legend = pitem.addLegend()
+        try:
+            legend.setBrush(pg.mkBrush(25, 35, 45, 220))
+            legend.setPen(pg.mkPen("#555"))
+        except Exception:
+            pass
 
         info = QtWidgets.QLabel(); info.setStyleSheet("color:white;padding:6px;")
         lay.addWidget(info)
@@ -5600,16 +5615,16 @@ class MeasurementToolsMixin:
 
         plot_state = {"f": None, "labels": [], "curves": [], "vrms": []}
 
-        def _style_axes():
-            ax.set_facecolor("#1e1e1e")
-            ax.tick_params(colors="white")
-            ax.xaxis.label.set_color("white"); ax.yaxis.label.set_color("white"); ax.title.set_color("white")
-            for sp in ax.spines.values():
-                sp.set_edgecolor("#777")
-            ax.grid(True, alpha=0.25)
-
         def _compute():
-            ax.clear(); fig.set_facecolor("#1e1e1e"); _style_axes()
+            pitem.clear()
+            nonlocal legend
+            legend = pitem.addLegend()
+            try:
+                legend.setBrush(pg.mkBrush(25, 35, 45, 220))
+                legend.setPen(pg.mkPen("#555"))
+            except Exception:
+                pass
+
             try:
                 fmin = float(fmin_edit.text()); fmax = float(fmax_edit.text())
             except Exception:
@@ -5647,7 +5662,12 @@ class MeasurementToolsMixin:
                     y = 20.0 * np.log10(np.sqrt(P))
                     ylab = "Noise density (dB/√Hz)" if units == "dB" else "Noise density (dBV/√Hz)"
 
-                ax.semilogx(f, y, color=pal[i], linewidth=2.0, label=lab)
+                mask_plot = (f >= max(1e-6, fmin)) & (f <= fmax) & np.isfinite(f) & np.isfinite(y)
+                fp = f[mask_plot]
+                yp = y[mask_plot]
+                if fp.size:
+                    pitem.plot(fp, yp, pen=pg.mkPen(pal[i], width=2), name=lab)
+
                 freq_axis = f
                 curves.append((lab, y, vrms))
 
@@ -5655,20 +5675,11 @@ class MeasurementToolsMixin:
                 QtWidgets.QMessageBox.information(dlg, "Electrical Noise", "No valid data to plot.")
                 return
 
-            ax.set_xlabel("Frequency (Hz)")
-            ax.set_ylabel(ylab)
-            ax.set_xlim(max(1e-6, fmin), min(fs / 2.0, max(max(1e-6, fmin) * 1.001, fmax)))
-            ax.set_title("Electrical Noise Density")
-            leg = ax.legend(loc="best")
-            if leg is not None:
-                for t in leg.get_texts():
-                    t.set_color("white")
+            pitem.setLabel("left", ylab, color="white")
+            pitem.setLabel("bottom", "Frequency (Hz)", color="white")
+            pitem.setTitle("Electrical Noise Density", color="white")
+            pitem.setXRange(max(1e-6, fmin), min(fs / 2.0, max(max(1e-6, fmin) * 1.001, fmax)), padding=0)
             info.setText("\n".join(lines_txt) if lines_txt else "No valid band points")
-            try:
-                fig.tight_layout()
-            except Exception:
-                pass
-            canvas.draw_idle()
 
             plot_state["f"] = freq_axis
             plot_state["labels"] = [c[0] for c in curves]
@@ -5681,7 +5692,9 @@ class MeasurementToolsMixin:
             units_tag = _safe(units_cb.currentText().replace("/", "_per_"))
             path = os.path.join(out_dir, f"electrical_noise_{units_tag}_{stamp}.jpg")
             try:
-                fig.savefig(path, dpi=200, format="jpg", bbox_inches="tight")
+                exporter = ImageExporter(pitem)
+                exporter.parameters()["width"] = 1800
+                exporter.export(path)
             except Exception as e:
                 QtWidgets.QMessageBox.critical(dlg, "Export", f"Failed to export JPG:\n{e}")
                 return
