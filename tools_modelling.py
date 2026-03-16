@@ -3975,6 +3975,14 @@ class ModellingToolsMixin:
         from PyQt5 import QtWidgets, QtCore
         import numpy as np, os, json, ast, sqlite3, csv
 
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Project Required",
+                "Please select a project before opening Wenz Curves.",
+            )
+            return
+
         # -------- SciPy Welch (fallback) ----------
         try:
             from scipy.signal import welch
@@ -4406,8 +4414,7 @@ class ModellingToolsMixin:
             if ship_cb.isChecked(): comps.append(Ns); labels.append("Shipping")
             if wind_cb.isChecked(): comps.append(Nw); labels.append("Wind/Weather")
             if therm_cb.isChecked(): comps.append(Nth); labels.append("Thermal")
-            if not comps: comps, labels = [Nt, Ns, Nw, Nth], ["Turbulence","Shipping","Wind/Weather","Thermal"]
-            Ntot = _logsum_db(*comps) + off
+            Ntot = (_logsum_db(*comps) + off) if comps else None
 
             meas = []
             source_mode = meas_source_cb.currentText() if 'meas_source_cb' in locals() else 'WAV PSD'
@@ -4552,7 +4559,8 @@ class ModellingToolsMixin:
             ax = axes["main"]; cols = _component_colors()
             for L, lab in zip(comps, labels):
                 ax.plot(fHz, L, lw=1.6, label=lab, color=cols.get(lab))
-            ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
+            if Ntot is not None:
+                ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
             if meas is not None:
                 for idx, entry in enumerate(meas):
                     color = cols.get("Measured PSD")
@@ -4624,7 +4632,8 @@ class ModellingToolsMixin:
             styles = ["-", "--", "-.", ":", (0, (5, 1, 1, 1))]
             for i, (L, lab) in enumerate(zip(comps, labels)):
                 ax_bw.plot(fHz, L, linestyle=styles[i % len(styles)], color="black", lw=1.8, label=lab)
-            ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
+            if Ntot is not None:
+                ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
             if meas is not None:
                 for entry in meas:
                     ax_bw.plot(entry["f"], entry["L"], linestyle="-", color="black", lw=2.0,
@@ -4663,14 +4672,17 @@ class ModellingToolsMixin:
             if not p: return
             with open(p, "w", newline="") as fh:
                 w = csv.writer(fh)
-                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + ["Total_dB"]
+                total_cols = ["Total_dB"] if Ntot is not None else []
+                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + total_cols
                 if meas is not None:
                     header += [f"Measured_{entry['label']}_dB" for entry in meas]
                 if sea_state_totals:
                     header += [f"Total_SS{ss}_dB" for ss in sorted(sea_state_totals.keys())]
                 w.writerow(header)
                 for i in range(len(fHz)):
-                    row = [fHz[i]] + [col[i] for col in comps] + [Ntot[i]]
+                    row = [fHz[i]] + [col[i] for col in comps]
+                    if Ntot is not None:
+                        row.append(Ntot[i])
                     if meas is not None:
                         row.extend([entry["L"][i] for entry in meas])
                     if sea_state_totals:
