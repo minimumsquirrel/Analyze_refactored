@@ -5678,7 +5678,10 @@ class MeasurementToolsMixin:
             pitem.setLabel("left", ylab, color="white")
             pitem.setLabel("bottom", "Frequency (Hz)", color="white")
             pitem.setTitle("Electrical Noise Density", color="white")
-            pitem.setXRange(max(1e-6, fmin), min(fs / 2.0, max(max(1e-6, fmin) * 1.001, fmax)), padding=0)
+            xmin = max(1e-6, fmin)
+            xmax = min(fs / 2.0, max(xmin * 1.001, fmax))
+            # In pyqtgraph log-x mode, visible range is specified in log10 space.
+            pitem.setXRange(np.log10(xmin), np.log10(xmax), padding=0)
             info.setText("\n".join(lines_txt) if lines_txt else "No valid band points")
 
             plot_state["f"] = freq_axis
