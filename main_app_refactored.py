@@ -10080,6 +10080,10 @@ class MainWindow(
         preview_channel_spin.setValue(1)
         form.addRow("Preview channel #:", preview_channel_spin)
 
+        save_graphs_cb = QtWidgets.QCheckBox("Generate and save graph images")
+        save_graphs_cb.setChecked(True)
+        form.addRow("Screenshots:", save_graphs_cb)
+
         vbox.addWidget(settings)
 
         preview_group = QtWidgets.QGroupBox("Selected Window Preview")
@@ -10232,6 +10236,17 @@ class MainWindow(
             results.clear()
             wl = float(win_spin.value())
             use_detect = mode_combo.currentIndex() == 1
+            save_graphs = bool(save_graphs_cb.isChecked())
+            run_dir = ""
+            if save_graphs:
+                base_name = os.path.splitext(os.path.basename(self.file_name))[0] or "audio"
+                run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                project_auto_dir = self._project_subdir("auto_analyze")
+                if project_auto_dir:
+                    run_dir = os.path.join(project_auto_dir, base_name, run_stamp)
+                else:
+                    run_dir = os.path.join(os.path.dirname(self.current_file_path), "analysis", "auto_analyze", base_name, run_stamp)
+                os.makedirs(run_dir, exist_ok=True)
             for i in range(start_index, len(self.pulse_indices)):
                 pulse_time = _pulse_time(i)
                 for ch, channel_data in enumerate(channels_data):
@@ -10280,28 +10295,30 @@ class MainWindow(
                     p_e = int(pad_end * self.sample_rate)
                     t_pad = np.linspace(pad_start, pad_end, max(1, p_e - p_s), endpoint=False)
                     screenshot_path = ""
-                    try:
-                        fig_temp, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), dpi=90, facecolor="#19232D")
-                        ax1.plot(t_pad, np.asarray(channel_data[p_s:p_e]), color=self.graph_color, lw=1)
-                        ax1.set_facecolor("#19232D")
-                        ax1.tick_params(colors="white")
-                        ax1.set_title(f"Padded Waveform CH{ch + 1} {pad_start:.2f}–{pad_end:.2f}s", color="white")
-                        ax1.axvspan(window_start, window_start + wl, color=lighten_color(self.graph_color, 0.4), alpha=0.5)
+                    if save_graphs:
+                        try:
+                            fig_temp, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), dpi=90, facecolor="#19232D")
+                            ax1.plot(t_pad, np.asarray(channel_data[p_s:p_e]), color=self.graph_color, lw=1)
+                            ax1.set_facecolor("#19232D")
+                            ax1.tick_params(colors="white")
+                            ax1.set_title(f"Padded Waveform CH{ch + 1} {pad_start:.2f}–{pad_end:.2f}s", color="white")
+                            ax1.axvspan(window_start, window_start + wl, color=lighten_color(self.graph_color, 0.4), alpha=0.5)
 
-                        ax2.plot(freqs, np.abs(fft_result), color=self.graph_color, lw=1.5)
-                        ax2.set_facecolor("#19232D")
-                        ax2.tick_params(colors="white")
-                        ax2.set_title(f"FFT (Dom Freq {dom_freq:.2f} Hz)", color="white")
+                            ax2.plot(freqs, np.abs(fft_result), color=self.graph_color, lw=1.5)
+                            ax2.set_facecolor("#19232D")
+                            ax2.tick_params(colors="white")
+                            ax2.set_title(f"FFT (Dom Freq {dom_freq:.2f} Hz)", color="white")
 
-                        fig_temp.tight_layout()
-                        base, _ = os.path.splitext(self.file_name)
-                        out_dir = self._project_subdir("screenshots") or os.path.join(os.path.dirname(self.current_file_path), "analysis")
-                        os.makedirs(out_dir, exist_ok=True)
-                        screenshot_path = os.path.join(out_dir, f"{base}_ch{ch + 1}_{pad_start:.2f}-{pad_end:.2f}.png")
-                        fig_temp.savefig(screenshot_path)
-                        plt.close(fig_temp)
-                    except Exception:
-                        screenshot_path = ""
+                            fig_temp.tight_layout()
+                            shot_name = (
+                                f"{os.path.splitext(os.path.basename(self.file_name))[0]}_"
+                                f"pulse{i + 1:04d}_ch{ch + 1}_{window_start:.6f}-{(window_start + wl):.6f}.png"
+                            )
+                            screenshot_path = os.path.join(run_dir, shot_name)
+                            fig_temp.savefig(screenshot_path)
+                            plt.close(fig_temp)
+                        except Exception:
+                            screenshot_path = ""
 
                     file_label = self.channel_file_label(ch) if n_channels > 1 else self.file_name
                     results.append({
