@@ -927,7 +927,7 @@ except NameError:
                 hydro_combo = QtWidgets.QComboBox()
                 hydro_combo.addItem("None", None)
                 for curve in hydrophone_curves.values():
-                    hydro_combo.addItem(curve.get("curve_name", ""), curve.get("curve_name"))
+                    hydro_combo.addItem(curve.get("curve_name", ""), curve_name)
                 if isinstance(row_cfg, dict) and row_cfg.get("hydrophone_curve"):
                     idx = hydro_combo.findData(row_cfg.get("hydrophone_curve"))
                     if idx >= 0:
@@ -2510,6 +2510,70 @@ class MainWindow(
 
 
 
+    def _compute_spl_value_for_channel(
+        self,
+        file_name,
+        target_frequency,
+        measured_voltage,
+        start_time,
+        end_time,
+        window_length,
+        hydrophone_curve_name=None,
+        distance=None,
+        channel_index=None,
+    ):
+        """Compute SPL for hydrophone channels; returns (spl_value, freq, curve_name) or (None, freq, curve_name)."""
+        curve = self._get_hydrophone_curve_by_name(hydrophone_curve_name) or self._get_selected_hydrophone_curve()
+        if not curve:
+            return None, None, hydrophone_curve_name
+
+        try:
+            vrms = float(measured_voltage)
+        except (TypeError, ValueError):
+            return None, None, curve.get("curve_name")
+
+        freq = None
+        try:
+            auto_on = bool(getattr(self, "auto_freq_cb", None) and self.auto_freq_cb.isChecked())
+        except Exception:
+            auto_on = False
+
+        if auto_on:
+            try:
+                freq = self._estimate_dominant_frequency(start_time, end_time, window_length, channel_index=channel_index)
+            except Exception:
+                freq = None
+
+        if freq is None:
+            try:
+                freq = float(target_frequency)
+            except (TypeError, ValueError):
+                return None, None, curve.get("curve_name")
+
+        sens_list = curve.get("sensitivity") or []
+        if not sens_list:
+            return None, freq, curve.get("curve_name")
+
+        min_f = int(curve.get("min_freq", 0) or 0)
+        idx = int(round(freq)) - min_f
+        idx = max(0, min(idx, len(sens_list) - 1))
+        try:
+            sensitivity_db = float(sens_list[idx])
+        except (TypeError, ValueError):
+            return None, freq, curve.get("curve_name")
+
+        spl_val = 20.0 * np.log10(max(vrms, 1e-12)) - sensitivity_db
+        if distance is not None:
+            try:
+                d = float(distance)
+                if d > 0:
+                    spl_val += 20.0 * np.log10(d)
+            except (TypeError, ValueError):
+                pass
+
+        return float(spl_val), float(freq), curve.get("curve_name")
+
+
     def _log_spl_for_measurement(
         self,
         voltage_log_id,
@@ -2530,86 +2594,24 @@ class MainWindow(
         if voltage_log_id is None:
             return
 
-        curve = self._get_hydrophone_curve_by_name(hydrophone_curve_name) or self._get_selected_hydrophone_curve()
-        if not curve:
-            return
-
         try:
             vrms = float(measured_voltage)
         except (TypeError, ValueError):
             return
-        # Determine frequency for curve lookup / logging.
-        # If "Auto freq (FFT)" is enabled, derive from dominant FFT peak in the selected window.
-        # Determine frequency for curve lookup / logging
-        freq = None
-        try:
-            auto_on = bool(getattr(self, "auto_freq_cb", None) and self.auto_freq_cb.isChecked())
-        except Exception:
-            auto_on = False
 
-        if auto_on:
-            try:
-                freq = self._estimate_dominant_frequency(start_time, end_time, window_length, channel_index=channel_index)
-            except Exception:
-                freq = None
-
-        if freq is None:
-            try:
-                freq = float(target_frequency)
-            except (TypeError, ValueError):
-                return
-
-        # IMPORTANT: make the computed freq become the logged “target_frequency”
-        target_frequency = freq
-
-        try:
-            self.log(
-                f"[SPL AUTO FREQ] auto={auto_on}  freq_used={freq:.2f} Hz  "
-                f"start={start_time} end={end_time} win={window_length}  file={file_name}"
-            )
-        except Exception:
-            pass
-
-
-        try:
-            auto_on = bool(getattr(self, "auto_freq_cb", None) and self.auto_freq_cb.isChecked())
-        except Exception:
-            auto_on = False
-
-        if auto_on:
-            try:
-                freq = self._estimate_dominant_frequency(start_time, end_time, window_length, channel_index=channel_index)
-            except Exception:
-                freq = None
-
-        if freq is None:
-            try:
-                freq = float(target_frequency)
-            except (TypeError, ValueError):
-                return
-
-        sens_list = curve.get("sensitivity") or []
-        if not sens_list:
+        spl_val, freq, curve_name = self._compute_spl_value_for_channel(
+            file_name,
+            target_frequency,
+            vrms,
+            start_time,
+            end_time,
+            window_length,
+            hydrophone_curve_name=hydrophone_curve_name,
+            distance=distance,
+            channel_index=channel_index,
+        )
+        if spl_val is None or freq is None:
             return
-
-        min_f = int(curve.get("min_freq", 0) or 0)
-        idx = int(round(freq)) - min_f
-        idx = max(0, min(idx, len(sens_list) - 1))
-        try:
-            sensitivity_db = float(sens_list[idx])
-        except (TypeError, ValueError):
-            return
-
-        spl_val = 20.0 * np.log10(max(vrms, 1e-12)) - sensitivity_db
-
-        # Apply distance correction if provided (convert measured level at d m to 1 m equivalent)
-        if distance is not None:
-            try:
-                d = float(distance)
-                if d > 0:
-                    spl_val += 20.0 * np.log10(d)
-            except (TypeError, ValueError):
-                pass
 
         conn = sqlite3.connect(DB_FILENAME)
         cur = conn.cursor()
@@ -2627,7 +2629,7 @@ class MainWindow(
             (
                 file_name,
                 int(voltage_log_id),
-                curve.get("curve_name"),
+                curve_name,
                 freq,
                 vrms,
                 spl_val,
@@ -10321,10 +10323,29 @@ class MainWindow(
                             screenshot_path = ""
 
                     file_label = self.channel_file_label(ch) if n_channels > 1 else self.file_name
+                    cfg = self._get_channel_config(ch) or {}
+                    mode = cfg.get("mode") or "raw"
+                    display_val, _, hydro_curve_name, distance = self._prepare_channel_measurement(rms_voltage, None, ch)
+                    spl_val = None
+                    if mode == "hydrophone":
+                        spl_val, _spl_freq, _curve_name = self._compute_spl_value_for_channel(
+                            file_label,
+                            dom_freq,
+                            display_val,
+                            window_start,
+                            window_start + wl,
+                            wl,
+                            hydrophone_curve_name=hydro_curve_name,
+                            distance=distance,
+                            channel_index=ch,
+                        )
                     results.append({
                         "pulse_time": pulse_time,
                         "dom_freq": float(dom_freq),
                         "rms_voltage": rms_voltage,
+                        "display_rms": float(display_val) if isinstance(display_val, (int, float, np.floating)) else rms_voltage,
+                        "spl_value": spl_val,
+                        "channel_mode": mode,
                         "window_start": float(window_start),
                         "window_length": wl,
                         "screenshot": screenshot_path,
@@ -10350,11 +10371,14 @@ class MainWindow(
 
         txt = QtWidgets.QPlainTextEdit()
         txt.setReadOnly(True)
-        out = "Pulse Time   Dom Freq (Hz)   RMS Voltage (V)   Channel\n"
+        out = "Pulse Time   Dom Freq (Hz)   Value   SPL (dB)   Ch   Type\n"
         for entry in sorted(results, key=lambda r: (r.get("pulse_time", 0.0), r.get("channel_index", 0))):
+            val = float(entry.get('display_rms', entry.get('rms_voltage', 0.0)))
+            spl = entry.get('spl_value')
+            spl_txt = f"{float(spl):8.2f}" if spl is not None else "   n/a  "
             out += (
                 f"{entry['pulse_time']:8.4f}      {entry['dom_freq']:8.4f}       "
-                f"{entry['rms_voltage']:8.4f}      {entry['channel_index'] + 1}\n"
+                f"{val:8.4f}   {spl_txt}    {entry['channel_index'] + 1:2d}   {entry.get('channel_mode','raw')}\n"
             )
         txt.setPlainText(out)
         v.addWidget(txt, 1)
@@ -10362,41 +10386,74 @@ class MainWindow(
         graph_box = QtWidgets.QGroupBox("Trends")
         graph_layout = QtWidgets.QVBoxLayout(graph_box)
 
+        marker_cb = QtWidgets.QCheckBox("Show point markers")
+        marker_cb.setChecked(True)
+        graph_layout.addWidget(marker_cb)
+
         freq_plot = pg.PlotWidget()
         volt_plot = pg.PlotWidget()
-        for pw in (freq_plot, volt_plot):
+        spl_plot = pg.PlotWidget()
+        for pw in (freq_plot, volt_plot, spl_plot):
             pw.setBackground(self.palette().color(QtGui.QPalette.Window).name())
             pw.showGrid(x=True, y=True, alpha=0.15)
             pw.getAxis('bottom').setPen(pg.mkPen('#D8DEE9'))
             pw.getAxis('left').setPen(pg.mkPen('#D8DEE9'))
             pw.getAxis('bottom').setTextPen(pg.mkPen('#D8DEE9'))
             pw.getAxis('left').setTextPen(pg.mkPen('#D8DEE9'))
-        freq_plot.addLegend()
-        volt_plot.addLegend()
+            pw.addLegend()
         freq_plot.setLabel('left', 'Dominant Frequency (Hz)')
         freq_plot.setLabel('bottom', 'Pulse Time (s)')
-        volt_plot.setLabel('left', 'RMS Voltage (V)')
+        volt_plot.setLabel('left', 'Measured Value')
         volt_plot.setLabel('bottom', 'Pulse Time (s)')
+        spl_plot.setLabel('left', 'SPL (dB re 1µPa)')
+        spl_plot.setLabel('bottom', 'Pulse Time (s)')
 
         ch_map = {}
         for entry in results:
             ch = int(entry.get('channel_index', 0))
             ch_map.setdefault(ch, []).append(entry)
 
-        palette = list((getattr(self, 'color_options', None) or {'Teal': '#03DFE2'}).values())
-        for idx, ch in enumerate(sorted(ch_map.keys())):
-            items = sorted(ch_map[ch], key=lambda r: r.get('pulse_time', 0.0))
-            t = np.asarray([float(r.get('pulse_time', 0.0)) for r in items], dtype=np.float64)
-            f = np.asarray([float(r.get('dom_freq', 0.0)) for r in items], dtype=np.float64)
-            vr = np.asarray([float(r.get('rms_voltage', 0.0)) for r in items], dtype=np.float64)
-            col = palette[idx % len(palette)] if palette else self.graph_color
-            pen = pg.mkPen(col, width=2)
-            symbol_brush = pg.mkBrush(col)
-            freq_plot.plot(t, f, pen=pen, symbol='o', symbolSize=6, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
-            volt_plot.plot(t, vr, pen=pen, symbol='o', symbolSize=6, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+        def _channel_color(base_hex, idx, count):
+            if count <= 1:
+                return base_hex
+            try:
+                amt = 0.10 + 0.45 * (idx / max(1, count - 1))
+                return lighten_color(base_hex, amt)
+            except Exception:
+                return base_hex
+
+        def _refresh_trend_plots():
+            freq_plot.clear()
+            volt_plot.clear()
+            spl_plot.clear()
+            freq_plot.addLegend()
+            volt_plot.addLegend()
+            spl_plot.addLegend()
+            show_markers = marker_cb.isChecked()
+            n_ch = len(ch_map)
+            for idx, ch in enumerate(sorted(ch_map.keys())):
+                items = sorted(ch_map[ch], key=lambda r: r.get('pulse_time', 0.0))
+                t = np.asarray([float(r.get('pulse_time', 0.0)) for r in items], dtype=np.float64)
+                f = np.asarray([float(r.get('dom_freq', 0.0)) for r in items], dtype=np.float64)
+                vr = np.asarray([float(r.get('display_rms', r.get('rms_voltage', 0.0))) for r in items], dtype=np.float64)
+                col = _channel_color(self.graph_color, idx, n_ch)
+                pen = pg.mkPen(col, width=2)
+                symbol = 'o' if show_markers else None
+                symbol_size = 6 if show_markers else 0
+                symbol_brush = pg.mkBrush(col)
+                spl_vals = np.asarray([np.nan if r.get('spl_value') is None else float(r.get('spl_value')) for r in items], dtype=np.float64)
+                freq_plot.plot(t, f, pen=pen, symbol=symbol, symbolSize=symbol_size, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+                volt_plot.plot(t, vr, pen=pen, symbol=symbol, symbolSize=symbol_size, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+                mask = np.isfinite(spl_vals)
+                if np.any(mask):
+                    spl_plot.plot(t[mask], spl_vals[mask], pen=pen, symbol=symbol, symbolSize=symbol_size, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+
+        marker_cb.toggled.connect(lambda _checked: _refresh_trend_plots())
+        _refresh_trend_plots()
 
         graph_layout.addWidget(freq_plot, 1)
         graph_layout.addWidget(volt_plot, 1)
+        graph_layout.addWidget(spl_plot, 1)
         v.addWidget(graph_box, 2)
 
         h = QtWidgets.QHBoxLayout()
