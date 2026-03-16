@@ -5102,16 +5102,74 @@ class MeasurementToolsMixin:
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        # ── Populate File & Method ─────────────────────────────────────────
-        files = [r[0] for r in cur.execute(
-            "SELECT DISTINCT file_name FROM measurements ORDER BY file_name")]
+        # ── Populate File & Method (project-scoped when available) ────────
+        project_name = (getattr(self, "current_project_name", None) or "").strip()
+
+        if project_name:
+            files = [
+                r[0]
+                for r in cur.execute(
+                    """
+                    SELECT DISTINCT m.file_name
+                    FROM measurements m
+                    JOIN project_items pi
+                      ON pi.file_name = m.file_name
+                     AND pi.method = m.method
+                    JOIN projects p
+                      ON p.id = pi.project_id
+                    WHERE p.name = ?
+                    ORDER BY m.file_name
+                    """,
+                    (project_name,),
+                )
+            ]
+        else:
+            files = [
+                r[0]
+                for r in cur.execute(
+                    "SELECT DISTINCT file_name FROM measurements ORDER BY file_name"
+                )
+            ]
+
         file_cb.addItems(files)
+
         def update_methods(fn):
             method_cb.clear()
-            methods = [m[0] for m in cur.execute(
-                "SELECT DISTINCT method FROM measurements WHERE file_name=? ORDER BY id", (fn,))]
+            if not fn:
+                generate_btn.setEnabled(False)
+                return
+
+            if project_name:
+                methods = [
+                    m[0]
+                    for m in cur.execute(
+                        """
+                        SELECT DISTINCT m.method
+                        FROM measurements m
+                        JOIN project_items pi
+                          ON pi.file_name = m.file_name
+                         AND pi.method = m.method
+                        JOIN projects p
+                          ON p.id = pi.project_id
+                        WHERE p.name = ?
+                          AND m.file_name = ?
+                        ORDER BY m.method
+                        """,
+                        (project_name, fn),
+                    )
+                ]
+            else:
+                methods = [
+                    m[0]
+                    for m in cur.execute(
+                        "SELECT DISTINCT method FROM measurements WHERE file_name=? ORDER BY id",
+                        (fn,),
+                    )
+                ]
+
             method_cb.addItems(methods)
             generate_btn.setEnabled(False)
+
         file_cb.currentTextChanged.connect(update_methods)
         if files:
             update_methods(files[0])
