@@ -3973,7 +3973,15 @@ class ModellingToolsMixin:
         - CTD panel: use active CTD or load any saved CTD from sqlite
         """
         from PyQt5 import QtWidgets, QtCore
-        import numpy as np, os, json, ast, sqlite3, csv
+        import numpy as np, os, re, json, ast, sqlite3, csv
+
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Project Required",
+                "Please select a project before opening Wenz Curves.",
+            )
+            return
 
         # -------- SciPy Welch (fallback) ----------
         try:
@@ -4406,8 +4414,7 @@ class ModellingToolsMixin:
             if ship_cb.isChecked(): comps.append(Ns); labels.append("Shipping")
             if wind_cb.isChecked(): comps.append(Nw); labels.append("Wind/Weather")
             if therm_cb.isChecked(): comps.append(Nth); labels.append("Thermal")
-            if not comps: comps, labels = [Nt, Ns, Nw, Nth], ["Turbulence","Shipping","Wind/Weather","Thermal"]
-            Ntot = _logsum_db(*comps) + off
+            Ntot = (_logsum_db(*comps) + off) if comps else None
 
             meas = []
             source_mode = meas_source_cb.currentText() if 'meas_source_cb' in locals() else 'WAV PSD'
@@ -4552,7 +4559,8 @@ class ModellingToolsMixin:
             ax = axes["main"]; cols = _component_colors()
             for L, lab in zip(comps, labels):
                 ax.plot(fHz, L, lw=1.6, label=lab, color=cols.get(lab))
-            ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
+            if Ntot is not None:
+                ax.plot(fHz, Ntot, lw=2.2, label="Total (log-sum)", color=cols.get("Total (log-sum)"))
             if meas is not None:
                 for idx, entry in enumerate(meas):
                     color = cols.get("Measured PSD")
@@ -4587,6 +4595,39 @@ class ModellingToolsMixin:
             canvas.draw()
 
         # Save (Color/B&W; legend to the right)
+        def _safe_name(text):
+            base = (text or "current_file").strip()
+            base = re.sub(r"[^\w\-. ]+", "_", base)
+            return base or "current_file"
+
+        def _selected_file_label():
+            selected = spl_file_cb.currentData() if 'spl_file_cb' in locals() else None
+            if selected:
+                return os.path.basename(str(selected))
+            if meas_path.get("path"):
+                return os.path.basename(meas_path["path"])
+            current = getattr(self, "file_name", None) or "current_file"
+            return os.path.basename(str(current))
+
+        def _wenz_export_dir():
+            root = None
+            if hasattr(self, "_project_subdir"):
+                try:
+                    root = self._project_subdir("wenz_curves")
+                except Exception:
+                    root = None
+            if not root:
+                QtWidgets.QMessageBox.warning(
+                    dlg,
+                    "Export Error",
+                    "Unable to resolve the selected project's export folder.",
+                )
+                return None
+
+            file_dir = os.path.join(root, _safe_name(_selected_file_label()))
+            os.makedirs(file_dir, exist_ok=True)
+            return file_dir
+
         def _choose_save_style(parent):
             choice, ok = QtWidgets.QInputDialog.getItem(
                 parent, "Save Plot", "Style:", ["Color (theme)", "Black & White (print)"], 0, False
@@ -4624,7 +4665,8 @@ class ModellingToolsMixin:
             styles = ["-", "--", "-.", ":", (0, (5, 1, 1, 1))]
             for i, (L, lab) in enumerate(zip(comps, labels)):
                 ax_bw.plot(fHz, L, linestyle=styles[i % len(styles)], color="black", lw=1.8, label=lab)
-            ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
+            if Ntot is not None:
+                ax_bw.plot(fHz, Ntot, linestyle="-", color="black", lw=2.4, label="Total (log-sum)")
             if meas is not None:
                 for entry in meas:
                     ax_bw.plot(entry["f"], entry["L"], linestyle="-", color="black", lw=2.0,
@@ -4646,31 +4688,41 @@ class ModellingToolsMixin:
         def _save_plot():
             style = _choose_save_style(dlg)
             if style is None: return
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Plot", "", "PNG (*.png);;JPEG (*.jpg)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_{style}_{stamp}.png")
             if style == "color":
                 _plot(); _make_legend_outside(axes["main"], fig, on_white=False)
                 fig.savefig(p, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight")
                 _plot()
             else:
                 _render_bw_and_save(p)
+            QtWidgets.QMessageBox.information(dlg, "Saved", f"Plot saved to:\n{p}")
 
         def _export_csv():
             res = _compute_all()
             if res is None: return
             fHz, labels, comps, Ntot, meas, sea_state_totals = res
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export CSV", "", "CSV (*.csv)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_data_{stamp}.csv")
             with open(p, "w", newline="") as fh:
                 w = csv.writer(fh)
-                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + ["Total_dB"]
+                total_cols = ["Total_dB"] if Ntot is not None else []
+                header = ["f_Hz"] + [f"{lab}_dB" for lab in labels] + total_cols
                 if meas is not None:
                     header += [f"Measured_{entry['label']}_dB" for entry in meas]
                 if sea_state_totals:
                     header += [f"Total_SS{ss}_dB" for ss in sorted(sea_state_totals.keys())]
                 w.writerow(header)
                 for i in range(len(fHz)):
-                    row = [fHz[i]] + [col[i] for col in comps] + [Ntot[i]]
+                    row = [fHz[i]] + [col[i] for col in comps]
+                    if Ntot is not None:
+                        row.append(Ntot[i])
                     if meas is not None:
                         row.extend([entry["L"][i] for entry in meas])
                     if sea_state_totals:
@@ -4682,6 +4734,7 @@ class ModellingToolsMixin:
                     w.writerow([]); w.writerow(["Depth_m", "SoundSpeed_m_s"])
                     for d, c in zip(prof["depth_m"], prof["sound_speed_m_s"]):
                         w.writerow([d, c])
+            QtWidgets.QMessageBox.information(dlg, "Exported", f"CSV saved to:\n{p}")
 
         # Status text
         def _update_ctd_status():
