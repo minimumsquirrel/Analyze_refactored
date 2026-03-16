@@ -1431,7 +1431,7 @@ class MainWindow(
         self.fft_start_time = 0.0
 
         # time scaling for sliders (avoid 32-bit overflow)
-        self.TIME_MULTIPLIER = 1000
+        self.TIME_MULTIPLIER = 100000
         #self.load_yamnet() 
         
         init_db()
@@ -8805,10 +8805,13 @@ class MainWindow(
             except Exception:
                 pass
             return
+        if win_sec < 0.00001:
+            QtWidgets.QMessageBox.warning(self, 'Error', 'FFT window length must be at least 0.00001 s.')
+            return
         self.fft_window_length = win_sec
 
         try:
-            tmul = int(getattr(self, 'TIME_MULTIPLIER', 1000))
+            tmul = int(getattr(self, 'TIME_MULTIPLIER', 100000))
             t0 = self.fft_time_slider.value() / float(tmul)
         except Exception:
             t0 = 0.0
@@ -9061,11 +9064,13 @@ class MainWindow(
         fft_layout.addWidget(self.analyze_voltage_button)
 
         self.scroll_step_entry = QtWidgets.QLineEdit("0.001")
+        self.scroll_step_entry.setValidator(QtGui.QDoubleValidator(0.00001, 1e9, 8, self.scroll_step_entry))
         self.scroll_step_entry.setFixedWidth(70)
         fft_layout.addWidget(QtWidgets.QLabel("Scroll (s):"))
         fft_layout.addWidget(self.scroll_step_entry)
 
         self.fft_length_entry = QtWidgets.QLineEdit("1.0")
+        self.fft_length_entry.setValidator(QtGui.QDoubleValidator(0.00001, 1e9, 8, self.fft_length_entry))
         self.fft_length_entry.setFixedWidth(70)
         fft_layout.addWidget(QtWidgets.QLabel("Window (s):"))
         fft_layout.addWidget(self.fft_length_entry)
@@ -9631,7 +9636,7 @@ class MainWindow(
             return
 
         INT_MAX = 2_147_483_647
-        TIME_MULTIPLIER = int(getattr(self, "TIME_MULTIPLIER", 1000))
+        TIME_MULTIPLIER = int(getattr(self, "TIME_MULTIPLIER", 100000))
 
         total_duration = self.total_frames / float(sr)  # seconds
         win = float(getattr(self, "fft_window_length", 0.0))
@@ -9734,14 +9739,14 @@ class MainWindow(
             return (n / float(sr)) if (sr > 0 and n > 0) else 0.0
 
         def _clamp_to_slider(slider, secs):
-            tmul = float(getattr(self, "TIME_MULTIPLIER", 1000))
+            tmul = float(getattr(self, "TIME_MULTIPLIER", 100000))
             v = int(round(secs * tmul))
             v = max(slider.minimum(), min(slider.maximum(), v))
             slider.setValue(v)
 
         handled = False
         td = _total_duration()
-        tmul = float(getattr(self, "TIME_MULTIPLIER", 1000))
+        tmul = float(getattr(self, "TIME_MULTIPLIER", 100000))
 
         # ——————————————————————————————————
         # 1) FFT mode (main tab)
@@ -9752,6 +9757,7 @@ class MainWindow(
                 step = float(step_txt.text()) if step_txt is not None else 1.0
             except Exception:
                 step = 1.0
+            step = max(0.00001, step)
 
             # current start and max start (so the window fits)
             win = float(getattr(self, "fft_window_length", 1.0) or 1.0)
@@ -9897,6 +9903,9 @@ class MainWindow(
         except ValueError:
             QtWidgets.QMessageBox.critical(self, "Error", "Invalid FFT window length value.")
             return
+        if window_length < 0.00001:
+            QtWidgets.QMessageBox.critical(self, "Error", "FFT window length must be at least 0.00001 s.")
+            return
         try:
             start_time = self.fft_time_slider.value() / self.TIME_MULTIPLIER
         except ValueError:
@@ -9989,6 +9998,7 @@ class MainWindow(
             self.filter_checkbox.isChecked(),
             screenshot_filepath
         )
+
     def auto_analyze_pulses(self):
         if self.full_data is None or self.pulse_indices.size == 0:
             QtWidgets.QMessageBox.critical(self, "Error", "No pulses available. Please use 'Find Pulse' first.")
@@ -9998,104 +10008,352 @@ class MainWindow(
         except ValueError:
             QtWidgets.QMessageBox.critical(self, "Error", "Invalid FFT window length value.")
             return
+        if window_length < 0.00001:
+            QtWidgets.QMessageBox.critical(self, "Error", "FFT window length must be at least 0.00001 s.")
+            return
+
+        try:
+            threshold = float(self.pulse_threshold_entry.text())
+        except ValueError:
+            threshold = 0.0
 
         start_index = self.current_pulse_index if self.current_pulse_index is not None else 0
-        current_pulse_time = self.full_time[self.pulse_indices[start_index]]
+        current_pulse_time = float(self.full_time[self.pulse_indices[start_index]])
         try:
             current_window_start = self.fft_time_slider.value() / self.TIME_MULTIPLIER
-        except:
+        except Exception:
             current_window_start = current_pulse_time
-        offset = current_window_start - current_pulse_time
+        offset_state = {"value": float(current_window_start - current_pulse_time)}
+
+        total_duration = float(self.full_time[-1])
+        data_arr = np.asarray(self.full_data)
+        if data_arr.ndim == 1:
+            channels_data = [data_arr]
+        else:
+            if data_arr.shape[0] == len(self.full_time):
+                channels_data = [data_arr[:, ch] for ch in range(data_arr.shape[1])]
+            else:
+                channels_data = [data_arr[ch, :] for ch in range(data_arr.shape[0])]
+        n_channels = len(channels_data)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Auto Analyze Pulses")
+        dlg.resize(980, 760)
+        vbox = QtWidgets.QVBoxLayout(dlg)
+
+        settings = QtWidgets.QGroupBox("Auto Analyze Settings")
+        form = QtWidgets.QFormLayout(settings)
+
+        mode_combo = QtWidgets.QComboBox()
+        mode_combo.addItems([
+            "Use FFT start time for all channels",
+            "Detect pulse start by min amplitude (per channel)",
+        ])
+        form.addRow("Start mode:", mode_combo)
+
+        win_spin = QtWidgets.QDoubleSpinBox()
+        win_spin.setDecimals(6)
+        win_spin.setRange(0.00001, min(120.0, max(0.00001, total_duration)))
+        win_spin.setSingleStep(0.00001)
+        win_spin.setValue(window_length)
+        form.addRow("Window length (s):", win_spin)
+
+        thresh_spin = QtWidgets.QDoubleSpinBox()
+        thresh_spin.setDecimals(4)
+        thresh_spin.setRange(0.0, 1e12)
+        thresh_spin.setValue(max(0.0, threshold))
+        form.addRow("Min amplitude:", thresh_spin)
+
+        preview_span_spin = QtWidgets.QDoubleSpinBox()
+        preview_span_spin.setDecimals(3)
+        preview_span_spin.setRange(0.05, 20.0)
+        preview_span_spin.setValue(1.5)
+        form.addRow("Preview span (x window):", preview_span_spin)
+
+        preview_pulse_spin = QtWidgets.QSpinBox()
+        preview_pulse_spin.setRange(1, max(1, len(self.pulse_indices)))
+        preview_pulse_spin.setValue(start_index + 1)
+        form.addRow("Preview pulse #:", preview_pulse_spin)
+
+        preview_channel_spin = QtWidgets.QSpinBox()
+        preview_channel_spin.setRange(1, max(1, n_channels))
+        preview_channel_spin.setValue(1)
+        form.addRow("Preview channel #:", preview_channel_spin)
+
+        save_graphs_cb = QtWidgets.QCheckBox("Generate and save graph images")
+        save_graphs_cb.setChecked(True)
+        form.addRow("Screenshots:", save_graphs_cb)
+
+        vbox.addWidget(settings)
+
+        preview_group = QtWidgets.QGroupBox("Selected Window Preview")
+        pv_layout = QtWidgets.QVBoxLayout(preview_group)
+        status_label = QtWidgets.QLabel("Drag the highlighted region to adjust the window start.")
+        pv_layout.addWidget(status_label)
+
+        preview_plot = pg.PlotWidget()
+        bg = self.palette().color(QtGui.QPalette.Window).name()
+        preview_plot.setBackground(bg)
+        preview_plot.showGrid(x=True, y=True, alpha=0.15)
+        preview_plot.getAxis('bottom').setPen(pg.mkPen('#D8DEE9'))
+        preview_plot.getAxis('left').setPen(pg.mkPen('#D8DEE9'))
+        preview_plot.getAxis('bottom').setTextPen(pg.mkPen('#D8DEE9'))
+        preview_plot.getAxis('left').setTextPen(pg.mkPen('#D8DEE9'))
+        preview_plot.setLabel('bottom', 'Time (s)')
+        preview_plot.setLabel('left', 'Amplitude')
+        pv_layout.addWidget(preview_plot, 1)
+        vbox.addWidget(preview_group, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_run = QtWidgets.QPushButton("Run Auto Analyze")
+        btn_cancel = QtWidgets.QPushButton("Cancel")
+        btn_row.addStretch(1)
+        btn_row.addWidget(btn_run)
+        btn_row.addWidget(btn_cancel)
+        vbox.addLayout(btn_row)
+
+        state = {
+            "preview_index": start_index,
+            "preview_channel": 0,
+            "window_start": max(0.0, min(total_duration, current_window_start)),
+        }
+
+        region = pg.LinearRegionItem(
+            values=(state["window_start"], state["window_start"] + win_spin.value()),
+            brush=pg.mkBrush(QtGui.QColor(lighten_color(self.graph_color, 0.4) + "77")),
+            pen=pg.mkPen(lighten_color(self.graph_color, 0.4), width=1.5),
+            movable=True,
+        )
+        preview_plot.addItem(region)
+
+        def _pulse_time(i):
+            return float(self.full_time[self.pulse_indices[i]])
+
+        def _plot_preview():
+            preview_plot.clear()
+            pulse_time = _pulse_time(state["preview_index"])
+            channel_data = np.asarray(channels_data[state["preview_channel"]])
+
+            ws = max(0.0, min(state["window_start"], total_duration - win_spin.value()))
+            we = min(total_duration, ws + win_spin.value())
+            region.setRegion((ws, we))
+
+            # Draw enough context around the selected FFT window so the full trace is visible.
+            span_mult = max(0.05, preview_span_spin.value())
+            context_pad = max(0.0, (span_mult - 1.0) * (we - ws) * 0.5)
+            plot_start = max(0.0, ws - context_pad)
+            plot_end = min(total_duration, we + context_pad)
+            if plot_end <= plot_start:
+                return
+
+            s_idx = max(0, int(plot_start * self.sample_rate))
+            e_idx = min(len(channel_data), int(plot_end * self.sample_rate))
+            if e_idx <= s_idx:
+                return
+
+            t = np.linspace(plot_start, plot_end, e_idx - s_idx, endpoint=False)
+            y_plot = np.asarray(channel_data[s_idx:e_idx])
+            preview_plot.plot(t, y_plot, pen=pg.mkPen(self.graph_color, width=1.2))
+
+            pulse_line = pg.InfiniteLine(
+                pos=pulse_time,
+                angle=90,
+                pen=pg.mkPen('#FFD166', width=1.0, style=QtCore.Qt.DashLine),
+            )
+            preview_plot.addItem(pulse_line)
+            preview_plot.addItem(region)
+
+            # Keep X aligned with the drawn data extent and Y scaled to visible amplitude.
+            preview_plot.setXRange(plot_start, plot_end, padding=0.0)
+            yvis = np.asarray(y_plot, dtype=np.float64)
+            if yvis.size > 0:
+                ymin = float(np.nanmin(yvis))
+                ymax = float(np.nanmax(yvis))
+                if not np.isfinite(ymin) or not np.isfinite(ymax):
+                    ymin, ymax = -1.0, 1.0
+                if ymax <= ymin:
+                    base = max(1.0, abs(ymax))
+                    pad = base * 0.10
+                else:
+                    pad = (ymax - ymin) * 0.12
+                preview_plot.setYRange(ymin - pad, ymax + pad, padding=0.0)
+
+            status_label.setText(
+                f"Preview pulse {state['preview_index'] + 1}/{len(self.pulse_indices)} · "
+                f"channel {state['preview_channel'] + 1}/{n_channels} · "
+                f"window {ws:.6f}s → {we:.6f}s"
+            )
+
+        def _sync_region_from_mode():
+            pulse_time = _pulse_time(state["preview_index"])
+            ws = max(0.0, pulse_time + offset_state["value"])
+            if mode_combo.currentIndex() == 1:
+                channel_data = np.asarray(channels_data[state["preview_channel"]])
+                search_half = max(win_spin.value(), 0.02)
+                s_idx = max(0, int((ws - search_half) * self.sample_rate))
+                e_idx = min(len(channel_data), int((ws + search_half) * self.sample_rate))
+                if e_idx > s_idx:
+                    hits = np.where(np.abs(channel_data[s_idx:e_idx]) >= thresh_spin.value())[0]
+                    if hits.size > 0:
+                        ws = (s_idx + int(hits[0])) / float(self.sample_rate)
+            state["window_start"] = max(0.0, min(ws, total_duration - win_spin.value()))
+            _plot_preview()
+
+        def _region_changed():
+            left, right = region.getRegion()
+            width = max(0.00001, right - left)
+            if abs(width - win_spin.value()) > 1e-9:
+                win_spin.blockSignals(True)
+                win_spin.setValue(width)
+                win_spin.blockSignals(False)
+            state["window_start"] = max(0.0, min(left, total_duration - win_spin.value()))
+            pulse_time = _pulse_time(state["preview_index"])
+            offset_state["value"] = state["window_start"] - pulse_time
+            _plot_preview()
+
+        region.sigRegionChangeFinished.connect(_region_changed)
+        win_spin.valueChanged.connect(lambda _v: _plot_preview())
+        preview_span_spin.valueChanged.connect(lambda _v: _plot_preview())
+        mode_combo.currentIndexChanged.connect(lambda _v: _sync_region_from_mode())
+        thresh_spin.valueChanged.connect(lambda _v: _sync_region_from_mode())
+
+        def _preview_pulse_changed(v):
+            state["preview_index"] = max(0, min(len(self.pulse_indices) - 1, int(v) - 1))
+            _sync_region_from_mode()
+
+        def _preview_channel_changed(v):
+            state["preview_channel"] = max(0, min(n_channels - 1, int(v) - 1))
+            _sync_region_from_mode()
+
+        preview_pulse_spin.valueChanged.connect(_preview_pulse_changed)
+        preview_channel_spin.valueChanged.connect(_preview_channel_changed)
+
+        _sync_region_from_mode()
 
         results = []
-        total_duration = self.full_time[-1]
 
-        for i in range(start_index, len(self.pulse_indices)):
-            pulse_idx = self.pulse_indices[i]
-            pulse_time = self.full_time[pulse_idx]
-            window_start = max(0.0, pulse_time + offset)
-            if window_start + window_length > total_duration:
-                break
+        def run_analysis():
+            results.clear()
+            wl = float(win_spin.value())
+            use_detect = mode_combo.currentIndex() == 1
+            save_graphs = bool(save_graphs_cb.isChecked())
+            run_dir = ""
+            if save_graphs:
+                base_name = os.path.splitext(os.path.basename(self.file_name))[0] or "audio"
+                run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                project_auto_dir = self._project_subdir("auto_analyze")
+                if project_auto_dir:
+                    run_dir = os.path.join(project_auto_dir, base_name, run_stamp)
+                else:
+                    run_dir = os.path.join(os.path.dirname(self.current_file_path), "analysis", "auto_analyze", base_name, run_stamp)
+                os.makedirs(run_dir, exist_ok=True)
+            for i in range(start_index, len(self.pulse_indices)):
+                pulse_time = _pulse_time(i)
+                for ch, channel_data in enumerate(channels_data):
+                    window_start = max(0.0, pulse_time + offset_state["value"])
+                    if use_detect:
+                        search_half = max(wl, 0.02)
+                        s_idx = max(0, int((window_start - search_half) * self.sample_rate))
+                        e_idx = min(len(channel_data), int((window_start + search_half) * self.sample_rate))
+                        if e_idx <= s_idx:
+                            continue
+                        hits = np.where(np.abs(channel_data[s_idx:e_idx]) >= thresh_spin.value())[0]
+                        if hits.size == 0:
+                            continue
+                        window_start = (s_idx + int(hits[0])) / float(self.sample_rate)
 
-            s_idx = int(window_start * self.sample_rate)
-            e_idx = s_idx + int(window_length * self.sample_rate)
-            if e_idx > len(self.full_data):
-                break
-            segment = self.full_data[s_idx:e_idx]
-            if segment.size == 0:
-                continue
+                    window_start = max(0.0, min(window_start, total_duration - wl))
+                    if window_start + wl > total_duration:
+                        continue
 
-            # FFT & dom freq
-            n = len(segment)
-            nfft = 16 * n
-            fft_result = np.fft.rfft(segment * np.hanning(n), n=nfft)
-            freqs = np.fft.rfftfreq(nfft, d=1/self.sample_rate)
-            dom_freq = self.refine_frequency(fft_result, freqs)
+                    s_idx = int(window_start * self.sample_rate)
+                    e_idx = s_idx + int(wl * self.sample_rate)
+                    segment = np.asarray(channel_data[s_idx:e_idx])
+                    if segment.size < 2:
+                        continue
 
-            # compute RMS voltage
-            if np.issubdtype(self.original_dtype, np.integer):
-                try:
-                    current_max_v = float(self.max_voltage_entry.text())
-                except:
-                    current_max_v = 2.5
-                conv = current_max_v / np.iinfo(self.original_dtype).max
-            else:
-                conv = 1.0
-            rms_voltage = np.sqrt(np.mean((segment * conv) ** 2))
+                    n = len(segment)
+                    nfft = 16 * n
+                    fft_result = np.fft.rfft(segment * np.hanning(n), n=nfft)
+                    freqs = np.fft.rfftfreq(nfft, d=1 / self.sample_rate)
+                    dom_freq = self.refine_frequency(fft_result, freqs)
 
-            # create detailed screenshot at lower DPI
-            padded = 1.0
-            pad_start = max(0, window_start - padded * window_length)
-            pad_end = min(total_duration, window_start + window_length + padded * window_length)
-            p_s = int(pad_start * self.sample_rate)
-            p_e = int(pad_end * self.sample_rate)
-            t_pad = np.linspace(pad_start, pad_end, p_e - p_s, endpoint=False)
+                    if np.issubdtype(self.original_dtype, np.integer):
+                        try:
+                            current_max_v = float(self.max_voltage_entry.text())
+                        except Exception:
+                            current_max_v = 2.5
+                        conv = current_max_v / np.iinfo(self.original_dtype).max
+                    else:
+                        conv = 1.0
+                    rms_voltage = float(np.sqrt(np.mean((segment * conv) ** 2)))
 
-            fig_temp, (ax1, ax2) = plt.subplots(2, 1,
-                                                figsize=(8, 8),
-                                                dpi=80,
-                                                facecolor="#19232D")
-            # waveform + highlight
-            ax1.plot(t_pad, self.full_data[p_s:p_e],
-                     color=self.graph_color, lw=1)
-            ax1.set_facecolor("#19232D")
-            ax1.set_title(f"Padded Waveform {pad_start:.2f}–{pad_end:.2f}s", color="white")
-            ax1.set_xlabel("Time (s)", color="white")
-            ax1.set_ylabel("Amplitude", color="white")
-            ax1.tick_params(colors="white")
-            ax1.axvspan(window_start, window_start + window_length,
-                        color=lighten_color(self.graph_color, 0.4), alpha=0.5)
+                    padded = 1.0
+                    pad_start = max(0.0, window_start - padded * wl)
+                    pad_end = min(total_duration, window_start + wl + padded * wl)
+                    p_s = int(pad_start * self.sample_rate)
+                    p_e = int(pad_end * self.sample_rate)
+                    t_pad = np.linspace(pad_start, pad_end, max(1, p_e - p_s), endpoint=False)
+                    screenshot_path = ""
+                    if save_graphs:
+                        try:
+                            fig_temp, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), dpi=90, facecolor="#19232D")
+                            ax1.plot(t_pad, np.asarray(channel_data[p_s:p_e]), color=self.graph_color, lw=1)
+                            ax1.set_facecolor("#19232D")
+                            ax1.tick_params(colors="white")
+                            ax1.set_title(f"Padded Waveform CH{ch + 1} {pad_start:.2f}–{pad_end:.2f}s", color="white")
+                            ax1.axvspan(window_start, window_start + wl, color=lighten_color(self.graph_color, 0.4), alpha=0.5)
 
-            # FFT panel
-            ax2.plot(freqs, np.abs(fft_result),
-                     color=self.graph_color, lw=1.5)
-            ax2.set_facecolor("#19232D")
-            ax2.set_title(f"FFT (Dom Freq {dom_freq:.2f} Hz)", color="white")
-            ax2.set_xlabel("Frequency (Hz)", color="white")
-            ax2.set_ylabel("Magnitude", color="white")
-            ax2.tick_params(colors="white")
+                            ax2.plot(freqs, np.abs(fft_result), color=self.graph_color, lw=1.5)
+                            ax2.set_facecolor("#19232D")
+                            ax2.tick_params(colors="white")
+                            ax2.set_title(f"FFT (Dom Freq {dom_freq:.2f} Hz)", color="white")
 
-            fig_temp.tight_layout()
-            # save
-            base, _ = os.path.splitext(self.file_name)
-            out_dir = self._project_subdir("screenshots") or os.path.join(os.path.dirname(self.current_file_path), "analysis")
-            os.makedirs(out_dir, exist_ok=True)
-            shot = os.path.join(out_dir,
-                f"{base}_{pad_start:.2f}-{pad_end:.2f}.png")
-            fig_temp.savefig(shot)
-            plt.close(fig_temp)
+                            fig_temp.tight_layout()
+                            shot_name = (
+                                f"{os.path.splitext(os.path.basename(self.file_name))[0]}_"
+                                f"pulse{i + 1:04d}_ch{ch + 1}_{window_start:.6f}-{(window_start + wl):.6f}.png"
+                            )
+                            screenshot_path = os.path.join(run_dir, shot_name)
+                            fig_temp.savefig(screenshot_path)
+                            plt.close(fig_temp)
+                        except Exception:
+                            screenshot_path = ""
 
-            results.append((pulse_time, dom_freq, rms_voltage, window_start, shot))
+                    file_label = self.channel_file_label(ch) if n_channels > 1 else self.file_name
+                    results.append({
+                        "pulse_time": pulse_time,
+                        "dom_freq": float(dom_freq),
+                        "rms_voltage": rms_voltage,
+                        "window_start": float(window_start),
+                        "window_length": wl,
+                        "screenshot": screenshot_path,
+                        "channel_index": ch,
+                        "file_name": file_label,
+                    })
 
-        # show results dialog
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Auto Analysis Results")
-        v = QtWidgets.QVBoxLayout(dlg)
+            dlg.accept()
+
+        btn_run.clicked.connect(run_analysis)
+        btn_cancel.clicked.connect(dlg.reject)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        if not results:
+            QtWidgets.QMessageBox.information(self, "Auto Analysis", "No valid windows were analyzed.")
+            return
+
+        dlg2 = QtWidgets.QDialog(self)
+        dlg2.setWindowTitle("Auto Analysis Results")
+        v = QtWidgets.QVBoxLayout(dlg2)
         txt = QtWidgets.QPlainTextEdit()
         txt.setReadOnly(True)
-        out = "Pulse Time   Dom Freq (Hz)   RMS Voltage (V)\n"
-        for t0, f0, r0, w0, _ in results:
-            out += f"{t0:8.4f}      {f0:8.4f}       {r0:8.4f}\n"
+        out = "Pulse Time   Dom Freq (Hz)   RMS Voltage (V)   Channel\n"
+        for entry in results:
+            out += (
+                f"{entry['pulse_time']:8.4f}      {entry['dom_freq']:8.4f}       "
+                f"{entry['rms_voltage']:8.4f}      {entry['channel_index'] + 1}\n"
+            )
         txt.setPlainText(out)
         v.addWidget(txt)
 
@@ -10107,37 +10365,57 @@ class MainWindow(
         v.addLayout(h)
 
         def keep():
-            self.store_auto_results(results, window_length)
-            # export Excel to parent dir
+            self.store_auto_results(results, float(win_spin.value()))
             base, _ = os.path.splitext(self.file_name)
             parent = os.path.dirname(self.current_file_path)
             if os.path.basename(parent).lower() == "analysis":
                 parent = os.path.dirname(parent)
             excel = os.path.join(parent, f"{base}_auto_analysis.xlsx")
-            pd.DataFrame(results,
-                         columns=["Pulse Time","Dom Freq","RMS","Window Start","Screenshot"]
-            ).to_excel(excel, index=False)
-            dlg.accept()
+            pd.DataFrame(results).to_excel(excel, index=False)
+            dlg2.accept()
 
         btn_keep.clicked.connect(keep)
-        btn_discard.clicked.connect(dlg.reject)
-        dlg.exec_()
+        btn_discard.clicked.connect(dlg2.reject)
+        dlg2.exec_()
 
     def store_auto_results(self, results, window_length):
-        for pt, freq, rms, ws, screenshot in results:
-            self.log_measurement_with_project(
-                self.file_name,
-                "Auto Analysis",
-                freq,
-                ws, ws + window_length,
-                window_length,
-                float(self.max_voltage_entry.text()),
-                float(self.bw_entry.text()),
-                rms,
-                self.filter_checkbox.isChecked(),
-                screenshot
-            )
+        if not results:
+            return
+        if isinstance(results[0], dict):
+            for entry in results:
+                ws = float(entry.get("window_start", 0.0))
+                wl = float(entry.get("window_length", window_length))
+                self.log_measurement_with_project(
+                    entry.get("file_name", self.file_name),
+                    "Auto Analysis",
+                    float(entry.get("dom_freq", 0.0)),
+                    ws,
+                    ws + wl,
+                    wl,
+                    float(self.max_voltage_entry.text()),
+                    float(self.bw_entry.text()),
+                    float(entry.get("rms_voltage", 0.0)),
+                    self.filter_checkbox.isChecked(),
+                    entry.get("screenshot", ""),
+                    channel_index=entry.get("channel_index"),
+                )
+        else:
+            for pt, freq, rms, ws, screenshot in results:
+                self.log_measurement_with_project(
+                    self.file_name,
+                    "Auto Analysis",
+                    freq,
+                    ws,
+                    ws + window_length,
+                    window_length,
+                    float(self.max_voltage_entry.text()),
+                    float(self.bw_entry.text()),
+                    rms,
+                    self.filter_checkbox.isChecked(),
+                    screenshot,
+                )
         QtWidgets.QMessageBox.information(self, "Results Stored", "Auto analysis results stored in the database.")
+
 
     @staticmethod
     def refine_frequency(fft_result, frequencies):
@@ -10232,8 +10510,8 @@ class MainWindow(
         from scipy.io import wavfile
 
         # ---- constants / defaults ----
-        # keep ms resolution to avoid 32-bit overflow on Qt widgets
-        self.TIME_MULTIPLIER = getattr(self, "TIME_MULTIPLIER", 1000)   # ms
+        # use 10µs slider ticks so FFT scroll/window controls support 0.00001 s
+        self.TIME_MULTIPLIER = getattr(self, "TIME_MULTIPLIER", 100000)   # 1e-5 s ticks
         self.fft_window_length = float(getattr(self, "fft_window_length", 1.0))
         self.fft_start_time = float(getattr(self, "fft_start_time", 0.0))
 
