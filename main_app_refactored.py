@@ -8580,6 +8580,7 @@ class MainWindow(
         elif category == "Measurement Tools":
             self.tool_combo.addItems([
                 "Ambient Noise",
+                "Electrical Noise",
                 "Peak Prominences Analysis",
                 "Interval Analysis",
                 "Depth Sounder Analysis",
@@ -8691,6 +8692,8 @@ class MainWindow(
                 self.interval_analysis_popup()
             elif tool == "Ambient Noise":
                 self.ambient_noise_analysis()
+            elif tool == "Electrical Noise":
+                self.electrical_noise_popup()
             elif tool == "Depth Sounder Analysis":
                 self.depth_sounder_popup()
             elif tool == "Slope De-Clipper":
