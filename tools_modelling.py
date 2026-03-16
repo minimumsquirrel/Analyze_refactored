@@ -3973,7 +3973,15 @@ class ModellingToolsMixin:
         - CTD panel: use active CTD or load any saved CTD from sqlite
         """
         from PyQt5 import QtWidgets, QtCore
-        import numpy as np, os, json, ast, sqlite3, csv
+        import numpy as np, os, re, json, ast, sqlite3, csv
+
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Project Required",
+                "Please select a project before opening Wenz Curves.",
+            )
+            return
 
         if not getattr(self, "current_project_name", None):
             QtWidgets.QMessageBox.warning(
@@ -4595,6 +4603,39 @@ class ModellingToolsMixin:
             canvas.draw()
 
         # Save (Color/B&W; legend to the right)
+        def _safe_name(text):
+            base = (text or "current_file").strip()
+            base = re.sub(r"[^\w\-. ]+", "_", base)
+            return base or "current_file"
+
+        def _selected_file_label():
+            selected = spl_file_cb.currentData() if 'spl_file_cb' in locals() else None
+            if selected:
+                return os.path.basename(str(selected))
+            if meas_path.get("path"):
+                return os.path.basename(meas_path["path"])
+            current = getattr(self, "file_name", None) or "current_file"
+            return os.path.basename(str(current))
+
+        def _wenz_export_dir():
+            root = None
+            if hasattr(self, "_project_subdir"):
+                try:
+                    root = self._project_subdir("wenz_curves")
+                except Exception:
+                    root = None
+            if not root:
+                QtWidgets.QMessageBox.warning(
+                    dlg,
+                    "Export Error",
+                    "Unable to resolve the selected project's export folder.",
+                )
+                return None
+
+            file_dir = os.path.join(root, _safe_name(_selected_file_label()))
+            os.makedirs(file_dir, exist_ok=True)
+            return file_dir
+
         def _choose_save_style(parent):
             choice, ok = QtWidgets.QInputDialog.getItem(
                 parent, "Save Plot", "Style:", ["Color (theme)", "Black & White (print)"], 0, False
@@ -4655,21 +4696,28 @@ class ModellingToolsMixin:
         def _save_plot():
             style = _choose_save_style(dlg)
             if style is None: return
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Save Plot", "", "PNG (*.png);;JPEG (*.jpg)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_{style}_{stamp}.png")
             if style == "color":
                 _plot(); _make_legend_outside(axes["main"], fig, on_white=False)
                 fig.savefig(p, dpi=220, facecolor=fig.get_facecolor(), bbox_inches="tight")
                 _plot()
             else:
                 _render_bw_and_save(p)
+            QtWidgets.QMessageBox.information(dlg, "Saved", f"Plot saved to:\n{p}")
 
         def _export_csv():
             res = _compute_all()
             if res is None: return
             fHz, labels, comps, Ntot, meas, sea_state_totals = res
-            p,_ = QtWidgets.QFileDialog.getSaveFileName(dlg, "Export CSV", "", "CSV (*.csv)")
-            if not p: return
+            out_dir = _wenz_export_dir()
+            if not out_dir:
+                return
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            p = os.path.join(out_dir, f"wenz_curves_data_{stamp}.csv")
             with open(p, "w", newline="") as fh:
                 w = csv.writer(fh)
                 total_cols = ["Total_dB"] if Ntot is not None else []
@@ -4694,6 +4742,7 @@ class ModellingToolsMixin:
                     w.writerow([]); w.writerow(["Depth_m", "SoundSpeed_m_s"])
                     for d, c in zip(prof["depth_m"], prof["sound_speed_m_s"]):
                         w.writerow([d, c])
+            QtWidgets.QMessageBox.information(dlg, "Exported", f"CSV saved to:\n{p}")
 
         # Status text
         def _update_ctd_status():
