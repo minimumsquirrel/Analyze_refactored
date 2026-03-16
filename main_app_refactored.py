@@ -10148,10 +10148,12 @@ class MainWindow(
             "window_start": max(0.0, min(total_duration, current_window_start)),
         }
         highlight_color = lighten_color(self.graph_color, 0.25)
+        highlight_qcolor = QtGui.QColor(highlight_color)
+        highlight_qcolor.setAlpha(70)
 
         region = pg.LinearRegionItem(
             values=(state["window_start"], state["window_start"] + win_spin.value()),
-            brush=pg.mkBrush(QtGui.QColor(highlight_color + "33")),
+            brush=pg.mkBrush(highlight_qcolor),
             pen=pg.mkPen(highlight_color, width=1.5),
             movable=True,
         )
