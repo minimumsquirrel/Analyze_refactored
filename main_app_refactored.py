@@ -10345,17 +10345,59 @@ class MainWindow(
 
         dlg2 = QtWidgets.QDialog(self)
         dlg2.setWindowTitle("Auto Analysis Results")
+        dlg2.resize(980, 760)
         v = QtWidgets.QVBoxLayout(dlg2)
+
         txt = QtWidgets.QPlainTextEdit()
         txt.setReadOnly(True)
         out = "Pulse Time   Dom Freq (Hz)   RMS Voltage (V)   Channel\n"
-        for entry in results:
+        for entry in sorted(results, key=lambda r: (r.get("pulse_time", 0.0), r.get("channel_index", 0))):
             out += (
                 f"{entry['pulse_time']:8.4f}      {entry['dom_freq']:8.4f}       "
                 f"{entry['rms_voltage']:8.4f}      {entry['channel_index'] + 1}\n"
             )
         txt.setPlainText(out)
-        v.addWidget(txt)
+        v.addWidget(txt, 1)
+
+        graph_box = QtWidgets.QGroupBox("Trends")
+        graph_layout = QtWidgets.QVBoxLayout(graph_box)
+
+        freq_plot = pg.PlotWidget()
+        volt_plot = pg.PlotWidget()
+        for pw in (freq_plot, volt_plot):
+            pw.setBackground(self.palette().color(QtGui.QPalette.Window).name())
+            pw.showGrid(x=True, y=True, alpha=0.15)
+            pw.getAxis('bottom').setPen(pg.mkPen('#D8DEE9'))
+            pw.getAxis('left').setPen(pg.mkPen('#D8DEE9'))
+            pw.getAxis('bottom').setTextPen(pg.mkPen('#D8DEE9'))
+            pw.getAxis('left').setTextPen(pg.mkPen('#D8DEE9'))
+        freq_plot.addLegend()
+        volt_plot.addLegend()
+        freq_plot.setLabel('left', 'Dominant Frequency (Hz)')
+        freq_plot.setLabel('bottom', 'Pulse Time (s)')
+        volt_plot.setLabel('left', 'RMS Voltage (V)')
+        volt_plot.setLabel('bottom', 'Pulse Time (s)')
+
+        ch_map = {}
+        for entry in results:
+            ch = int(entry.get('channel_index', 0))
+            ch_map.setdefault(ch, []).append(entry)
+
+        palette = list((getattr(self, 'color_options', None) or {'Teal': '#03DFE2'}).values())
+        for idx, ch in enumerate(sorted(ch_map.keys())):
+            items = sorted(ch_map[ch], key=lambda r: r.get('pulse_time', 0.0))
+            t = np.asarray([float(r.get('pulse_time', 0.0)) for r in items], dtype=np.float64)
+            f = np.asarray([float(r.get('dom_freq', 0.0)) for r in items], dtype=np.float64)
+            vr = np.asarray([float(r.get('rms_voltage', 0.0)) for r in items], dtype=np.float64)
+            col = palette[idx % len(palette)] if palette else self.graph_color
+            pen = pg.mkPen(col, width=2)
+            symbol_brush = pg.mkBrush(col)
+            freq_plot.plot(t, f, pen=pen, symbol='o', symbolSize=6, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+            volt_plot.plot(t, vr, pen=pen, symbol='o', symbolSize=6, symbolBrush=symbol_brush, symbolPen=pen, name=f"Ch {ch+1}")
+
+        graph_layout.addWidget(freq_plot, 1)
+        graph_layout.addWidget(volt_plot, 1)
+        v.addWidget(graph_box, 2)
 
         h = QtWidgets.QHBoxLayout()
         btn_keep = QtWidgets.QPushButton("Accept Results")
