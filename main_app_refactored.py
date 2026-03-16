@@ -10129,32 +10129,47 @@ class MainWindow(
             preview_plot.clear()
             pulse_time = _pulse_time(state["preview_index"])
             channel_data = np.asarray(channels_data[state["preview_channel"]])
-            span = max(0.05, preview_span_spin.value()) * max(0.00001, win_spin.value())
-            t0 = max(0.0, pulse_time - span)
-            t1 = min(total_duration, pulse_time + span)
-            s_idx = max(0, int(t0 * self.sample_rate))
-            e_idx = min(len(channel_data), int(t1 * self.sample_rate))
-            if e_idx <= s_idx:
-                return
-            t = np.linspace(t0, t1, e_idx - s_idx, endpoint=False)
-            preview_plot.plot(t, channel_data[s_idx:e_idx], pen=pg.mkPen(self.graph_color, width=1.2))
-            pulse_line = pg.InfiniteLine(pos=pulse_time, angle=90, pen=pg.mkPen('#FFD166', width=1.0, style=QtCore.Qt.DashLine))
-            preview_plot.addItem(pulse_line)
-            preview_plot.addItem(region)
+
             ws = max(0.0, min(state["window_start"], total_duration - win_spin.value()))
             we = min(total_duration, ws + win_spin.value())
             region.setRegion((ws, we))
 
-            # Match popup viewport to current FFT-tab start/end selection
-            preview_plot.setXRange(ws, we, padding=0.0)
-            y0 = max(0, int(ws * self.sample_rate))
-            y1 = min(len(channel_data), int(we * self.sample_rate))
-            if y1 > y0:
-                yseg = np.asarray(channel_data[y0:y1], dtype=np.float64)
-                ymin = float(np.min(yseg))
-                ymax = float(np.max(yseg))
+            # Draw enough context around the selected FFT window so the full trace is visible.
+            span_mult = max(0.05, preview_span_spin.value())
+            context_pad = max(0.0, (span_mult - 1.0) * (we - ws) * 0.5)
+            plot_start = max(0.0, ws - context_pad)
+            plot_end = min(total_duration, we + context_pad)
+            if plot_end <= plot_start:
+                return
+
+            s_idx = max(0, int(plot_start * self.sample_rate))
+            e_idx = min(len(channel_data), int(plot_end * self.sample_rate))
+            if e_idx <= s_idx:
+                return
+
+            t = np.linspace(plot_start, plot_end, e_idx - s_idx, endpoint=False)
+            y_plot = np.asarray(channel_data[s_idx:e_idx])
+            preview_plot.plot(t, y_plot, pen=pg.mkPen(self.graph_color, width=1.2))
+
+            pulse_line = pg.InfiniteLine(
+                pos=pulse_time,
+                angle=90,
+                pen=pg.mkPen('#FFD166', width=1.0, style=QtCore.Qt.DashLine),
+            )
+            preview_plot.addItem(pulse_line)
+            preview_plot.addItem(region)
+
+            # Keep X aligned with the drawn data extent and Y scaled to visible amplitude.
+            preview_plot.setXRange(plot_start, plot_end, padding=0.0)
+            yvis = np.asarray(y_plot, dtype=np.float64)
+            if yvis.size > 0:
+                ymin = float(np.nanmin(yvis))
+                ymax = float(np.nanmax(yvis))
+                if not np.isfinite(ymin) or not np.isfinite(ymax):
+                    ymin, ymax = -1.0, 1.0
                 if ymax <= ymin:
-                    pad = max(1.0, abs(ymax) * 0.05)
+                    base = max(1.0, abs(ymax))
+                    pad = base * 0.10
                 else:
                     pad = (ymax - ymin) * 0.12
                 preview_plot.setYRange(ymin - pad, ymax + pad, padding=0.0)
