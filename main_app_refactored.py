@@ -1431,7 +1431,7 @@ class MainWindow(
         self.fft_start_time = 0.0
 
         # time scaling for sliders (avoid 32-bit overflow)
-        self.TIME_MULTIPLIER = 1000
+        self.TIME_MULTIPLIER = 100000
         #self.load_yamnet() 
         
         init_db()
@@ -8805,10 +8805,13 @@ class MainWindow(
             except Exception:
                 pass
             return
+        if win_sec < 0.00001:
+            QtWidgets.QMessageBox.warning(self, 'Error', 'FFT window length must be at least 0.00001 s.')
+            return
         self.fft_window_length = win_sec
 
         try:
-            tmul = int(getattr(self, 'TIME_MULTIPLIER', 1000))
+            tmul = int(getattr(self, 'TIME_MULTIPLIER', 100000))
             t0 = self.fft_time_slider.value() / float(tmul)
         except Exception:
             t0 = 0.0
@@ -9061,11 +9064,13 @@ class MainWindow(
         fft_layout.addWidget(self.analyze_voltage_button)
 
         self.scroll_step_entry = QtWidgets.QLineEdit("0.001")
+        self.scroll_step_entry.setValidator(QtGui.QDoubleValidator(0.00001, 1e9, 8, self.scroll_step_entry))
         self.scroll_step_entry.setFixedWidth(70)
         fft_layout.addWidget(QtWidgets.QLabel("Scroll (s):"))
         fft_layout.addWidget(self.scroll_step_entry)
 
         self.fft_length_entry = QtWidgets.QLineEdit("1.0")
+        self.fft_length_entry.setValidator(QtGui.QDoubleValidator(0.00001, 1e9, 8, self.fft_length_entry))
         self.fft_length_entry.setFixedWidth(70)
         fft_layout.addWidget(QtWidgets.QLabel("Window (s):"))
         fft_layout.addWidget(self.fft_length_entry)
@@ -9631,7 +9636,7 @@ class MainWindow(
             return
 
         INT_MAX = 2_147_483_647
-        TIME_MULTIPLIER = int(getattr(self, "TIME_MULTIPLIER", 1000))
+        TIME_MULTIPLIER = int(getattr(self, "TIME_MULTIPLIER", 100000))
 
         total_duration = self.total_frames / float(sr)  # seconds
         win = float(getattr(self, "fft_window_length", 0.0))
@@ -9734,14 +9739,14 @@ class MainWindow(
             return (n / float(sr)) if (sr > 0 and n > 0) else 0.0
 
         def _clamp_to_slider(slider, secs):
-            tmul = float(getattr(self, "TIME_MULTIPLIER", 1000))
+            tmul = float(getattr(self, "TIME_MULTIPLIER", 100000))
             v = int(round(secs * tmul))
             v = max(slider.minimum(), min(slider.maximum(), v))
             slider.setValue(v)
 
         handled = False
         td = _total_duration()
-        tmul = float(getattr(self, "TIME_MULTIPLIER", 1000))
+        tmul = float(getattr(self, "TIME_MULTIPLIER", 100000))
 
         # ——————————————————————————————————
         # 1) FFT mode (main tab)
@@ -9752,6 +9757,7 @@ class MainWindow(
                 step = float(step_txt.text()) if step_txt is not None else 1.0
             except Exception:
                 step = 1.0
+            step = max(0.00001, step)
 
             # current start and max start (so the window fits)
             win = float(getattr(self, "fft_window_length", 1.0) or 1.0)
@@ -9897,6 +9903,9 @@ class MainWindow(
         except ValueError:
             QtWidgets.QMessageBox.critical(self, "Error", "Invalid FFT window length value.")
             return
+        if window_length < 0.00001:
+            QtWidgets.QMessageBox.critical(self, "Error", "FFT window length must be at least 0.00001 s.")
+            return
         try:
             start_time = self.fft_time_slider.value() / self.TIME_MULTIPLIER
         except ValueError:
@@ -9997,6 +10006,9 @@ class MainWindow(
             window_length = float(self.fft_length_entry.text())
         except ValueError:
             QtWidgets.QMessageBox.critical(self, "Error", "Invalid FFT window length value.")
+            return
+        if window_length < 0.00001:
+            QtWidgets.QMessageBox.critical(self, "Error", "FFT window length must be at least 0.00001 s.")
             return
 
         start_index = self.current_pulse_index if self.current_pulse_index is not None else 0
@@ -10232,8 +10244,8 @@ class MainWindow(
         from scipy.io import wavfile
 
         # ---- constants / defaults ----
-        # keep ms resolution to avoid 32-bit overflow on Qt widgets
-        self.TIME_MULTIPLIER = getattr(self, "TIME_MULTIPLIER", 1000)   # ms
+        # use 10µs slider ticks so FFT scroll/window controls support 0.00001 s
+        self.TIME_MULTIPLIER = getattr(self, "TIME_MULTIPLIER", 100000)   # 1e-5 s ticks
         self.fft_window_length = float(getattr(self, "fft_window_length", 1.0))
         self.fft_start_time = float(getattr(self, "fft_start_time", 0.0))
 
