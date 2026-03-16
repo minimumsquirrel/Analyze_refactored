@@ -9766,6 +9766,23 @@ class MainWindow(
             cur = self.fft_time_slider.value() / tmul
             max_start = max(0.0, td - max(0.0, win))
 
+            # Preset micro-scroll keys in FFT mode:
+            # U=0.1s, I=0.01s, O=0.001s, P=0.0001s (Shift reverses direction)
+            preset_steps = {
+                QtCore.Qt.Key_U: 0.1,
+                QtCore.Qt.Key_I: 0.01,
+                QtCore.Qt.Key_O: 0.001,
+                QtCore.Qt.Key_P: 0.0001,
+            }
+            if event.key() in preset_steps:
+                jump = preset_steps[event.key()]
+                direction = -1.0 if (event.modifiers() & QtCore.Qt.ShiftModifier) else 1.0
+                new_time = cur + (direction * jump)
+                new_time = max(0.0, min(max_start, new_time))
+                _clamp_to_slider(self.fft_time_slider, new_time)
+                if hasattr(self, "update_fft_plot"): self.update_fft_plot()
+                event.accept(); return
+
             if event.key() in (QtCore.Qt.Key_Left, QtCore.Qt.Key_A):
                 new_time = max(0.0, cur - step)
                 _clamp_to_slider(self.fft_time_slider, new_time)
@@ -10002,6 +10019,13 @@ class MainWindow(
         )
 
     def auto_analyze_pulses(self):
+        if not getattr(self, "current_project_name", None):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Select Project",
+                "Please select a project before running Auto Analyze Pulses.",
+            )
+            return
         if self.full_data is None or self.pulse_indices.size == 0:
             QtWidgets.QMessageBox.critical(self, "Error", "No pulses available. Please use 'Find Pulse' first.")
             return
@@ -10165,7 +10189,7 @@ class MainWindow(
             pulse_line = pg.InfiniteLine(
                 pos=pulse_time,
                 angle=90,
-                pen=pg.mkPen('#FFD166', width=1.0, style=QtCore.Qt.DashLine),
+                pen=pg.mkPen(lighten_color(self.graph_color, 0.45), width=1.0, style=QtCore.Qt.DashLine),
             )
             preview_plot.addItem(pulse_line)
             preview_plot.addItem(region)
