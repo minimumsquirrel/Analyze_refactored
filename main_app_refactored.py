@@ -10387,7 +10387,7 @@ class MainWindow(
         graph_layout = QtWidgets.QVBoxLayout(graph_box)
 
         marker_cb = QtWidgets.QCheckBox("Show point markers")
-        marker_cb.setChecked(True)
+        marker_cb.setChecked(False)
         graph_layout.addWidget(marker_cb)
 
         freq_plot = pg.PlotWidget()
