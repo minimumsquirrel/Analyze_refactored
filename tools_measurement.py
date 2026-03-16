@@ -5463,6 +5463,8 @@ class MeasurementToolsMixin:
         import os
         import re
         import csv
+        import json
+        import sqlite3
         import numpy as np
         from datetime import datetime
         from PyQt5 import QtWidgets
@@ -5552,6 +5554,167 @@ class MeasurementToolsMixin:
             os.makedirs(out, exist_ok=True)
             return out
 
+        def _project_id():
+            pid = getattr(self, "current_project_id", None)
+            if isinstance(pid, int):
+                return pid
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if not pname:
+                return None
+            try:
+                conn = sqlite3.connect(DB_FILENAME)
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM projects WHERE name=?", (pname,))
+                row = cur.fetchone()
+                conn.close()
+                return int(row[0]) if row else None
+            except Exception:
+                return None
+
+        def _ensure_noise_tables(conn):
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS electrical_noise_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER,
+                    project_name TEXT,
+                    file_name TEXT,
+                    units TEXT,
+                    fmin REAL,
+                    fmax REAL,
+                    vrms_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS electrical_noise_points (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER,
+                    channel_label TEXT,
+                    freq_json TEXT,
+                    value_json TEXT,
+                    FOREIGN KEY(run_id) REFERENCES electrical_noise_runs(id) ON DELETE CASCADE
+                )
+            """)
+            conn.commit()
+
+        def _save_run_to_db():
+            if plot_state["f"] is None or not plot_state["curves"]:
+                QtWidgets.QMessageBox.information(dlg, "Save Run", "Compute a run first.")
+                return
+            pid = _project_id()
+            pname = (getattr(self, "current_project_name", None) or "").strip()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project before saving.")
+                return
+
+            try:
+                fmin = float(fmin_edit.text())
+            except Exception:
+                fmin = 0.0
+            try:
+                fmax = float(fmax_edit.text())
+            except Exception:
+                fmax = fs / 2.0
+
+            fname = _current_file_stem()
+            vrms_map = {lab: v for lab, v in zip(plot_state["labels"], plot_state["vrms"])}
+            conn = sqlite3.connect(DB_FILENAME)
+            _ensure_noise_tables(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO electrical_noise_runs(project_id, project_name, file_name, units, fmin, fmax, vrms_json)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (pid, pname, fname, units_cb.currentText().strip(), fmin, fmax, json.dumps(vrms_map)),
+            )
+            run_id = int(cur.lastrowid)
+            freq = plot_state["f"].tolist()
+            for lab, y in zip(plot_state["labels"], plot_state["curves"]):
+                cur.execute(
+                    "INSERT INTO electrical_noise_points(run_id, channel_label, freq_json, value_json) VALUES(?,?,?,?)",
+                    (run_id, lab, json.dumps(freq), json.dumps(np.asarray(y, float).tolist())),
+                )
+            conn.commit(); conn.close()
+            QtWidgets.QMessageBox.information(dlg, "Saved", "Electrical noise run saved to database.")
+
+        def _history_compare_dialog():
+            pid = _project_id()
+            if pid is None:
+                QtWidgets.QMessageBox.warning(dlg, "Project Required", "Please select a project first.")
+                return
+
+            conn = sqlite3.connect(DB_FILENAME)
+            _ensure_noise_tables(conn)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, file_name, units, created_at FROM electrical_noise_runs WHERE project_id=? ORDER BY id DESC",
+                (pid,),
+            )
+            runs = cur.fetchall()
+            if not runs:
+                conn.close()
+                QtWidgets.QMessageBox.information(dlg, "History", "No saved runs for this project.")
+                return
+
+            hd = QtWidgets.QDialog(dlg)
+            hd.setWindowTitle("Electrical Noise History / Compare")
+            hd.resize(1000, 700)
+            hv = QtWidgets.QVBoxLayout(hd)
+            hl = QtWidgets.QListWidget()
+            hl.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            for rid, fn, units, ts in runs:
+                it = QtWidgets.QListWidgetItem(f"#{rid} | {fn} | {units} | {ts}")
+                it.setData(QtCore.Qt.UserRole, int(rid))
+                hl.addItem(it)
+            hv.addWidget(hl)
+
+            import pyqtgraph as pg
+            pw = pg.PlotWidget()
+            pw.setBackground("#19232D")
+            pi = pw.getPlotItem()
+            pi.showGrid(x=True, y=True, alpha=0.25)
+            pi.setLogMode(x=True, y=False)
+            pi.setLabel("bottom", "Frequency (Hz)", color="white")
+            pi.setLabel("left", "Noise density", color="white")
+            pi.getAxis("left").setPen(pg.mkPen("white"))
+            pi.getAxis("left").setTextPen(pg.mkPen("white"))
+            pi.getAxis("bottom").setPen(pg.mkPen("white"))
+            pi.getAxis("bottom").setTextPen(pg.mkPen("white"))
+            hv.addWidget(pw, 1)
+
+            btn = QtWidgets.QPushButton("Overlay Selected")
+            hv.addWidget(btn)
+
+            def _draw_selected():
+                pi.clear()
+                leg = pi.addLegend()
+                try:
+                    leg.setBrush(pg.mkBrush(25, 35, 45, 220)); leg.setPen(pg.mkPen("#555"))
+                except Exception:
+                    pass
+                selected = hl.selectedItems()
+                if not selected:
+                    return
+                colors = _palette(512)
+                cidx = 0
+                for it in selected:
+                    rid = int(it.data(QtCore.Qt.UserRole))
+                    cur.execute("SELECT channel_label, freq_json, value_json FROM electrical_noise_points WHERE run_id=?", (rid,))
+                    for ch, fjs, vjs in cur.fetchall():
+                        try:
+                            f = np.asarray(json.loads(fjs), float)
+                            y = np.asarray(json.loads(vjs), float)
+                        except Exception:
+                            continue
+                        m = np.isfinite(f) & np.isfinite(y) & (f > 0)
+                        if np.any(m):
+                            pi.plot(f[m], y[m], pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"run{rid}:{ch}")
+                            cidx += 1
+
+            btn.clicked.connect(_draw_selected)
+            hd.exec_()
+            conn.close()
+
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Electrical Noise")
         dlg.resize(1100, 760)
@@ -5579,7 +5742,9 @@ class MeasurementToolsMixin:
         btn_recalc = QtWidgets.QPushButton("Recompute")
         btn_export_img = QtWidgets.QPushButton("Export JPG")
         btn_export_csv = QtWidgets.QPushButton("Export CSV")
-        for b in (btn_recalc, btn_export_img, btn_export_csv):
+        btn_save_db = QtWidgets.QPushButton("Save Run")
+        btn_history = QtWidgets.QPushButton("History / Compare")
+        for b in (btn_recalc, btn_export_img, btn_export_csv, btn_save_db, btn_history):
             b.setStyleSheet("background:#2b2b2b;color:white;border:1px solid #555;padding:6px 10px;")
             ctrl.addWidget(b)
         lay.addLayout(ctrl)
@@ -5733,6 +5898,8 @@ class MeasurementToolsMixin:
         btn_recalc.clicked.connect(_compute)
         btn_export_img.clicked.connect(_export_jpg)
         btn_export_csv.clicked.connect(_export_csv)
+        btn_save_db.clicked.connect(_save_run_to_db)
+        btn_history.clicked.connect(_history_compare_dialog)
         units_cb.currentIndexChanged.connect(_compute)
 
         _compute()
