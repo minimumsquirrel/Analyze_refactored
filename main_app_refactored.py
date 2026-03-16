@@ -10086,6 +10086,10 @@ class MainWindow(
         save_graphs_cb.setChecked(True)
         form.addRow("Screenshots:", save_graphs_cb)
 
+        export_csv_cb = QtWidgets.QCheckBox("Export CSV on Accept")
+        export_csv_cb.setChecked(False)
+        form.addRow("CSV export:", export_csv_cb)
+
         vbox.addWidget(settings)
 
         preview_group = QtWidgets.QGroupBox("Selected Window Preview")
@@ -10119,11 +10123,12 @@ class MainWindow(
             "preview_channel": 0,
             "window_start": max(0.0, min(total_duration, current_window_start)),
         }
+        highlight_color = lighten_color(self.graph_color, 0.25)
 
         region = pg.LinearRegionItem(
             values=(state["window_start"], state["window_start"] + win_spin.value()),
-            brush=pg.mkBrush(QtGui.QColor(lighten_color(self.graph_color, 0.4) + "77")),
-            pen=pg.mkPen(lighten_color(self.graph_color, 0.4), width=1.5),
+            brush=pg.mkBrush(QtGui.QColor(highlight_color + "33")),
+            pen=pg.mkPen(highlight_color, width=1.5),
             movable=True,
         )
         preview_plot.addItem(region)
@@ -10233,22 +10238,25 @@ class MainWindow(
         _sync_region_from_mode()
 
         results = []
+        run_meta = {"run_dir": "", "run_stamp": "", "base_name": os.path.splitext(os.path.basename(self.file_name))[0] or "audio"}
 
         def run_analysis():
             results.clear()
             wl = float(win_spin.value())
             use_detect = mode_combo.currentIndex() == 1
             save_graphs = bool(save_graphs_cb.isChecked())
+            export_csv = bool(export_csv_cb.isChecked())
             run_dir = ""
-            if save_graphs:
-                base_name = os.path.splitext(os.path.basename(self.file_name))[0] or "audio"
+            if save_graphs or export_csv:
                 run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                project_auto_dir = self._project_subdir("auto_analyze")
+                run_meta["run_stamp"] = run_stamp
+                project_auto_dir = self._project_subdir("auto_analysis")
                 if project_auto_dir:
-                    run_dir = os.path.join(project_auto_dir, base_name, run_stamp)
+                    run_dir = os.path.join(project_auto_dir, run_meta["base_name"], run_stamp)
                 else:
-                    run_dir = os.path.join(os.path.dirname(self.current_file_path), "analysis", "auto_analyze", base_name, run_stamp)
+                    run_dir = os.path.join(os.path.dirname(self.current_file_path), "analysis", "auto_analysis", run_meta["base_name"], run_stamp)
                 os.makedirs(run_dir, exist_ok=True)
+            run_meta["run_dir"] = run_dir
             for i in range(start_index, len(self.pulse_indices)):
                 pulse_time = _pulse_time(i)
                 for ch, channel_data in enumerate(channels_data):
@@ -10300,11 +10308,11 @@ class MainWindow(
                     if save_graphs:
                         try:
                             fig_temp, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 8), dpi=90, facecolor="#19232D")
-                            ax1.plot(t_pad, np.asarray(channel_data[p_s:p_e]), color=self.graph_color, lw=1)
+                            ax1.plot(t_pad, np.asarray(channel_data[p_s:p_e]), color=self.graph_color, lw=1, zorder=3)
                             ax1.set_facecolor("#19232D")
                             ax1.tick_params(colors="white")
                             ax1.set_title(f"Padded Waveform CH{ch + 1} {pad_start:.2f}–{pad_end:.2f}s", color="white")
-                            ax1.axvspan(window_start, window_start + wl, color=lighten_color(self.graph_color, 0.4), alpha=0.5)
+                            ax1.axvspan(window_start, window_start + wl, color=highlight_color, alpha=0.22, zorder=1)
 
                             ax2.plot(freqs, np.abs(fft_result), color=self.graph_color, lw=1.5)
                             ax2.set_facecolor("#19232D")
@@ -10470,7 +10478,19 @@ class MainWindow(
             if os.path.basename(parent).lower() == "analysis":
                 parent = os.path.dirname(parent)
             excel = os.path.join(parent, f"{base}_auto_analysis.xlsx")
-            pd.DataFrame(results).to_excel(excel, index=False)
+            out_df = pd.DataFrame(results)
+            out_df.to_excel(excel, index=False)
+            if export_csv_cb.isChecked():
+                csv_dir = run_meta.get("run_dir")
+                if not csv_dir:
+                    project_auto_dir = self._project_subdir("auto_analysis")
+                    if project_auto_dir:
+                        csv_dir = os.path.join(project_auto_dir, run_meta.get("base_name", base), datetime.now().strftime("%Y%m%d_%H%M%S"))
+                    else:
+                        csv_dir = os.path.join(parent, "analysis", "auto_analysis", run_meta.get("base_name", base), datetime.now().strftime("%Y%m%d_%H%M%S"))
+                    os.makedirs(csv_dir, exist_ok=True)
+                csv_path = os.path.join(csv_dir, f"{run_meta.get('base_name', base)}_auto_analysis.csv")
+                out_df.to_csv(csv_path, index=False)
             dlg2.accept()
 
         btn_keep.clicked.connect(keep)
