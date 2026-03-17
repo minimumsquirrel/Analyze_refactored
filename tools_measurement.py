@@ -2806,12 +2806,13 @@ class MeasurementToolsMixin:
                 if not (isinstance(entry, tuple) and len(entry) == 5):
                     continue
                 t0, rms, freq, max_v, bw = entry
+                project_id = getattr(self, "current_project_id", None)
                 cur.execute(
                     "INSERT INTO measurements "
                     "(file_name, method, target_frequency, start_time, end_time, "
                     " window_length, max_voltage, bandwidth, measured_voltage, "
-                    " filter_applied, screenshot, misc) VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " filter_applied, screenshot, misc, project_id) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         fname,
                         "LFM Batch",
@@ -2824,7 +2825,8 @@ class MeasurementToolsMixin:
                         float(rms),
                         0,
                         "",
-                        None
+                        None,
+                        None if project_id is None else int(project_id),
                     )
                 )
                 count += 1
@@ -5103,9 +5105,19 @@ class MeasurementToolsMixin:
         layout.addLayout(btn_layout)
 
         # ── Populate File & Method (project-scoped when available) ────────
+        project_id = getattr(self, "current_project_id", None)
         project_name = (getattr(self, "current_project_name", None) or "").strip()
 
-        if project_name:
+        if project_id is not None:
+            files = [
+                r[0]
+                for r in cur.execute(
+                    "SELECT DISTINCT file_name FROM measurements WHERE project_id=? ORDER BY file_name",
+                    (int(project_id),),
+                )
+            ]
+        elif project_name:
+            # Fallback for legacy rows without measurements.project_id
             files = [
                 r[0]
                 for r in cur.execute(
@@ -5139,7 +5151,16 @@ class MeasurementToolsMixin:
                 generate_btn.setEnabled(False)
                 return
 
-            if project_name:
+            if project_id is not None:
+                methods = [
+                    m[0]
+                    for m in cur.execute(
+                        "SELECT DISTINCT method FROM measurements WHERE project_id=? AND file_name=? ORDER BY method",
+                        (int(project_id), fn),
+                    )
+                ]
+            elif project_name:
+                # Fallback for legacy rows without measurements.project_id
                 methods = [
                     m[0]
                     for m in cur.execute(
