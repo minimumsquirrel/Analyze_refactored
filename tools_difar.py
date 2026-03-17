@@ -1628,19 +1628,53 @@ class DifarToolsMixin:
 
                             try:
                                 from matplotlib import cm, colors
+                                import numpy as np
                                 cmap = cm.get_cmap("hsv")
                                 norm = colors.Normalize(vmin=0.0, vmax=360.0)
-                                for ti, bi in zip(t, b_plot):
-                                    col = cmap(norm(float(bi) % 360.0))
-                                    ax_spec.axvline(float(ti), color=col, alpha=0.16, linewidth=0.9)
-                                sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-                                sm.set_array([])
-                                cb = fig.colorbar(sm, ax=ax_spec, fraction=0.046, pad=0.02)
-                                bearing_cbar["obj"] = cb
-                                cb.set_label("Bearing (deg)", color=gui_fg)
-                                cb.ax.yaxis.set_tick_params(color=gui_fg)
-                                for tick in cb.ax.get_yticklabels():
-                                    tick.set_color(gui_fg)
+
+                                # Detect dominant frequency (main band) near each bearing timestamp
+                                # and color only that detected track by bearing.
+                                bins_arr = np.asarray(bins, dtype=float).reshape(-1)
+                                freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
+                                pxx_arr = np.asarray(pxx, dtype=float)
+                                if pxx_arr.ndim == 2 and bins_arr.size > 0 and freqs_arr.size > 0:
+                                    ridge_t = []
+                                    ridge_f = []
+                                    ridge_b = []
+                                    for ti, bi in zip(t, b_plot):
+                                        j = int(np.argmin(np.abs(bins_arr - float(ti))))
+                                        if j < 0 or j >= pxx_arr.shape[1]:
+                                            continue
+                                        col_pow = pxx_arr[:, j]
+                                        if col_pow.size == 0:
+                                            continue
+                                        fi = int(np.nanargmax(col_pow))
+                                        if fi < 0 or fi >= freqs_arr.size:
+                                            continue
+                                        ff = float(freqs_arr[fi])
+                                        if ff < spec_y0 or ff > spec_y1:
+                                            continue
+                                        ridge_t.append(float(ti))
+                                        ridge_f.append(ff)
+                                        ridge_b.append(float(bi) % 360.0)
+
+                                    if len(ridge_t) > 1:
+                                        sc_spec = ax_spec.scatter(
+                                            ridge_t,
+                                            ridge_f,
+                                            c=ridge_b,
+                                            cmap=cmap,
+                                            norm=norm,
+                                            s=20,
+                                            alpha=0.95,
+                                            linewidths=0.0,
+                                        )
+                                        cb = fig.colorbar(sc_spec, ax=ax_spec, fraction=0.046, pad=0.02)
+                                        bearing_cbar["obj"] = cb
+                                        cb.set_label("Bearing (deg)", color=gui_fg)
+                                        cb.ax.yaxis.set_tick_params(color=gui_fg)
+                                        for tick in cb.ax.get_yticklabels():
+                                            tick.set_color(gui_fg)
                             except Exception:
                                 pass
                             ax_bear.legend(loc="upper right", framealpha=0.3)
