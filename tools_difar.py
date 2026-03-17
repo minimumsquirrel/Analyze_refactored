@@ -838,6 +838,7 @@ class DifarToolsMixin:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
         dlg.resize(1500, 900)
+        dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowMaximized)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
