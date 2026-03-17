@@ -838,6 +838,7 @@ class DifarToolsMixin:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
         dlg.resize(1500, 900)
+        dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowMaximized)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
@@ -857,15 +858,6 @@ class DifarToolsMixin:
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_panel.setMinimumWidth(520)
         content_row.addWidget(right_panel, stretch=2)
-
-        help_lbl = QtWidgets.QLabel(
-            "DIFAR workflow:\n"
-            "1) Use Calibration Import button to add/update calibration sets.\n"
-            "2) Use loaded WAV automatically (or choose one when none loaded), set mapping/start UTC/compass.\n"
-            "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
-        )
-        help_lbl.setWordWrap(True)
-        left_layout.addWidget(help_lbl)
 
         import_row = QtWidgets.QHBoxLayout()
         import_btn = QtWidgets.QPushButton("Calibration Import...")
@@ -1013,25 +1005,15 @@ class DifarToolsMixin:
 
         heat_btn_row = QtWidgets.QHBoxLayout()
         open_heatmap_btn = QtWidgets.QPushButton("Open Time vs Bearing Heatmap...")
+        open_difargram_btn = QtWidgets.QPushButton("Open DIFARGram Display...")
         heat_btn_row.addWidget(open_heatmap_btn)
+        heat_btn_row.addWidget(open_difargram_btn)
         heat_btn_row.addStretch(1)
         left_layout.addLayout(heat_btn_row)
 
         close_btn = QtWidgets.QPushButton("Close")
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
         left_layout.addLayout(close_row)
-
-        cal_plot_note = QtWidgets.QLabel(
-            "Selected calibration preview:\n"
-            "- Top: X/Y/Z particle velocity sensitivity\n"
-            "- Bottom: OMNI pressure sensitivity"
-        )
-        cal_plot_note.setWordWrap(True)
-        right_layout.addWidget(cal_plot_note)
-
-        cal_plot_status = QtWidgets.QLabel("No calibration selected.")
-        cal_plot_status.setWordWrap(True)
-        right_layout.addWidget(cal_plot_status)
 
         cal_canvas = None
         cal_fig = None
@@ -1050,7 +1032,7 @@ class DifarToolsMixin:
             cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
             right_layout.addWidget(cal_canvas, stretch=1)
         except Exception:
-            cal_plot_status.setText("Calibration plots unavailable (matplotlib Qt backend not available).")
+            out.appendPlainText("Calibration plots unavailable (matplotlib Qt backend not available).")
 
         def _palette_for_plots(count: int):
             try:
@@ -1092,14 +1074,13 @@ class DifarToolsMixin:
 
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
             if not cal_name:
-                cal_plot_status.setText("No calibration selected.")
                 cal_canvas.draw_idle()
                 return
 
             try:
                 cal = load_difar_calibration_from_db(DB_FILENAME, cal_name)
             except Exception as e:
-                cal_plot_status.setText(f"Could not load calibration '{cal_name}': {e}")
+                out.appendPlainText(f"Could not load calibration '{cal_name}': {e}")
                 cal_canvas.draw_idle()
                 return
 
@@ -1126,8 +1107,15 @@ class DifarToolsMixin:
                 cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#DDDDDD")
 
             cal_fig.tight_layout(pad=1.2)
-            cal_plot_status.setText(f"Calibration preview: {cal_name}")
             cal_canvas.draw_idle()
+
+        def _safe_seq(value):
+            if value is None:
+                return []
+            try:
+                return list(value)
+            except Exception:
+                return []
 
         def _result_to_heatmap_payload(result: dict):
             time_raw = result.get("time_s", [])
@@ -1430,6 +1418,177 @@ class DifarToolsMixin:
             if current_payload is not None:
                 _render(current_payload, current_label)
             pop.finished.connect(lambda *_: _stop_heatmap_playback())
+            pop.exec_()
+
+        def _open_difargram_popup():
+            pop = QtWidgets.QDialog(dlg)
+            pop.setWindowTitle("DIFARGram-style Display")
+            pop.resize(1250, 820)
+            lay = QtWidgets.QVBoxLayout(pop)
+
+            ctl = QtWidgets.QHBoxLayout()
+            start_sec = QtWidgets.QDoubleSpinBox(); start_sec.setRange(0.0, 86400.0); start_sec.setDecimals(2); start_sec.setValue(0.0); start_sec.setSuffix(" s start")
+            win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
+            max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
+            nfft_spin = QtWidgets.QSpinBox(); nfft_spin.setRange(64, 8192); nfft_spin.setSingleStep(64); nfft_spin.setValue(1024); nfft_spin.setPrefix("NFFT ")
+            render_btn = QtWidgets.QPushButton("Render")
+            save_btn = QtWidgets.QPushButton("Save JPG...")
+            ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
+            ctl.addWidget(max_freq); ctl.addWidget(nfft_spin)
+            ctl.addWidget(render_btn); ctl.addWidget(save_btn)
+            ctl.addStretch(1)
+            lay.addLayout(ctl)
+
+            status_lbl = QtWidgets.QLabel("DIFARGram-style view of latest DIFAR run: spectrogram + bearing track.")
+            status_lbl.setWordWrap(True)
+            lay.addWidget(status_lbl)
+
+            fig = None
+            canvas = None
+            ax_spec = None
+            ax_bear = None
+            try:
+                from matplotlib.figure import Figure
+                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+                fig = Figure(facecolor=gui_panel_bg)
+                canvas = FigureCanvas(fig)
+                gs = fig.add_gridspec(2, 1, height_ratios=[2.2, 1.0], hspace=0.18)
+                ax_spec = fig.add_subplot(gs[0, 0])
+                ax_bear = fig.add_subplot(gs[1, 0], sharex=ax_spec)
+                lay.addWidget(canvas, 1)
+            except Exception:
+                status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
+
+            def _style_ax(ax):
+                ax.set_facecolor(gui_bg)
+                ax.tick_params(colors=gui_fg)
+                for sp in ax.spines.values():
+                    sp.set_color(gui_grid)
+                ax.xaxis.label.set_color(gui_fg)
+                ax.yaxis.label.set_color(gui_fg)
+                ax.title.set_color(gui_fg)
+
+            def _read_wav_segment(path, channel_idx, start_s, duration_s):
+                import wave
+                import numpy as np
+                with wave.open(path, "rb") as wf:
+                    n_channels = int(wf.getnchannels())
+                    sampwidth = int(wf.getsampwidth())
+                    rate = int(wf.getframerate())
+                    n_frames = int(wf.getnframes())
+                    ch = 0 if channel_idx < 0 else (n_channels - 1 if channel_idx >= n_channels else int(channel_idx))
+                    start_frame = max(0, int(float(start_s) * rate))
+                    end_frame = min(n_frames, start_frame + int(float(duration_s) * rate))
+                    count = max(0, end_frame - start_frame)
+                    wf.setpos(start_frame)
+                    raw = wf.readframes(count)
+                if count <= 0:
+                    return np.array([], dtype=float), float(rate)
+                if sampwidth == 1:
+                    data = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+                    data = (data - 128.0) / 128.0
+                elif sampwidth == 2:
+                    data = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
+                elif sampwidth == 3:
+                    b = np.frombuffer(raw, dtype=np.uint8)
+                    b = b.reshape(-1, 3)
+                    v = (b[:, 0].astype(np.int32)
+                         | (b[:, 1].astype(np.int32) << 8)
+                         | (b[:, 2].astype(np.int32) << 16))
+                    sign = (v & 0x800000) != 0
+                    v[sign] -= (1 << 24)
+                    data = v.astype(np.float32) / 8388608.0
+                elif sampwidth == 4:
+                    data = np.frombuffer(raw, dtype='<i4').astype(np.float32) / 2147483648.0
+                else:
+                    raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+                if n_channels > 1:
+                    data = data.reshape(-1, n_channels)[:, ch]
+                return data, float(rate)
+
+            def _render_difargram():
+                if fig is None or canvas is None or ax_spec is None or ax_bear is None:
+                    return
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    status_lbl.setText("No recent DIFAR run context available. Run DIFAR processing first.")
+                    return
+                wav_path = str(meta.get("wav_path") or "")
+                if not wav_path or not os.path.isfile(wav_path):
+                    status_lbl.setText("Recent run WAV path is unavailable. Re-run DIFAR processing or choose a valid WAV in the run.")
+                    return
+                try:
+                    ch_idx = int(meta.get("omni_channel", 0))
+                    samples, fs = _read_wav_segment(wav_path, ch_idx, float(start_sec.value()), float(win_sec.value()))
+                    if len(samples) <= 8:
+                        status_lbl.setText("Selected segment has no audio samples.")
+                        return
+
+                    ax_spec.clear(); ax_bear.clear()
+                    _style_ax(ax_spec); _style_ax(ax_bear)
+
+                    nfft = int(nfft_spin.value())
+                    nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
+                    noverlap = max(0, int(nfft * 0.75))
+                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    ax_spec.set_ylim(0.0, float(max_freq.value()))
+                    ax_spec.set_ylabel("Frequency (Hz)")
+                    ax_spec.set_title(f"DIFARGram-like Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
+
+                    t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
+                    b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
+                    c_raw = [float(v) for v in _safe_seq(meta.get("confidence"))]
+                    n = min(len(t_raw), len(b_raw))
+                    if n > 1:
+                        t0 = float(start_sec.value())
+                        t1 = t0 + float(win_sec.value())
+                        t = []
+                        b = []
+                        c = []
+                        for i in range(n):
+                            if t_raw[i] < t0 or t_raw[i] > t1:
+                                continue
+                            t.append(t_raw[i] - t0)
+                            b.append(b_raw[i])
+                            c.append(c_raw[i] if i < len(c_raw) else 1.0)
+                        if len(t) > 1:
+                            ax_bear.plot(t, b, color="#03DFE2", linewidth=1.2, alpha=0.9, label="Bearing")
+                            sc = ax_bear.scatter(t, b, c=c, cmap="viridis", s=12, alpha=0.85)
+                            cb = fig.colorbar(sc, ax=ax_bear, fraction=0.046, pad=0.02)
+                            cb.set_label("Confidence", color=gui_fg)
+                            cb.ax.yaxis.set_tick_params(color=gui_fg)
+                            for tick in cb.ax.get_yticklabels():
+                                tick.set_color(gui_fg)
+                            ax_bear.legend(loc="upper right", framealpha=0.3)
+                    ax_bear.set_xlim(0.0, float(win_sec.value()))
+                    ax_bear.set_ylim(0.0, 360.0)
+                    ax_bear.set_xlabel("Time within selected segment (s)")
+                    ax_bear.set_ylabel("Bearing True (deg)")
+                    ax_bear.grid(True, alpha=0.25)
+
+                    fig.tight_layout(pad=1.0)
+                    canvas.draw_idle()
+                    status_lbl.setText("Rendered DIFARGram-style display from latest run.")
+                except Exception as e:
+                    status_lbl.setText(f"DIFARGram render failed: {e}")
+
+            def _save_jpg():
+                if fig is None:
+                    return
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Save DIFARGram JPG", "difargram_view.jpg", "JPEG Files (*.jpg *.jpeg)")
+                if not path:
+                    return
+                if not path.lower().endswith((".jpg", ".jpeg")):
+                    path = f"{path}.jpg"
+                try:
+                    fig.savefig(path, format="jpg", dpi=180, bbox_inches="tight")
+                    status_lbl.setText(f"Saved DIFARGram JPG: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed saving JPG: {e}")
+
+            render_btn.clicked.connect(_render_difargram)
+            save_btn.clicked.connect(_save_jpg)
+            _render_difargram()
             pop.exec_()
 
         def _refresh_calibration_list(select_name: str = ""):
@@ -1882,6 +2041,15 @@ class DifarToolsMixin:
                         self._difar_last_heatmap_payload = heatmap_payload
                         self._difar_last_heatmap_label = heatmap_label
 
+                    self._difar_last_run_meta = {
+                        "wav_path": wav_path,
+                        "label": heatmap_label,
+                        "omni_channel": int(omni_spin.value()) - 1,
+                        "time_s": _safe_seq(result.get("time_s")),
+                        "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
+                        "confidence": _safe_seq(result.get("confidence")),
+                    }
+
                     run_id = None
                     if save_db_chk.isChecked():
                         serializable = {}
@@ -2035,6 +2203,7 @@ class DifarToolsMixin:
         export_browse.clicked.connect(_browse_export)
         manage_profiles_btn.clicked.connect(_open_target_profiles_popup)
         open_heatmap_btn.clicked.connect(lambda: _open_heatmap_popup())
+        open_difargram_btn.clicked.connect(_open_difargram_popup)
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
         dlg.finished.connect(lambda *_: _stop_difar_map_animation())
