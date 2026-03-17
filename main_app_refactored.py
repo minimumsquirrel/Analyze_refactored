@@ -356,6 +356,45 @@ def init_db():
     if 'misc' not in cols:
         cur.execute("ALTER TABLE measurements ADD COLUMN misc REAL")
         cur.execute("ALTER TABLE archive      ADD COLUMN misc REAL")
+    if 'project_id' not in cols:
+        cur.execute("ALTER TABLE measurements ADD COLUMN project_id INTEGER")
+
+    cur.execute("PRAGMA table_info(archive)")
+    archive_cols = [r[1] for r in cur.fetchall()]
+    if 'project_id' not in archive_cols:
+        cur.execute("ALTER TABLE archive ADD COLUMN project_id INTEGER")
+
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_measurements_project_file_method "
+        "ON measurements(project_id, file_name, method)"
+    )
+
+
+    # Backfill measurements.project_id from project_items only when mapping is unambiguous.
+    cur.execute(
+        """
+        WITH unique_map AS (
+            SELECT file_name, method, MIN(project_id) AS project_id
+            FROM project_items
+            GROUP BY file_name, method
+            HAVING COUNT(DISTINCT project_id) = 1
+        )
+        UPDATE measurements
+           SET project_id = (
+               SELECT um.project_id
+               FROM unique_map um
+               WHERE um.file_name = measurements.file_name
+                 AND um.method = measurements.method
+           )
+         WHERE project_id IS NULL
+           AND EXISTS (
+               SELECT 1
+               FROM unique_map um
+               WHERE um.file_name = measurements.file_name
+                 AND um.method = measurements.method
+           )
+        """
+    )
 
     # ── add distance, notes, and near-field columns to SPL tables if missing ─
     _spl_extra_cols = [
@@ -2708,6 +2747,16 @@ class MainWindow(
             screenshot,
             misc_out,
         )
+
+        pid = getattr(self, "current_project_id", None)
+        if pid is None and getattr(self, "current_project_name", None):
+            pid = self._get_project_id(self.current_project_name)
+        if pid is not None:
+            conn = sqlite3.connect(DB_FILENAME)
+            cur = conn.cursor()
+            cur.execute("UPDATE measurements SET project_id=? WHERE id=?", (int(pid), int(entry_id)))
+            conn.commit()
+            conn.close()
 
         # 3) Attach this (file, method) to the active project
         self._attach_measurement_to_current_project(file_name, method)
@@ -11451,11 +11500,14 @@ class MainWindow(
                 m.end_time,
                 m.window_length,
                 m.method,
-                (
-                    SELECT pi.project_id
-                    FROM project_items pi
-                    WHERE pi.file_name = m.file_name AND pi.method = m.method
-                    LIMIT 1
+                COALESCE(
+                    m.project_id,
+                    (
+                        SELECT pi.project_id
+                        FROM project_items pi
+                        WHERE pi.file_name = m.file_name AND pi.method = m.method
+                        LIMIT 1
+                    )
                 ) AS project_id
             FROM measurements m
             WHERE m.method IN (
