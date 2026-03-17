@@ -1435,12 +1435,14 @@ class DifarToolsMixin:
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(5); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
             ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
             ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
             ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
             ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
+            ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
             lay.addLayout(ctl)
@@ -1659,17 +1661,50 @@ class DifarToolsMixin:
                                         ridge_b.append(float(bi) % 360.0)
 
                                     if len(ridge_t) > 1:
-                                        sc_spec = ax_spec.scatter(
-                                            ridge_t,
-                                            ridge_f,
-                                            c=ridge_b,
-                                            cmap=cmap,
-                                            norm=norm,
-                                            s=20,
-                                            alpha=0.95,
-                                            linewidths=0.0,
-                                        )
-                                        cb = fig.colorbar(sc_spec, ax=ax_spec, fraction=0.046, pad=0.02)
+                                        half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
+                                        if freqs_arr.size > 1:
+                                            f_step = float(np.median(np.diff(freqs_arr)))
+                                            f_step = abs(f_step) if np.isfinite(f_step) and abs(f_step) > 1e-9 else max(1.0, half_hz / 8.0)
+                                        else:
+                                            f_step = max(1.0, half_hz / 8.0)
+
+                                        band_t = []
+                                        band_f = []
+                                        band_rgba = []
+
+                                        for ti, ff, bb in zip(ridge_t, ridge_f, ridge_b):
+                                            base_rgba = list(cmap(norm(float(bb) % 360.0)))
+                                            if half_hz <= 1e-9:
+                                                rgba = tuple(base_rgba[:3] + [0.95])
+                                                band_t.append(float(ti)); band_f.append(float(ff)); band_rgba.append(rgba)
+                                                continue
+
+                                            n_side = max(1, int(np.ceil(half_hz / max(1e-9, f_step))))
+                                            offsets = np.linspace(-half_hz, half_hz, 2 * n_side + 1)
+                                            for off in offsets:
+                                                fcur = float(ff + off)
+                                                if fcur < spec_y0 or fcur > spec_y1:
+                                                    continue
+                                                w = max(0.0, 1.0 - (abs(float(off)) / half_hz))
+                                                alpha = 0.12 + 0.83 * w
+                                                rgba = tuple(base_rgba[:3] + [alpha])
+                                                band_t.append(float(ti))
+                                                band_f.append(fcur)
+                                                band_rgba.append(rgba)
+
+                                        if band_t:
+                                            ax_spec.scatter(
+                                                band_t,
+                                                band_f,
+                                                c=band_rgba,
+                                                s=14,
+                                                linewidths=0.0,
+                                                marker="s",
+                                            )
+
+                                        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+                                        sm.set_array([])
+                                        cb = fig.colorbar(sm, ax=ax_spec, fraction=0.046, pad=0.02)
                                         bearing_cbar["obj"] = cb
                                         cb.set_label("Bearing (deg)", color=gui_fg)
                                         cb.ax.yaxis.set_tick_params(color=gui_fg)
