@@ -1455,15 +1455,17 @@ class DifarToolsMixin:
             canvas = None
             ax_spec = None
             ax_bear = None
+            cax_bearing = None
             bearing_cbar = {"obj": None}
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 1, height_ratios=[2.2, 1.0], hspace=0.18)
+                gs = fig.add_gridspec(2, 2, width_ratios=[30, 1], height_ratios=[2.2, 1.0], wspace=0.10, hspace=0.18)
                 ax_spec = fig.add_subplot(gs[0, 0])
                 ax_bear = fig.add_subplot(gs[1, 0], sharex=ax_spec)
+                cax_bearing = fig.add_subplot(gs[:, 1])
                 lay.addWidget(canvas, 1)
             except Exception:
                 status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
@@ -1581,12 +1583,13 @@ class DifarToolsMixin:
                         status_lbl.setText("Selected segment has no audio samples.")
                         return
 
-                    if bearing_cbar["obj"] is not None:
-                        try:
-                            bearing_cbar["obj"].remove()
-                        except Exception:
-                            pass
-                        bearing_cbar["obj"] = None
+                    if cax_bearing is not None:
+                        cax_bearing.clear()
+                        cax_bearing.set_facecolor(gui_bg)
+                        cax_bearing.tick_params(colors=gui_fg)
+                        for sp in cax_bearing.spines.values():
+                            sp.set_color(gui_grid)
+                    bearing_cbar["obj"] = None
 
                     ax_spec.clear(); ax_bear.clear()
                     _style_ax(ax_spec); _style_ax(ax_bear)
@@ -1704,7 +1707,7 @@ class DifarToolsMixin:
 
                                         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
                                         sm.set_array([])
-                                        cb = fig.colorbar(sm, ax=ax_spec, fraction=0.046, pad=0.02)
+                                        cb = fig.colorbar(sm, cax=cax_bearing) if cax_bearing is not None else fig.colorbar(sm, ax=ax_spec, fraction=0.046, pad=0.02)
                                         bearing_cbar["obj"] = cb
                                         cb.set_label("Bearing (deg)", color=gui_fg)
                                         cb.ax.yaxis.set_tick_params(color=gui_fg)
@@ -1721,7 +1724,6 @@ class DifarToolsMixin:
 
                     _style_ax(ax_spec)
                     _style_ax(ax_bear)
-                    fig.tight_layout(pad=1.0)
                     canvas.draw_idle()
                     status_lbl.setText("Rendered DIFARGram-style display from latest run.")
                 except Exception as e:
