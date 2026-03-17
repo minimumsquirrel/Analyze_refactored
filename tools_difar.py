@@ -1471,40 +1471,71 @@ class DifarToolsMixin:
             def _read_wav_segment(path, channel_idx, start_s, duration_s):
                 import wave
                 import numpy as np
-                with wave.open(path, "rb") as wf:
-                    n_channels = int(wf.getnchannels())
-                    sampwidth = int(wf.getsampwidth())
-                    rate = int(wf.getframerate())
-                    n_frames = int(wf.getnframes())
-                    ch = 0 if channel_idx < 0 else (n_channels - 1 if channel_idx >= n_channels else int(channel_idx))
-                    start_frame = max(0, int(float(start_s) * rate))
-                    end_frame = min(n_frames, start_frame + int(float(duration_s) * rate))
-                    count = max(0, end_frame - start_frame)
-                    wf.setpos(start_frame)
-                    raw = wf.readframes(count)
-                if count <= 0:
-                    return np.array([], dtype=float), float(rate)
-                if sampwidth == 1:
-                    data = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-                    data = (data - 128.0) / 128.0
-                elif sampwidth == 2:
-                    data = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
-                elif sampwidth == 3:
-                    b = np.frombuffer(raw, dtype=np.uint8)
-                    b = b.reshape(-1, 3)
-                    v = (b[:, 0].astype(np.int32)
-                         | (b[:, 1].astype(np.int32) << 8)
-                         | (b[:, 2].astype(np.int32) << 16))
-                    sign = (v & 0x800000) != 0
-                    v[sign] -= (1 << 24)
-                    data = v.astype(np.float32) / 8388608.0
-                elif sampwidth == 4:
-                    data = np.frombuffer(raw, dtype='<i4').astype(np.float32) / 2147483648.0
-                else:
-                    raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
-                if n_channels > 1:
-                    data = data.reshape(-1, n_channels)[:, ch]
-                return data, float(rate)
+
+                def _slice_channel(arr, ch_idx):
+                    if getattr(arr, "ndim", 1) <= 1:
+                        return np.asarray(arr)
+                    n_channels = int(arr.shape[1])
+                    ch = 0 if ch_idx < 0 else (n_channels - 1 if ch_idx >= n_channels else int(ch_idx))
+                    return np.asarray(arr[:, ch])
+
+                try:
+                    with wave.open(path, "rb") as wf:
+                        n_channels = int(wf.getnchannels())
+                        sampwidth = int(wf.getsampwidth())
+                        rate = int(wf.getframerate())
+                        n_frames = int(wf.getnframes())
+                        ch = 0 if channel_idx < 0 else (n_channels - 1 if channel_idx >= n_channels else int(channel_idx))
+                        start_frame = max(0, int(float(start_s) * rate))
+                        end_frame = min(n_frames, start_frame + int(float(duration_s) * rate))
+                        count = max(0, end_frame - start_frame)
+                        wf.setpos(start_frame)
+                        raw = wf.readframes(count)
+                    if count <= 0:
+                        return np.array([], dtype=float), float(rate)
+                    if sampwidth == 1:
+                        data = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+                        data = (data - 128.0) / 128.0
+                    elif sampwidth == 2:
+                        data = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
+                    elif sampwidth == 3:
+                        b = np.frombuffer(raw, dtype=np.uint8)
+                        b = b.reshape(-1, 3)
+                        v = (b[:, 0].astype(np.int32)
+                             | (b[:, 1].astype(np.int32) << 8)
+                             | (b[:, 2].astype(np.int32) << 16))
+                        sign = (v & 0x800000) != 0
+                        v[sign] -= (1 << 24)
+                        data = v.astype(np.float32) / 8388608.0
+                    elif sampwidth == 4:
+                        data = np.frombuffer(raw, dtype='<i4').astype(np.float32) / 2147483648.0
+                    else:
+                        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+                    if n_channels > 1:
+                        data = data.reshape(-1, n_channels)[:, ch]
+                    return data, float(rate)
+                except Exception as wave_err:
+                    try:
+                        from scipy.io import wavfile as scipy_wavfile
+                        rate, data_all = scipy_wavfile.read(path)
+                        data_all = np.asarray(data_all)
+                        if data_all.dtype.kind in ("i", "u"):
+                            bits = int(data_all.dtype.itemsize) * 8
+                            scale = float(2 ** (bits - 1)) if bits > 1 else 1.0
+                            data_all = data_all.astype(np.float32) / scale
+                        else:
+                            data_all = data_all.astype(np.float32)
+                        mono = _slice_channel(data_all, int(channel_idx))
+                        start_frame = max(0, int(float(start_s) * float(rate)))
+                        end_frame = min(int(mono.shape[0]), start_frame + int(float(duration_s) * float(rate)))
+                        if end_frame <= start_frame:
+                            return np.array([], dtype=float), float(rate)
+                        return mono[start_frame:end_frame], float(rate)
+                    except Exception as scipy_err:
+                        raise ValueError(
+                            f"Unsupported WAV encoding for DIFARGram reader ({wave_err}). "
+                            "Convert WAV to PCM or install scipy for fallback decoding."
+                        ) from scipy_err
 
             def _render_difargram():
                 if fig is None or canvas is None or ax_spec is None or ax_bear is None:
@@ -1566,6 +1597,8 @@ class DifarToolsMixin:
                     ax_bear.set_ylabel("Bearing True (deg)")
                     ax_bear.grid(True, alpha=0.25)
 
+                    _style_ax(ax_spec)
+                    _style_ax(ax_bear)
                     fig.tight_layout(pad=1.0)
                     canvas.draw_idle()
                     status_lbl.setText("Rendered DIFARGram-style display from latest run.")
@@ -1588,7 +1621,7 @@ class DifarToolsMixin:
 
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
-            _render_difargram()
+            status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
 
         def _refresh_calibration_list(select_name: str = ""):
