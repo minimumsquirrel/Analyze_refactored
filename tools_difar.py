@@ -1431,8 +1431,8 @@ class DifarToolsMixin:
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
             nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
-            smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"])
-            smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(5); smooth_win_spin.setSuffix(" pts")
+            smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"]); smooth_mode_combo.setCurrentText("Moving average")
+            smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
@@ -1471,6 +1471,22 @@ class DifarToolsMixin:
                 lay.addWidget(canvas, 1)
             except Exception:
                 status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
+
+            def _default_seconds_from_detection():
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    return
+                try:
+                    t_vals = [float(v) for v in _safe_seq(meta.get("time_s"))]
+                except Exception:
+                    t_vals = []
+                if len(t_vals) < 2:
+                    return
+                t0 = float(min(t_vals))
+                t1 = float(max(t_vals))
+                span = max(2.0, t1 - t0)
+                start_sec.setValue(max(0.0, t0))
+                win_sec.setValue(span)
 
             def _style_ax(ax):
                 ax.set_facecolor(gui_bg)
@@ -1790,6 +1806,7 @@ class DifarToolsMixin:
 
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
+            _default_seconds_from_detection()
             status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
 
