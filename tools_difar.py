@@ -1431,15 +1431,21 @@ class DifarToolsMixin:
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
             nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
+            smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"])
+            smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(5); smooth_win_spin.setSuffix(" pts")
+            bear_ymin_spin = QtWidgets.QDoubleSpinBox(); bear_ymin_spin.setRange(0.0, 360.0); bear_ymin_spin.setDecimals(1); bear_ymin_spin.setValue(0.0)
+            bear_ymax_spin = QtWidgets.QDoubleSpinBox(); bear_ymax_spin.setRange(0.0, 360.0); bear_ymax_spin.setDecimals(1); bear_ymax_spin.setValue(360.0)
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
             ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
             ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
+            ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
+            ctl.addWidget(QtWidgets.QLabel("Bearing Y")); ctl.addWidget(bear_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(bear_ymax_spin)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
             lay.addLayout(ctl)
 
-            status_lbl = QtWidgets.QLabel("DIFARGram-style view of latest DIFAR run: spectrogram + bearing track.")
+            status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
             status_lbl.setWordWrap(True)
             lay.addWidget(status_lbl)
 
@@ -1538,6 +1544,23 @@ class DifarToolsMixin:
                             "Convert WAV to PCM or install scipy for fallback decoding."
                         ) from scipy_err
 
+            def _smooth_bearing_series_deg(values, window_n):
+                import numpy as np
+                arr = np.asarray(values, dtype=float)
+                if arr.size <= 2:
+                    return arr
+                w = max(1, int(window_n))
+                if w <= 1:
+                    return arr
+                if w % 2 == 0:
+                    w += 1
+                rad = np.deg2rad(arr)
+                unwrapped = np.unwrap(rad)
+                kernel = np.ones(w, dtype=float) / float(w)
+                padded = np.pad(unwrapped, (w // 2, w // 2), mode="edge")
+                sm = np.convolve(padded, kernel, mode="valid")
+                return (np.rad2deg(sm) + 360.0) % 360.0
+
             def _render_difargram():
                 if fig is None or canvas is None or ax_spec is None or ax_bear is None:
                     return
@@ -1572,7 +1595,7 @@ class DifarToolsMixin:
                     pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
                     ax_spec.set_ylim(0.0, float(max_freq.value()))
                     ax_spec.set_ylabel("Frequency (Hz)")
-                    ax_spec.set_title(f"DIFARGram-like Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
+                    ax_spec.set_title(f"DIFARGram Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
 
                     t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
                     b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
@@ -1591,8 +1614,11 @@ class DifarToolsMixin:
                             b.append(b_raw[i])
                             c.append(c_raw[i] if i < len(c_raw) else 1.0)
                         if len(t) > 1:
-                            ax_bear.plot(t, b, color="#03DFE2", linewidth=1.2, alpha=0.9, label="Bearing")
-                            sc = ax_bear.scatter(t, b, c=c, cmap="viridis", s=12, alpha=0.85)
+                            b_plot = list(b)
+                            if smooth_mode_combo.currentText() == "Moving average":
+                                b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
+                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.2, alpha=0.9, label="Bearing")
+                            sc = ax_bear.scatter(t, b_plot, c=c, cmap="viridis", s=12, alpha=0.85)
                             cb = fig.colorbar(sc, ax=ax_bear, fraction=0.046, pad=0.02)
                             conf_cbar["obj"] = cb
                             cb.set_label("Confidence", color=gui_fg)
@@ -1601,7 +1627,11 @@ class DifarToolsMixin:
                                 tick.set_color(gui_fg)
                             ax_bear.legend(loc="upper right", framealpha=0.3)
                     ax_bear.set_xlim(0.0, float(win_sec.value()))
-                    ax_bear.set_ylim(0.0, 360.0)
+                    y0 = float(bear_ymin_spin.value())
+                    y1 = float(bear_ymax_spin.value())
+                    if y1 <= y0:
+                        y0, y1 = 0.0, 360.0
+                    ax_bear.set_ylim(y0, y1)
                     ax_bear.set_xlabel("Time within selected segment (s)")
                     ax_bear.set_ylabel("Bearing True (deg)")
                     ax_bear.grid(True, alpha=0.25)
@@ -1617,12 +1647,26 @@ class DifarToolsMixin:
             def _save_jpg():
                 if fig is None:
                     return
-                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Save DIFARGram JPG", "difargram_view.jpg", "JPEG Files (*.jpg *.jpeg)")
+                meta = getattr(self, "_difar_last_run_meta", {}) or {}
+                wav_path = str(meta.get("wav_path") or "")
+                wav_name = os.path.splitext(os.path.basename(wav_path))[0] if wav_path else "unknown_wav"
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        base_dir = self._project_subdir("difargram")
+                    except Exception:
+                        base_dir = os.path.join(os.getcwd(), "difargram")
+                else:
+                    base_dir = os.path.join(os.getcwd(), "difargram")
+                out_dir = os.path.join(base_dir, wav_name)
+                os.makedirs(out_dir, exist_ok=True)
+                default_path = os.path.join(out_dir, "difargram_spectrogram.jpg")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Save DIFARGram JPG", default_path, "JPEG Files (*.jpg *.jpeg)")
                 if not path:
                     return
                 if not path.lower().endswith((".jpg", ".jpeg")):
                     path = f"{path}.jpg"
                 try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
                     fig.savefig(path, format="jpg", dpi=180, bbox_inches="tight")
                     status_lbl.setText(f"Saved DIFARGram JPG: {path}")
                 except Exception as e:
