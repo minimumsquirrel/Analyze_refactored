@@ -1430,11 +1430,11 @@ class DifarToolsMixin:
             start_sec = QtWidgets.QDoubleSpinBox(); start_sec.setRange(0.0, 86400.0); start_sec.setDecimals(2); start_sec.setValue(0.0); start_sec.setSuffix(" s start")
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
-            nfft_spin = QtWidgets.QSpinBox(); nfft_spin.setRange(64, 8192); nfft_spin.setSingleStep(64); nfft_spin.setValue(1024); nfft_spin.setPrefix("NFFT ")
+            nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
             ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
-            ctl.addWidget(max_freq); ctl.addWidget(nfft_spin)
+            ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
             lay.addLayout(ctl)
@@ -1447,6 +1447,7 @@ class DifarToolsMixin:
             canvas = None
             ax_spec = None
             ax_bear = None
+            conf_cbar = {"obj": None}
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1555,10 +1556,17 @@ class DifarToolsMixin:
                         status_lbl.setText("Selected segment has no audio samples.")
                         return
 
+                    if conf_cbar["obj"] is not None:
+                        try:
+                            conf_cbar["obj"].remove()
+                        except Exception:
+                            pass
+                        conf_cbar["obj"] = None
+
                     ax_spec.clear(); ax_bear.clear()
                     _style_ax(ax_spec); _style_ax(ax_bear)
 
-                    nfft = int(nfft_spin.value())
+                    nfft = int(nfft_combo.currentText())
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
                     noverlap = max(0, int(nfft * 0.75))
                     pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
@@ -1586,6 +1594,7 @@ class DifarToolsMixin:
                             ax_bear.plot(t, b, color="#03DFE2", linewidth=1.2, alpha=0.9, label="Bearing")
                             sc = ax_bear.scatter(t, b, c=c, cmap="viridis", s=12, alpha=0.85)
                             cb = fig.colorbar(sc, ax=ax_bear, fraction=0.046, pad=0.02)
+                            conf_cbar["obj"] = cb
                             cb.set_label("Confidence", color=gui_fg)
                             cb.ax.yaxis.set_tick_params(color=gui_fg)
                             for tick in cb.ax.get_yticklabels():
