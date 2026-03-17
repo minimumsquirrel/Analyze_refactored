@@ -1453,7 +1453,7 @@ class DifarToolsMixin:
             canvas = None
             ax_spec = None
             ax_bear = None
-            conf_cbar = {"obj": None}
+            bearing_cbar = {"obj": None}
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1579,12 +1579,12 @@ class DifarToolsMixin:
                         status_lbl.setText("Selected segment has no audio samples.")
                         return
 
-                    if conf_cbar["obj"] is not None:
+                    if bearing_cbar["obj"] is not None:
                         try:
-                            conf_cbar["obj"].remove()
+                            bearing_cbar["obj"].remove()
                         except Exception:
                             pass
-                        conf_cbar["obj"] = None
+                        bearing_cbar["obj"] = None
 
                     ax_spec.clear(); ax_bear.clear()
                     _style_ax(ax_spec); _style_ax(ax_bear)
@@ -1621,11 +1621,11 @@ class DifarToolsMixin:
                             b_plot = list(b)
                             if smooth_mode_combo.currentText() == "Moving average":
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
-                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.2, alpha=0.9, label="Bearing")
-                            sc = ax_bear.scatter(t, b_plot, c=c, cmap="viridis", s=12, alpha=0.85)
+                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.0, alpha=0.5, label="Bearing")
+                            sc = ax_bear.scatter(t, b_plot, c=b_plot, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
                             cb = fig.colorbar(sc, ax=ax_bear, fraction=0.046, pad=0.02)
-                            conf_cbar["obj"] = cb
-                            cb.set_label("Confidence", color=gui_fg)
+                            bearing_cbar["obj"] = cb
+                            cb.set_label("Bearing (deg)", color=gui_fg)
                             cb.ax.yaxis.set_tick_params(color=gui_fg)
                             for tick in cb.ax.get_yticklabels():
                                 tick.set_color(gui_fg)
