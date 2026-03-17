@@ -838,6 +838,7 @@ class DifarToolsMixin:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
         dlg.resize(1500, 900)
+        dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowMaximized)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
@@ -857,15 +858,6 @@ class DifarToolsMixin:
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_panel.setMinimumWidth(520)
         content_row.addWidget(right_panel, stretch=2)
-
-        help_lbl = QtWidgets.QLabel(
-            "DIFAR workflow:\n"
-            "1) Use Calibration Import button to add/update calibration sets.\n"
-            "2) Use loaded WAV automatically (or choose one when none loaded), set mapping/start UTC/compass.\n"
-            "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
-        )
-        help_lbl.setWordWrap(True)
-        left_layout.addWidget(help_lbl)
 
         import_row = QtWidgets.QHBoxLayout()
         import_btn = QtWidgets.QPushButton("Calibration Import...")
@@ -1021,18 +1013,6 @@ class DifarToolsMixin:
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
         left_layout.addLayout(close_row)
 
-        cal_plot_note = QtWidgets.QLabel(
-            "Selected calibration preview:\n"
-            "- Top: X/Y/Z particle velocity sensitivity\n"
-            "- Bottom: OMNI pressure sensitivity"
-        )
-        cal_plot_note.setWordWrap(True)
-        right_layout.addWidget(cal_plot_note)
-
-        cal_plot_status = QtWidgets.QLabel("No calibration selected.")
-        cal_plot_status.setWordWrap(True)
-        right_layout.addWidget(cal_plot_status)
-
         cal_canvas = None
         cal_fig = None
         cal_ax_motion = None
@@ -1050,7 +1030,7 @@ class DifarToolsMixin:
             cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
             right_layout.addWidget(cal_canvas, stretch=1)
         except Exception:
-            cal_plot_status.setText("Calibration plots unavailable (matplotlib Qt backend not available).")
+            out.appendPlainText("Calibration plots unavailable (matplotlib Qt backend not available).")
 
         def _palette_for_plots(count: int):
             try:
@@ -1092,14 +1072,13 @@ class DifarToolsMixin:
 
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
             if not cal_name:
-                cal_plot_status.setText("No calibration selected.")
                 cal_canvas.draw_idle()
                 return
 
             try:
                 cal = load_difar_calibration_from_db(DB_FILENAME, cal_name)
             except Exception as e:
-                cal_plot_status.setText(f"Could not load calibration '{cal_name}': {e}")
+                out.appendPlainText(f"Could not load calibration '{cal_name}': {e}")
                 cal_canvas.draw_idle()
                 return
 
@@ -1126,7 +1105,6 @@ class DifarToolsMixin:
                 cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#DDDDDD")
 
             cal_fig.tight_layout(pad=1.2)
-            cal_plot_status.setText(f"Calibration preview: {cal_name}")
             cal_canvas.draw_idle()
 
         def _result_to_heatmap_payload(result: dict):
