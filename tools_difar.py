@@ -1455,6 +1455,7 @@ class DifarToolsMixin:
             canvas = None
             ax_spec = None
             ax_bear = None
+            ax_polar = None
             cax_bearing = None
             bearing_cbar = {"obj": None}
             try:
@@ -1462,9 +1463,10 @@ class DifarToolsMixin:
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 2, width_ratios=[30, 1], height_ratios=[2.2, 1.0], wspace=0.10, hspace=0.18)
+                gs = fig.add_gridspec(3, 2, width_ratios=[30, 1], height_ratios=[2.2, 1.0, 1.2], wspace=0.10, hspace=0.24)
                 ax_spec = fig.add_subplot(gs[0, 0])
                 ax_bear = fig.add_subplot(gs[1, 0], sharex=ax_spec)
+                ax_polar = fig.add_subplot(gs[2, 0], projection="polar")
                 cax_bearing = fig.add_subplot(gs[:, 1])
                 lay.addWidget(canvas, 1)
             except Exception:
@@ -1478,6 +1480,17 @@ class DifarToolsMixin:
                 ax.xaxis.label.set_color(gui_fg)
                 ax.yaxis.label.set_color(gui_fg)
                 ax.title.set_color(gui_fg)
+
+            def _style_polar_ax(ax):
+                ax.set_facecolor(gui_bg)
+                ax.grid(True, alpha=0.25)
+                ax.set_theta_zero_location("N")
+                ax.set_theta_direction(-1)
+                ax.tick_params(colors=gui_fg)
+                for sp in ax.spines.values():
+                    sp.set_color(gui_grid)
+                ax.set_title("Bearing Detections (Polar)", color=gui_fg)
+                ax.set_rlabel_position(135)
 
             def _read_wav_segment(path, channel_idx, start_s, duration_s):
                 import wave
@@ -1566,7 +1579,7 @@ class DifarToolsMixin:
                 return (np.rad2deg(sm) + 360.0) % 360.0
 
             def _render_difargram():
-                if fig is None or canvas is None or ax_spec is None or ax_bear is None:
+                if fig is None or canvas is None or ax_spec is None or ax_bear is None or ax_polar is None:
                     return
                 meta = getattr(self, "_difar_last_run_meta", None)
                 if not isinstance(meta, dict):
@@ -1591,8 +1604,8 @@ class DifarToolsMixin:
                             sp.set_color(gui_grid)
                     bearing_cbar["obj"] = None
 
-                    ax_spec.clear(); ax_bear.clear()
-                    _style_ax(ax_spec); _style_ax(ax_bear)
+                    ax_spec.clear(); ax_bear.clear(); ax_polar.clear()
+                    _style_ax(ax_spec); _style_ax(ax_bear); _style_polar_ax(ax_polar)
 
                     nfft = int(nfft_combo.currentText())
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
@@ -1716,6 +1729,24 @@ class DifarToolsMixin:
                             except Exception:
                                 pass
                             ax_bear.legend(loc="upper right", framealpha=0.3)
+
+                            # Third panel: polar plot of bearing detections (radius = relative time in window)
+                            try:
+                                import numpy as np
+                                theta = np.deg2rad(np.asarray(b_plot, dtype=float) % 360.0)
+                                t_arr = np.asarray(t, dtype=float)
+                                if t_arr.size > 1:
+                                    t0p = float(np.min(t_arr)); t1p = float(np.max(t_arr))
+                                    denom = max(1e-9, (t1p - t0p))
+                                    r = (t_arr - t0p) / denom
+                                else:
+                                    r = np.ones_like(theta) * 0.5
+                                ax_polar.scatter(theta, r, c=np.asarray(b_plot, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+                                ax_polar.set_ylim(0.0, 1.0)
+                                ax_polar.set_yticks([0.25, 0.5, 0.75, 1.0])
+                                ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
+                            except Exception:
+                                pass
                     ax_bear.set_xlim(0.0, float(win_sec.value()))
                     ax_bear.set_ylim(0.0, 360.0)
                     ax_bear.set_xlabel("Time within selected segment (s)")
