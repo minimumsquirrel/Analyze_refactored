@@ -1109,6 +1109,14 @@ class DifarToolsMixin:
             cal_fig.tight_layout(pad=1.2)
             cal_canvas.draw_idle()
 
+        def _safe_seq(value):
+            if value is None:
+                return []
+            try:
+                return list(value)
+            except Exception:
+                return []
+
         def _result_to_heatmap_payload(result: dict):
             time_raw = result.get("time_s", [])
             bearing_raw = result.get("bearing_true_deg", [])
@@ -1518,9 +1526,9 @@ class DifarToolsMixin:
                     ax_spec.set_ylabel("Frequency (Hz)")
                     ax_spec.set_title(f"DIFARGram-like Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
 
-                    t_raw = [float(v) for v in list(meta.get("time_s", []) or [])]
-                    b_raw = [float(v) % 360.0 for v in list(meta.get("bearing_true_deg", []) or [])]
-                    c_raw = [float(v) for v in list(meta.get("confidence", []) or [])]
+                    t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
+                    b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
+                    c_raw = [float(v) for v in _safe_seq(meta.get("confidence"))]
                     n = min(len(t_raw), len(b_raw))
                     if n > 1:
                         t0 = float(start_sec.value())
@@ -2028,9 +2036,9 @@ class DifarToolsMixin:
                         "wav_path": wav_path,
                         "label": heatmap_label,
                         "omni_channel": int(omni_spin.value()) - 1,
-                        "time_s": list(result.get("time_s", []) or []),
-                        "bearing_true_deg": list(result.get("bearing_true_deg", []) or []),
-                        "confidence": list(result.get("confidence", []) or []),
+                        "time_s": _safe_seq(result.get("time_s")),
+                        "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
+                        "confidence": _safe_seq(result.get("confidence")),
                     }
 
                     run_id = None
