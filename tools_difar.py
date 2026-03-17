@@ -1424,6 +1424,7 @@ class DifarToolsMixin:
             pop = QtWidgets.QDialog(dlg)
             pop.setWindowTitle("DIFARGram-style Display")
             pop.resize(1250, 820)
+            pop.setWindowState(pop.windowState() | QtCore.Qt.WindowMaximized)
             lay = QtWidgets.QVBoxLayout(pop)
 
             ctl = QtWidgets.QHBoxLayout()
