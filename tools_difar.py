@@ -1621,8 +1621,20 @@ class DifarToolsMixin:
                             b_plot = list(b)
                             if smooth_mode_combo.currentText() == "Moving average":
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
-                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.0, alpha=0.5, label="Bearing")
-                            sc = ax_bear.scatter(t, b_plot, c=b_plot, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+
+                            # Bearing-colored points/overlays (0..360 cyclic hue).
+                            sc = ax_bear.scatter(t, b_plot, c=b_plot, cmap="hsv", vmin=0.0, vmax=360.0, s=18, alpha=0.95)
+                            ax_bear.plot(t, b_plot, color="#DDDDDD", linewidth=0.9, alpha=0.35, label="Bearing")
+
+                            try:
+                                from matplotlib import cm
+                                cmap = cm.get_cmap("hsv")
+                                for ti, bi in zip(t, b_plot):
+                                    col = cmap((float(bi) % 360.0) / 360.0)
+                                    ax_spec.axvline(float(ti), color=col, alpha=0.10, linewidth=0.8)
+                            except Exception:
+                                pass
+
                             cb = fig.colorbar(sc, ax=ax_bear, fraction=0.046, pad=0.02)
                             bearing_cbar["obj"] = cb
                             cb.set_label("Bearing (deg)", color=gui_fg)
