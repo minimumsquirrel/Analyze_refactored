@@ -446,10 +446,29 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
 
         inst_theta = (np.rad2deg(np.arctan2(y_f, x_f)) + 360.0) % 360.0
         mag = np.sqrt(x_f * x_f + y_f * y_f)
+
+        # Defensive shape alignment: some upstream audio/array paths can
+        # occasionally produce off-by-one frame differences.
+        inst_theta = np.asarray(inst_theta, dtype=np.float64).reshape(-1)
+        mag = np.asarray(mag, dtype=np.float64).reshape(-1)
+        if inst_theta.size != mag.size:
+            n_pair = min(inst_theta.size, mag.size)
+            if n_pair <= 0:
+                continue
+            inst_theta = inst_theta[:n_pair]
+            mag = mag[:n_pair]
+
         if float(cfg.min_directional_percentile) > 0.0:
             q = float(np.clip(cfg.min_directional_percentile, 0.0, 99.9))
             thr = float(np.percentile(mag, q))
             mask = (mag >= thr)
+            if mask.size != inst_theta.size:
+                n_pair = min(mask.size, inst_theta.size, mag.size)
+                if n_pair <= 0:
+                    continue
+                mask = mask[:n_pair]
+                inst_theta = inst_theta[:n_pair]
+                mag = mag[:n_pair]
             if np.any(mask):
                 inst_theta = inst_theta[mask]
                 mag = mag[mask]

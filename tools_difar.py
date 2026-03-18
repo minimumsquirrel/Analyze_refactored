@@ -838,6 +838,7 @@ class DifarToolsMixin:
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("DIFAR Processing")
         dlg.resize(1500, 900)
+        dlg.setWindowState(dlg.windowState() | QtCore.Qt.WindowMaximized)
 
         layout = QtWidgets.QVBoxLayout(dlg)
 
@@ -845,6 +846,7 @@ class DifarToolsMixin:
         gui_panel_bg = "#19232d"
         gui_fg = "#DDDDDD"
         gui_grid = "#666666"
+        gui_border = "#8FA3B5"
 
         content_row = QtWidgets.QHBoxLayout()
         layout.addLayout(content_row, stretch=1)
@@ -857,15 +859,6 @@ class DifarToolsMixin:
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_panel.setMinimumWidth(520)
         content_row.addWidget(right_panel, stretch=2)
-
-        help_lbl = QtWidgets.QLabel(
-            "DIFAR workflow:\n"
-            "1) Use Calibration Import button to add/update calibration sets.\n"
-            "2) Use loaded WAV automatically (or choose one when none loaded), set mapping/start UTC/compass.\n"
-            "3) Run bearing extraction, save analyzed output to DB, optional CSV export, and optional Chart overlay."
-        )
-        help_lbl.setWordWrap(True)
-        left_layout.addWidget(help_lbl)
 
         import_row = QtWidgets.QHBoxLayout()
         import_btn = QtWidgets.QPushButton("Calibration Import...")
@@ -1013,25 +1006,15 @@ class DifarToolsMixin:
 
         heat_btn_row = QtWidgets.QHBoxLayout()
         open_heatmap_btn = QtWidgets.QPushButton("Open Time vs Bearing Heatmap...")
+        open_difargram_btn = QtWidgets.QPushButton("Open DIFARGram Display...")
         heat_btn_row.addWidget(open_heatmap_btn)
+        heat_btn_row.addWidget(open_difargram_btn)
         heat_btn_row.addStretch(1)
         left_layout.addLayout(heat_btn_row)
 
         close_btn = QtWidgets.QPushButton("Close")
         close_row = QtWidgets.QHBoxLayout(); close_row.addStretch(1); close_row.addWidget(close_btn)
         left_layout.addLayout(close_row)
-
-        cal_plot_note = QtWidgets.QLabel(
-            "Selected calibration preview:\n"
-            "- Top: X/Y/Z particle velocity sensitivity\n"
-            "- Bottom: OMNI pressure sensitivity"
-        )
-        cal_plot_note.setWordWrap(True)
-        right_layout.addWidget(cal_plot_note)
-
-        cal_plot_status = QtWidgets.QLabel("No calibration selected.")
-        cal_plot_status.setWordWrap(True)
-        right_layout.addWidget(cal_plot_status)
 
         cal_canvas = None
         cal_fig = None
@@ -1050,7 +1033,7 @@ class DifarToolsMixin:
             cal_ax_omni = cal_fig.add_subplot(2, 1, 2)
             right_layout.addWidget(cal_canvas, stretch=1)
         except Exception:
-            cal_plot_status.setText("Calibration plots unavailable (matplotlib Qt backend not available).")
+            out.appendPlainText("Calibration plots unavailable (matplotlib Qt backend not available).")
 
         def _palette_for_plots(count: int):
             try:
@@ -1092,14 +1075,13 @@ class DifarToolsMixin:
 
             cal_name = cal_combo.currentData() or cal_combo.currentText().strip()
             if not cal_name:
-                cal_plot_status.setText("No calibration selected.")
                 cal_canvas.draw_idle()
                 return
 
             try:
                 cal = load_difar_calibration_from_db(DB_FILENAME, cal_name)
             except Exception as e:
-                cal_plot_status.setText(f"Could not load calibration '{cal_name}': {e}")
+                out.appendPlainText(f"Could not load calibration '{cal_name}': {e}")
                 cal_canvas.draw_idle()
                 return
 
@@ -1126,8 +1108,15 @@ class DifarToolsMixin:
                 cal_ax_omni.text(0.5, 0.5, "No OMNI data", ha="center", va="center", transform=cal_ax_omni.transAxes, color="#DDDDDD")
 
             cal_fig.tight_layout(pad=1.2)
-            cal_plot_status.setText(f"Calibration preview: {cal_name}")
             cal_canvas.draw_idle()
+
+        def _safe_seq(value):
+            if value is None:
+                return []
+            try:
+                return list(value)
+            except Exception:
+                return []
 
         def _result_to_heatmap_payload(result: dict):
             time_raw = result.get("time_s", [])
@@ -1279,7 +1268,8 @@ class DifarToolsMixin:
                 ax.set_title(f"DIFAR Heatmap [{label}]", color=gui_fg)
                 ax.tick_params(colors=gui_fg)
                 for sp in ax.spines.values():
-                    sp.set_color(gui_grid)
+                    sp.set_color(gui_border)
+                    sp.set_linewidth(1.4)
 
                 if cax is not None:
                     cax.clear()
@@ -1430,6 +1420,398 @@ class DifarToolsMixin:
             if current_payload is not None:
                 _render(current_payload, current_label)
             pop.finished.connect(lambda *_: _stop_heatmap_playback())
+            pop.exec_()
+
+        def _open_difargram_popup():
+            pop = QtWidgets.QDialog(dlg)
+            pop.setWindowTitle("DIFARGram-style Display")
+            pop.resize(1250, 820)
+            pop.setWindowState(pop.windowState() | QtCore.Qt.WindowMaximized)
+            lay = QtWidgets.QVBoxLayout(pop)
+
+            ctl = QtWidgets.QHBoxLayout()
+            start_sec = QtWidgets.QDoubleSpinBox(); start_sec.setRange(0.0, 86400.0); start_sec.setDecimals(2); start_sec.setValue(0.0); start_sec.setSuffix(" s start")
+            win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
+            max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
+            nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
+            smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"]); smooth_mode_combo.setCurrentText("Moving average")
+            smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
+            spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
+            spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
+            render_btn = QtWidgets.QPushButton("Render")
+            save_btn = QtWidgets.QPushButton("Save JPG...")
+            ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
+            ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
+            ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
+            ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
+            ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
+            ctl.addWidget(render_btn); ctl.addWidget(save_btn)
+            ctl.addStretch(1)
+            lay.addLayout(ctl)
+
+            status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
+            status_lbl.setWordWrap(True)
+            lay.addWidget(status_lbl)
+
+            fig = None
+            canvas = None
+            ax_spec = None
+            ax_bear = None
+            ax_polar = None
+            cax_bearing = None
+            bearing_cbar = {"obj": None}
+            try:
+                from matplotlib.figure import Figure
+                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+                fig = Figure(facecolor=gui_panel_bg)
+                canvas = FigureCanvas(fig)
+                gs = fig.add_gridspec(2, 3, width_ratios=[1.2, 2.6, 0.12], height_ratios=[2.2, 1.0], wspace=0.24, hspace=0.24)
+                ax_polar = fig.add_subplot(gs[:, 0], projection="polar")
+                ax_spec = fig.add_subplot(gs[0, 1])
+                ax_bear = fig.add_subplot(gs[1, 1], sharex=ax_spec)
+                cax_bearing = fig.add_subplot(gs[:, 2])
+                lay.addWidget(canvas, 1)
+            except Exception:
+                status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
+
+            def _default_seconds_from_detection():
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    return
+                try:
+                    t_vals = [float(v) for v in _safe_seq(meta.get("time_s"))]
+                except Exception:
+                    t_vals = []
+                if len(t_vals) < 2:
+                    return
+                t0 = float(min(t_vals))
+                t1 = float(max(t_vals))
+                span = max(2.0, t1 - t0)
+                start_sec.setValue(max(0.0, t0))
+                win_sec.setValue(span)
+
+            def _style_ax(ax):
+                ax.set_facecolor(gui_bg)
+                ax.tick_params(colors=gui_fg)
+                for sp in ax.spines.values():
+                    sp.set_color(gui_border)
+                    sp.set_linewidth(1.4)
+                ax.xaxis.label.set_color(gui_fg)
+                ax.yaxis.label.set_color(gui_fg)
+                ax.title.set_color(gui_fg)
+
+            def _style_polar_ax(ax):
+                ax.set_facecolor(gui_bg)
+                ax.grid(True, alpha=0.25)
+                ax.set_theta_zero_location("N")
+                ax.set_theta_direction(-1)
+                ax.tick_params(colors=gui_fg)
+                for sp in ax.spines.values():
+                    sp.set_color(gui_grid)
+                ax.set_title("Bearing Detections (Polar)", color=gui_fg)
+                ax.set_rlabel_position(135)
+
+            def _read_wav_segment(path, channel_idx, start_s, duration_s):
+                import wave
+                import numpy as np
+
+                def _slice_channel(arr, ch_idx):
+                    if getattr(arr, "ndim", 1) <= 1:
+                        return np.asarray(arr)
+                    n_channels = int(arr.shape[1])
+                    ch = 0 if ch_idx < 0 else (n_channels - 1 if ch_idx >= n_channels else int(ch_idx))
+                    return np.asarray(arr[:, ch])
+
+                try:
+                    with wave.open(path, "rb") as wf:
+                        n_channels = int(wf.getnchannels())
+                        sampwidth = int(wf.getsampwidth())
+                        rate = int(wf.getframerate())
+                        n_frames = int(wf.getnframes())
+                        ch = 0 if channel_idx < 0 else (n_channels - 1 if channel_idx >= n_channels else int(channel_idx))
+                        start_frame = max(0, int(float(start_s) * rate))
+                        end_frame = min(n_frames, start_frame + int(float(duration_s) * rate))
+                        count = max(0, end_frame - start_frame)
+                        wf.setpos(start_frame)
+                        raw = wf.readframes(count)
+                    if count <= 0:
+                        return np.array([], dtype=float), float(rate)
+                    if sampwidth == 1:
+                        data = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+                        data = (data - 128.0) / 128.0
+                    elif sampwidth == 2:
+                        data = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
+                    elif sampwidth == 3:
+                        b = np.frombuffer(raw, dtype=np.uint8)
+                        b = b.reshape(-1, 3)
+                        v = (b[:, 0].astype(np.int32)
+                             | (b[:, 1].astype(np.int32) << 8)
+                             | (b[:, 2].astype(np.int32) << 16))
+                        sign = (v & 0x800000) != 0
+                        v[sign] -= (1 << 24)
+                        data = v.astype(np.float32) / 8388608.0
+                    elif sampwidth == 4:
+                        data = np.frombuffer(raw, dtype='<i4').astype(np.float32) / 2147483648.0
+                    else:
+                        raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
+                    if n_channels > 1:
+                        data = data.reshape(-1, n_channels)[:, ch]
+                    return data, float(rate)
+                except Exception as wave_err:
+                    try:
+                        from scipy.io import wavfile as scipy_wavfile
+                        rate, data_all = scipy_wavfile.read(path)
+                        data_all = np.asarray(data_all)
+                        if data_all.dtype.kind in ("i", "u"):
+                            bits = int(data_all.dtype.itemsize) * 8
+                            scale = float(2 ** (bits - 1)) if bits > 1 else 1.0
+                            data_all = data_all.astype(np.float32) / scale
+                        else:
+                            data_all = data_all.astype(np.float32)
+                        mono = _slice_channel(data_all, int(channel_idx))
+                        start_frame = max(0, int(float(start_s) * float(rate)))
+                        end_frame = min(int(mono.shape[0]), start_frame + int(float(duration_s) * float(rate)))
+                        if end_frame <= start_frame:
+                            return np.array([], dtype=float), float(rate)
+                        return mono[start_frame:end_frame], float(rate)
+                    except Exception as scipy_err:
+                        raise ValueError(
+                            f"Unsupported WAV encoding for DIFARGram reader ({wave_err}). "
+                            "Convert WAV to PCM or install scipy for fallback decoding."
+                        ) from scipy_err
+
+            def _smooth_bearing_series_deg(values, window_n):
+                import numpy as np
+                arr = np.asarray(values, dtype=float)
+                if arr.size <= 2:
+                    return arr
+                w = max(1, int(window_n))
+                if w <= 1:
+                    return arr
+                if w % 2 == 0:
+                    w += 1
+                rad = np.deg2rad(arr)
+                unwrapped = np.unwrap(rad)
+                kernel = np.ones(w, dtype=float) / float(w)
+                padded = np.pad(unwrapped, (w // 2, w // 2), mode="edge")
+                sm = np.convolve(padded, kernel, mode="valid")
+                return (np.rad2deg(sm) + 360.0) % 360.0
+
+            def _render_difargram():
+                if fig is None or canvas is None or ax_spec is None or ax_bear is None or ax_polar is None:
+                    return
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    status_lbl.setText("No recent DIFAR run context available. Run DIFAR processing first.")
+                    return
+                wav_path = str(meta.get("wav_path") or "")
+                if not wav_path or not os.path.isfile(wav_path):
+                    status_lbl.setText("Recent run WAV path is unavailable. Re-run DIFAR processing or choose a valid WAV in the run.")
+                    return
+                try:
+                    ch_idx = int(meta.get("omni_channel", 0))
+                    samples, fs = _read_wav_segment(wav_path, ch_idx, float(start_sec.value()), float(win_sec.value()))
+                    if len(samples) <= 8:
+                        status_lbl.setText("Selected segment has no audio samples.")
+                        return
+
+                    if cax_bearing is not None:
+                        cax_bearing.clear()
+                        cax_bearing.set_facecolor(gui_bg)
+                        cax_bearing.tick_params(colors=gui_fg)
+                        for sp in cax_bearing.spines.values():
+                            sp.set_color(gui_grid)
+                    bearing_cbar["obj"] = None
+
+                    ax_spec.clear(); ax_bear.clear(); ax_polar.clear()
+                    _style_ax(ax_spec); _style_ax(ax_bear); _style_polar_ax(ax_polar)
+
+                    nfft = int(nfft_combo.currentText())
+                    nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
+                    noverlap = max(0, int(nfft * 0.75))
+                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    spec_y0 = float(spec_ymin_spin.value())
+                    spec_y1 = float(spec_ymax_spin.value())
+                    if spec_y1 <= spec_y0:
+                        spec_y0, spec_y1 = 0.0, float(max_freq.value())
+                    ax_spec.set_ylim(spec_y0, spec_y1)
+                    ax_spec.set_ylabel("Frequency (Hz)")
+                    ax_spec.set_title(f"DIFARGram Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
+
+                    t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
+                    b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
+                    c_raw = [float(v) for v in _safe_seq(meta.get("confidence"))]
+                    n = min(len(t_raw), len(b_raw))
+                    if n > 1:
+                        t0 = float(start_sec.value())
+                        t1 = t0 + float(win_sec.value())
+                        t = []
+                        b = []
+                        c = []
+                        for i in range(n):
+                            if t_raw[i] < t0 or t_raw[i] > t1:
+                                continue
+                            t.append(t_raw[i] - t0)
+                            b.append(b_raw[i])
+                            c.append(c_raw[i] if i < len(c_raw) else 1.0)
+                        if len(t) > 1:
+                            b_plot = list(b)
+                            if smooth_mode_combo.currentText() == "Moving average":
+                                b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
+
+                            # Bearing-colored overlays on spectrogram (0..360 cyclic hue).
+                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.3, alpha=0.9, label="Bearing")
+                            ax_bear.scatter(t, b_plot, color="#03DFE2", s=10, alpha=0.65)
+
+                            try:
+                                from matplotlib import cm, colors
+                                import numpy as np
+                                cmap = cm.get_cmap("hsv")
+                                norm = colors.Normalize(vmin=0.0, vmax=360.0)
+
+                                # Detect dominant frequency (main band) near each bearing timestamp
+                                # and color only that detected track by bearing.
+                                bins_arr = np.asarray(bins, dtype=float).reshape(-1)
+                                freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
+                                pxx_arr = np.asarray(pxx, dtype=float)
+                                if pxx_arr.ndim == 2 and bins_arr.size > 0 and freqs_arr.size > 0:
+                                    ridge_t = []
+                                    ridge_f = []
+                                    ridge_b = []
+                                    for ti, bi in zip(t, b_plot):
+                                        j = int(np.argmin(np.abs(bins_arr - float(ti))))
+                                        if j < 0 or j >= pxx_arr.shape[1]:
+                                            continue
+                                        col_pow = pxx_arr[:, j]
+                                        if col_pow.size == 0:
+                                            continue
+                                        fi = int(np.nanargmax(col_pow))
+                                        if fi < 0 or fi >= freqs_arr.size:
+                                            continue
+                                        ff = float(freqs_arr[fi])
+                                        if ff < spec_y0 or ff > spec_y1:
+                                            continue
+                                        ridge_t.append(float(ti))
+                                        ridge_f.append(ff)
+                                        ridge_b.append(float(bi) % 360.0)
+
+                                    if len(ridge_t) > 1:
+                                        half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
+                                        if freqs_arr.size > 1:
+                                            f_step = float(np.median(np.diff(freqs_arr)))
+                                            f_step = abs(f_step) if np.isfinite(f_step) and abs(f_step) > 1e-9 else max(1.0, half_hz / 8.0)
+                                        else:
+                                            f_step = max(1.0, half_hz / 8.0)
+
+                                        band_t = []
+                                        band_f = []
+                                        band_rgba = []
+
+                                        for ti, ff, bb in zip(ridge_t, ridge_f, ridge_b):
+                                            base_rgba = list(cmap(norm(float(bb) % 360.0)))
+                                            if half_hz <= 1e-9:
+                                                rgba = tuple(base_rgba[:3] + [0.95])
+                                                band_t.append(float(ti)); band_f.append(float(ff)); band_rgba.append(rgba)
+                                                continue
+
+                                            n_side = max(1, int(np.ceil(half_hz / max(1e-9, f_step))))
+                                            offsets = np.linspace(-half_hz, half_hz, 2 * n_side + 1)
+                                            for off in offsets:
+                                                fcur = float(ff + off)
+                                                if fcur < spec_y0 or fcur > spec_y1:
+                                                    continue
+                                                w = max(0.0, 1.0 - (abs(float(off)) / half_hz))
+                                                alpha = 0.12 + 0.83 * w
+                                                rgba = tuple(base_rgba[:3] + [alpha])
+                                                band_t.append(float(ti))
+                                                band_f.append(fcur)
+                                                band_rgba.append(rgba)
+
+                                        if band_t:
+                                            ax_spec.scatter(
+                                                band_t,
+                                                band_f,
+                                                c=band_rgba,
+                                                s=14,
+                                                linewidths=0.0,
+                                                marker="s",
+                                            )
+
+                                        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+                                        sm.set_array([])
+                                        cb = fig.colorbar(sm, cax=cax_bearing) if cax_bearing is not None else fig.colorbar(sm, ax=ax_spec, fraction=0.046, pad=0.02)
+                                        bearing_cbar["obj"] = cb
+                                        cb.set_label("Bearing (deg)", color=gui_fg)
+                                        cb.ax.yaxis.set_tick_params(color=gui_fg)
+                                        for tick in cb.ax.get_yticklabels():
+                                            tick.set_color(gui_fg)
+                            except Exception:
+                                pass
+                            ax_bear.legend(loc="upper right", framealpha=0.3)
+
+                            # Third panel: polar plot of bearing detections (radius = relative time in window)
+                            try:
+                                import numpy as np
+                                theta = np.deg2rad(np.asarray(b_plot, dtype=float) % 360.0)
+                                t_arr = np.asarray(t, dtype=float)
+                                if t_arr.size > 1:
+                                    t0p = float(np.min(t_arr)); t1p = float(np.max(t_arr))
+                                    denom = max(1e-9, (t1p - t0p))
+                                    r = (t_arr - t0p) / denom
+                                else:
+                                    r = np.ones_like(theta) * 0.5
+                                ax_polar.scatter(theta, r, c=np.asarray(b_plot, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+                                ax_polar.set_ylim(0.0, 1.0)
+                                ax_polar.set_yticks([0.25, 0.5, 0.75, 1.0])
+                                ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
+                            except Exception:
+                                pass
+                    ax_bear.set_xlim(0.0, float(win_sec.value()))
+                    ax_bear.set_ylim(0.0, 360.0)
+                    ax_bear.set_xlabel("Time within selected segment (s)")
+                    ax_bear.set_ylabel("Bearing True (deg)")
+                    ax_bear.grid(True, alpha=0.25)
+
+                    _style_ax(ax_spec)
+                    _style_ax(ax_bear)
+                    canvas.draw_idle()
+                    status_lbl.setText("Rendered DIFARGram-style display from latest run.")
+                except Exception as e:
+                    status_lbl.setText(f"DIFARGram render failed: {e}")
+
+            def _save_jpg():
+                if fig is None:
+                    return
+                meta = getattr(self, "_difar_last_run_meta", {}) or {}
+                wav_path = str(meta.get("wav_path") or "")
+                wav_name = os.path.splitext(os.path.basename(wav_path))[0] if wav_path else "unknown_wav"
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        base_dir = self._project_subdir("difargram")
+                    except Exception:
+                        base_dir = os.path.join(os.getcwd(), "difargram")
+                else:
+                    base_dir = os.path.join(os.getcwd(), "difargram")
+                out_dir = os.path.join(base_dir, wav_name)
+                os.makedirs(out_dir, exist_ok=True)
+                default_path = os.path.join(out_dir, "difargram_spectrogram.jpg")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Save DIFARGram JPG", default_path, "JPEG Files (*.jpg *.jpeg)")
+                if not path:
+                    return
+                if not path.lower().endswith((".jpg", ".jpeg")):
+                    path = f"{path}.jpg"
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    fig.savefig(path, format="jpg", dpi=180, bbox_inches="tight")
+                    status_lbl.setText(f"Saved DIFARGram JPG: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed saving JPG: {e}")
+
+            render_btn.clicked.connect(_render_difargram)
+            save_btn.clicked.connect(_save_jpg)
+            _default_seconds_from_detection()
+            status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
 
         def _refresh_calibration_list(select_name: str = ""):
@@ -1882,6 +2264,15 @@ class DifarToolsMixin:
                         self._difar_last_heatmap_payload = heatmap_payload
                         self._difar_last_heatmap_label = heatmap_label
 
+                    self._difar_last_run_meta = {
+                        "wav_path": wav_path,
+                        "label": heatmap_label,
+                        "omni_channel": int(omni_spin.value()) - 1,
+                        "time_s": _safe_seq(result.get("time_s")),
+                        "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
+                        "confidence": _safe_seq(result.get("confidence")),
+                    }
+
                     run_id = None
                     if save_db_chk.isChecked():
                         serializable = {}
@@ -2035,6 +2426,7 @@ class DifarToolsMixin:
         export_browse.clicked.connect(_browse_export)
         manage_profiles_btn.clicked.connect(_open_target_profiles_popup)
         open_heatmap_btn.clicked.connect(lambda: _open_heatmap_popup())
+        open_difargram_btn.clicked.connect(_open_difargram_popup)
         run_btn.clicked.connect(_run_processing)
         close_btn.clicked.connect(dlg.accept)
         dlg.finished.connect(lambda *_: _stop_difar_map_animation())
