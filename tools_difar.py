@@ -1466,7 +1466,7 @@ class DifarToolsMixin:
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 3, width_ratios=[1.2, 2.6, 0.12], height_ratios=[2.2, 1.0], wspace=0.24, hspace=0.24)
+                gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 2.8, 0.12], height_ratios=[2.2, 1.0], wspace=0.38, hspace=0.24)
                 ax_polar = fig.add_subplot(gs[:, 0], projection="polar")
                 ax_spec = fig.add_subplot(gs[0, 1])
                 ax_bear = fig.add_subplot(gs[1, 1], sharex=ax_spec)
@@ -1493,6 +1493,11 @@ class DifarToolsMixin:
 
             def _style_ax(ax):
                 ax.set_facecolor(gui_bg)
+                try:
+                    ax.patch.set_edgecolor(gui_border)
+                    ax.patch.set_linewidth(1.8)
+                except Exception:
+                    pass
                 ax.tick_params(colors=gui_fg)
                 for sp in ax.spines.values():
                     sp.set_color(gui_border)
@@ -1503,12 +1508,18 @@ class DifarToolsMixin:
 
             def _style_polar_ax(ax):
                 ax.set_facecolor(gui_bg)
+                try:
+                    ax.patch.set_edgecolor(gui_border)
+                    ax.patch.set_linewidth(1.8)
+                except Exception:
+                    pass
                 ax.grid(True, alpha=0.25)
                 ax.set_theta_zero_location("N")
                 ax.set_theta_direction(-1)
                 ax.tick_params(colors=gui_fg)
                 for sp in ax.spines.values():
-                    sp.set_color(gui_grid)
+                    sp.set_color(gui_border)
+                    sp.set_linewidth(1.4)
                 ax.set_title("Bearing Detections (Polar)", color=gui_fg)
                 ax.set_rlabel_position(135)
 
