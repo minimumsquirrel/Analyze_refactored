@@ -846,6 +846,7 @@ class DifarToolsMixin:
         gui_panel_bg = "#19232d"
         gui_fg = "#DDDDDD"
         gui_grid = "#666666"
+        gui_border = "#8FA3B5"
 
         content_row = QtWidgets.QHBoxLayout()
         layout.addLayout(content_row, stretch=1)
@@ -1267,7 +1268,8 @@ class DifarToolsMixin:
                 ax.set_title(f"DIFAR Heatmap [{label}]", color=gui_fg)
                 ax.tick_params(colors=gui_fg)
                 for sp in ax.spines.values():
-                    sp.set_color(gui_grid)
+                    sp.set_color(gui_border)
+                    sp.set_linewidth(1.4)
 
                 if cax is not None:
                     cax.clear()
@@ -1464,7 +1466,7 @@ class DifarToolsMixin:
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 3, width_ratios=[1.2, 2.6, 0.12], height_ratios=[2.2, 1.0], wspace=0.16, hspace=0.24)
+                gs = fig.add_gridspec(2, 3, width_ratios=[1.2, 2.6, 0.12], height_ratios=[2.2, 1.0], wspace=0.24, hspace=0.24)
                 ax_polar = fig.add_subplot(gs[:, 0], projection="polar")
                 ax_spec = fig.add_subplot(gs[0, 1])
                 ax_bear = fig.add_subplot(gs[1, 1], sharex=ax_spec)
@@ -1493,7 +1495,8 @@ class DifarToolsMixin:
                 ax.set_facecolor(gui_bg)
                 ax.tick_params(colors=gui_fg)
                 for sp in ax.spines.values():
-                    sp.set_color(gui_grid)
+                    sp.set_color(gui_border)
+                    sp.set_linewidth(1.4)
                 ax.xaxis.label.set_color(gui_fg)
                 ax.yaxis.label.set_color(gui_fg)
                 ax.title.set_color(gui_fg)
