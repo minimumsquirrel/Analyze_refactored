@@ -1461,7 +1461,6 @@ class DifarToolsMixin:
             ax_polar = None
             cax_bearing = None
             bearing_cbar = {"obj": None}
-            panel_boxes = []
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1513,42 +1512,6 @@ class DifarToolsMixin:
                     sp.set_linewidth(1.4)
                 ax.set_title("Bearing Detections (Polar)", color=gui_fg)
                 ax.set_rlabel_position(135)
-
-            def _refresh_panel_boxes():
-                if fig is None:
-                    return
-                try:
-                    from matplotlib.patches import Rectangle
-                except Exception:
-                    return
-                while panel_boxes:
-                    patch = panel_boxes.pop()
-                    try:
-                        patch.remove()
-                    except Exception:
-                        pass
-                for ax in (ax_polar, ax_spec, ax_bear):
-                    if ax is None:
-                        continue
-                    try:
-                        pos = ax.get_position()
-                        pad_x = 0.008
-                        pad_y = 0.014
-                        rect = Rectangle(
-                            (pos.x0 - pad_x, pos.y0 - pad_y),
-                            pos.width + 2 * pad_x,
-                            pos.height + 2 * pad_y,
-                            transform=fig.transFigure,
-                            fill=False,
-                            edgecolor=gui_border,
-                            linewidth=1.4,
-                            zorder=2,
-                            clip_on=False,
-                        )
-                        fig.add_artist(rect)
-                        panel_boxes.append(rect)
-                    except Exception:
-                        pass
 
             def _read_wav_segment(path, channel_idx, start_s, duration_s):
                 import wave
@@ -1813,7 +1776,6 @@ class DifarToolsMixin:
 
                     _style_ax(ax_spec)
                     _style_ax(ax_bear)
-                    _refresh_panel_boxes()
                     canvas.draw_idle()
                     status_lbl.setText("Rendered DIFARGram-style display from latest run.")
                 except Exception as e:
