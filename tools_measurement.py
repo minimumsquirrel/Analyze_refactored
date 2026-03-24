@@ -5575,6 +5575,13 @@ class MeasurementToolsMixin:
             os.makedirs(out, exist_ok=True)
             return out
 
+        def _overlay_export_dir():
+            base = self._project_subdir("electrical_noise_overlays") if hasattr(self, "_project_subdir") else None
+            if not base:
+                base = os.path.join(os.getcwd(), "electrical_noise_overlays")
+            os.makedirs(base, exist_ok=True)
+            return base
+
         def _project_id():
             pid = getattr(self, "current_project_id", None)
             if isinstance(pid, int):
@@ -5600,6 +5607,7 @@ class MeasurementToolsMixin:
                     project_id INTEGER,
                     project_name TEXT,
                     file_name TEXT,
+                    run_name TEXT,
                     units TEXT,
                     fmin REAL,
                     fmax REAL,
@@ -5617,6 +5625,11 @@ class MeasurementToolsMixin:
                     FOREIGN KEY(run_id) REFERENCES electrical_noise_runs(id) ON DELETE CASCADE
                 )
             """)
+            # Backward compatibility: older DBs won't have run_name
+            cur.execute("PRAGMA table_info(electrical_noise_runs)")
+            cols = {str(r[1]).strip().lower() for r in cur.fetchall()}
+            if "run_name" not in cols:
+                cur.execute("ALTER TABLE electrical_noise_runs ADD COLUMN run_name TEXT")
             conn.commit()
 
         def _save_run_to_db():
@@ -5639,14 +5652,24 @@ class MeasurementToolsMixin:
                 fmax = fs / 2.0
 
             fname = _current_file_stem()
+            default_run_name = f"{fname} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            run_name, ok = QtWidgets.QInputDialog.getText(
+                dlg,
+                "Save Run",
+                "Run name (optional):",
+                text=default_run_name,
+            )
+            if not ok:
+                return
+            run_name = (run_name or "").strip()
             vrms_map = {lab: v for lab, v in zip(plot_state["labels"], plot_state["vrms"])}
             conn = sqlite3.connect(DB_FILENAME)
             _ensure_noise_tables(conn)
             cur = conn.cursor()
             cur.execute(
-                """INSERT INTO electrical_noise_runs(project_id, project_name, file_name, units, fmin, fmax, vrms_json)
-                   VALUES(?,?,?,?,?,?,?)""",
-                (pid, pname, fname, units_cb.currentText().strip(), fmin, fmax, json.dumps(vrms_map)),
+                """INSERT INTO electrical_noise_runs(project_id, project_name, file_name, run_name, units, fmin, fmax, vrms_json)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (pid, pname, fname, run_name or None, units_cb.currentText().strip(), fmin, fmax, json.dumps(vrms_map)),
             )
             run_id = int(cur.lastrowid)
             freq = plot_state["f"].tolist()
@@ -5668,7 +5691,7 @@ class MeasurementToolsMixin:
             _ensure_noise_tables(conn)
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, file_name, units, created_at FROM electrical_noise_runs WHERE project_id=? ORDER BY id DESC",
+                "SELECT id, file_name, run_name, units, created_at FROM electrical_noise_runs WHERE project_id=? ORDER BY id DESC",
                 (pid,),
             )
             runs = cur.fetchall()
@@ -5683,9 +5706,10 @@ class MeasurementToolsMixin:
             hv = QtWidgets.QVBoxLayout(hd)
             hl = QtWidgets.QListWidget()
             hl.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-            for rid, fn, units, ts in runs:
-                it = QtWidgets.QListWidgetItem(f"#{rid} | {fn} | {units} | {ts}")
-                it.setData(QtCore.Qt.UserRole, int(rid))
+            for rid, fn, run_name, units, ts in runs:
+                shown_name = (run_name or fn or f"Run {rid}").strip()
+                it = QtWidgets.QListWidgetItem(f"#{rid} | {shown_name} | {units} | {ts}")
+                it.setData(QtCore.Qt.UserRole, {"id": int(rid), "label": shown_name})
                 hl.addItem(it)
             hv.addWidget(hl)
 
@@ -5703,8 +5727,17 @@ class MeasurementToolsMixin:
             pi.getAxis("bottom").setTextPen(pg.mkPen("white"))
             hv.addWidget(pw, 1)
 
-            btn = QtWidgets.QPushButton("Overlay Selected")
-            hv.addWidget(btn)
+            btn_row = QtWidgets.QHBoxLayout()
+            btn_overlay = QtWidgets.QPushButton("Overlay Selected")
+            btn_export_jpg = QtWidgets.QPushButton("Export JPG")
+            btn_export_csv = QtWidgets.QPushButton("Export CSV")
+            btn_close = QtWidgets.QPushButton("Close")
+            for w in (btn_overlay, btn_export_jpg, btn_export_csv, btn_close):
+                btn_row.addWidget(w)
+            btn_row.addStretch(1)
+            hv.addLayout(btn_row)
+
+            compare_state = {"rows": []}
 
             def _draw_selected():
                 pi.clear()
@@ -5715,11 +5748,15 @@ class MeasurementToolsMixin:
                     pass
                 selected = hl.selectedItems()
                 if not selected:
+                    compare_state["rows"] = []
                     return
                 colors = _palette(512)
                 cidx = 0
+                export_rows = []
                 for it in selected:
-                    rid = int(it.data(QtCore.Qt.UserRole))
+                    run_meta = it.data(QtCore.Qt.UserRole) or {}
+                    rid = int(run_meta.get("id"))
+                    run_label = str(run_meta.get("label") or f"run{rid}")
                     cur.execute("SELECT channel_label, freq_json, value_json FROM electrical_noise_points WHERE run_id=?", (rid,))
                     for ch, fjs, vjs in cur.fetchall():
                         try:
@@ -5729,10 +5766,47 @@ class MeasurementToolsMixin:
                             continue
                         m = np.isfinite(f) & np.isfinite(y) & (f > 0)
                         if np.any(m):
-                            pi.plot(f[m], y[m], pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"run{rid}:{ch}")
+                            fm = f[m]
+                            ym = y[m]
+                            pi.plot(fm, ym, pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"{run_label}:{ch}")
+                            export_rows.extend((rid, run_label, ch, float(ff), float(yy)) for ff, yy in zip(fm, ym))
                             cidx += 1
+                compare_state["rows"] = export_rows
 
-            btn.clicked.connect(_draw_selected)
+            def _export_compare_jpg():
+                if not compare_state["rows"]:
+                    QtWidgets.QMessageBox.information(hd, "Export JPG", "Select and overlay runs first.")
+                    return
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                path = os.path.join(_overlay_export_dir(), f"electrical_noise_overlay_{stamp}.jpg")
+                try:
+                    exporter = pg.exporters.ImageExporter(pi)
+                    exporter.parameters()["width"] = 1800
+                    exporter.export(path)
+                    QtWidgets.QMessageBox.information(hd, "Exported", f"Saved graph to:\n{path}")
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(hd, "Export JPG", f"Failed to export JPG:\n{e}")
+
+            def _export_compare_csv():
+                rows = compare_state["rows"]
+                if not rows:
+                    QtWidgets.QMessageBox.information(hd, "Export CSV", "Select and overlay runs first.")
+                    return
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                path = os.path.join(_overlay_export_dir(), f"electrical_noise_overlay_{stamp}.csv")
+                try:
+                    with open(path, "w", newline="", encoding="utf-8") as f:
+                        w = csv.writer(f)
+                        w.writerow(["run_id", "run_name", "channel", "frequency_hz", "value"])
+                        w.writerows(rows)
+                    QtWidgets.QMessageBox.information(hd, "Exported", f"Saved CSV to:\n{path}")
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(hd, "Export CSV", f"Failed to export CSV:\n{e}")
+
+            btn_overlay.clicked.connect(_draw_selected)
+            btn_export_jpg.clicked.connect(_export_compare_jpg)
+            btn_export_csv.clicked.connect(_export_compare_csv)
+            btn_close.clicked.connect(hd.accept)
             hd.exec_()
             conn.close()
 
