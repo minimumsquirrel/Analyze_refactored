@@ -5703,8 +5703,17 @@ class MeasurementToolsMixin:
             pi.getAxis("bottom").setTextPen(pg.mkPen("white"))
             hv.addWidget(pw, 1)
 
-            btn = QtWidgets.QPushButton("Overlay Selected")
-            hv.addWidget(btn)
+            btn_row = QtWidgets.QHBoxLayout()
+            btn_overlay = QtWidgets.QPushButton("Overlay Selected")
+            btn_export_jpg = QtWidgets.QPushButton("Export JPG")
+            btn_export_csv = QtWidgets.QPushButton("Export CSV")
+            btn_close = QtWidgets.QPushButton("Close")
+            for w in (btn_overlay, btn_export_jpg, btn_export_csv, btn_close):
+                btn_row.addWidget(w)
+            btn_row.addStretch(1)
+            hv.addLayout(btn_row)
+
+            compare_state = {"rows": []}
 
             def _draw_selected():
                 pi.clear()
@@ -5715,9 +5724,11 @@ class MeasurementToolsMixin:
                     pass
                 selected = hl.selectedItems()
                 if not selected:
+                    compare_state["rows"] = []
                     return
                 colors = _palette(512)
                 cidx = 0
+                export_rows = []
                 for it in selected:
                     rid = int(it.data(QtCore.Qt.UserRole))
                     cur.execute("SELECT channel_label, freq_json, value_json FROM electrical_noise_points WHERE run_id=?", (rid,))
@@ -5729,10 +5740,59 @@ class MeasurementToolsMixin:
                             continue
                         m = np.isfinite(f) & np.isfinite(y) & (f > 0)
                         if np.any(m):
-                            pi.plot(f[m], y[m], pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"run{rid}:{ch}")
+                            fm = f[m]
+                            ym = y[m]
+                            pi.plot(fm, ym, pen=pg.mkPen(colors[cidx % len(colors)], width=1.8), name=f"run{rid}:{ch}")
+                            export_rows.extend((rid, ch, float(ff), float(yy)) for ff, yy in zip(fm, ym))
                             cidx += 1
+                compare_state["rows"] = export_rows
 
-            btn.clicked.connect(_draw_selected)
+            def _export_compare_jpg():
+                if not compare_state["rows"]:
+                    QtWidgets.QMessageBox.information(hd, "Export JPG", "Select and overlay runs first.")
+                    return
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    hd,
+                    "Export Compare JPG",
+                    "",
+                    "JPEG Files (*.jpg *.jpeg);;PNG Files (*.png);;All Files (*)",
+                )
+                if not path:
+                    return
+                try:
+                    exporter = pg.exporters.ImageExporter(pi)
+                    exporter.parameters()["width"] = 1800
+                    exporter.export(path)
+                    QtWidgets.QMessageBox.information(hd, "Exported", f"Saved graph to:\n{path}")
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(hd, "Export JPG", f"Failed to export JPG:\n{e}")
+
+            def _export_compare_csv():
+                rows = compare_state["rows"]
+                if not rows:
+                    QtWidgets.QMessageBox.information(hd, "Export CSV", "Select and overlay runs first.")
+                    return
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                    hd,
+                    "Export Compare CSV",
+                    "",
+                    "CSV Files (*.csv);;All Files (*)",
+                )
+                if not path:
+                    return
+                try:
+                    with open(path, "w", newline="", encoding="utf-8") as f:
+                        w = csv.writer(f)
+                        w.writerow(["run_id", "channel", "frequency_hz", "value"])
+                        w.writerows(rows)
+                    QtWidgets.QMessageBox.information(hd, "Exported", f"Saved CSV to:\n{path}")
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(hd, "Export CSV", f"Failed to export CSV:\n{e}")
+
+            btn_overlay.clicked.connect(_draw_selected)
+            btn_export_jpg.clicked.connect(_export_compare_jpg)
+            btn_export_csv.clicked.connect(_export_compare_csv)
+            btn_close.clicked.connect(hd.accept)
             hd.exec_()
             conn.close()
 
