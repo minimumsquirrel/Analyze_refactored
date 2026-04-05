@@ -194,7 +194,10 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
 set -euo pipefail
 echo "Building Analyze customer release using customer_build_config.json"
 python3 -m PyInstaller --noconfirm --windowed --name AnalyzeCustomer --distpath "{output_dir}" main_app_refactored.py
-cp "{profile_src}" "{output_dir}/AnalyzeCustomer/customer_build_config.json"
+cp "{profile_src}" "{output_dir}/customer_build_config.json"
+if [ -d "{output_dir}/AnalyzeCustomer" ]; then
+  cp "{profile_src}" "{output_dir}/AnalyzeCustomer/customer_build_config.json"
+fi
 echo "Build complete: {output_dir}/AnalyzeCustomer"
 """
         script_text = script_text.format(output_dir=output_dir, profile_src=str(get_profile_path()))
@@ -261,9 +264,15 @@ echo "Build complete: {output_dir}/AnalyzeCustomer"
 
     def _copy_profile_to_build(self, output_dir):
         profile_src = get_profile_path()
-        build_dir = Path(output_dir) / "AnalyzeCustomer"
-        build_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(profile_src, build_dir / "customer_build_config.json")
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        # one-file compatibility: keep config in dist root
+        shutil.copy2(profile_src, output_path / "customer_build_config.json")
+        # one-dir compatibility: keep config next to executable folder
+        build_dir = output_path / "AnalyzeCustomer"
+        if build_dir.exists() or not any(output_path.glob("AnalyzeCustomer*")):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(profile_src, build_dir / "customer_build_config.json")
 
 
 def main():

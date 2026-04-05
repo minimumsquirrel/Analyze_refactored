@@ -8,10 +8,19 @@ from pathlib import Path
 from typing import Dict, List
 
 def get_profile_path() -> Path:
-    """Resolve profile path next to the app executable when frozen."""
+    """Primary profile path."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "customer_build_config.json"
     return Path(__file__).resolve().parent / "customer_build_config.json"
+
+
+def get_profile_candidates() -> list[Path]:
+    """All candidate locations to search for an existing profile."""
+    candidates = [get_profile_path()]
+    if getattr(sys, "frozen", False):
+        candidates.append(Path.cwd() / "customer_build_config.json")
+        candidates.append(Path(sys.executable).resolve().parent.parent / "customer_build_config.json")
+    return candidates
 
 
 PROFILE_PATH = get_profile_path()
@@ -97,9 +106,10 @@ def default_profile() -> dict:
 
 
 def load_profile(path: Path | None = None) -> dict:
-    if path is None:
-        path = get_profile_path()
     profile = default_profile()
+    if path is None:
+        existing = next((p for p in get_profile_candidates() if p.exists()), None)
+        path = existing or get_profile_path()
     if not path.exists():
         return profile
     try:
