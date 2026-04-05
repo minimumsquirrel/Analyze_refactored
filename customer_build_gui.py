@@ -44,6 +44,15 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
         subtitle.setStyleSheet("color: #9AA3AF;")
         root.addWidget(subtitle)
 
+        output_row = QtWidgets.QHBoxLayout()
+        output_row.addWidget(QtWidgets.QLabel("Build output directory:"))
+        self.output_dir_edit = QtWidgets.QLineEdit(self.profile.get("build_output_dir", "dist"))
+        output_row.addWidget(self.output_dir_edit, 1)
+        browse_btn = QtWidgets.QPushButton("Browse…")
+        browse_btn.clicked.connect(self.choose_output_dir)
+        output_row.addWidget(browse_btn)
+        root.addLayout(output_row)
+
         content = QtWidgets.QHBoxLayout()
         root.addLayout(content, 1)
 
@@ -67,6 +76,21 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
         self.tree.setColumnCount(2)
         self.tree.setAlternatingRowColors(True)
         tools_layout.addWidget(self.tree)
+
+        category_actions = QtWidgets.QHBoxLayout()
+        category_actions.addWidget(QtWidgets.QLabel("Category controls:"))
+        self.category_select_combo = QtWidgets.QComboBox()
+        self.category_select_combo.addItems(list(TOOL_CATALOG.keys()))
+        category_actions.addWidget(self.category_select_combo)
+        select_all_btn = QtWidgets.QPushButton("Select All")
+        select_all_btn.clicked.connect(lambda: self.set_category_checks(QtCore.Qt.Checked))
+        category_actions.addWidget(select_all_btn)
+        deselect_all_btn = QtWidgets.QPushButton("Deselect All")
+        deselect_all_btn.clicked.connect(lambda: self.set_category_checks(QtCore.Qt.Unchecked))
+        category_actions.addWidget(deselect_all_btn)
+        category_actions.addStretch()
+        tools_layout.addLayout(category_actions)
+
         content.addWidget(tools_group, 2)
 
         self._populate_tool_tree()
@@ -123,12 +147,37 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
                 if child.checkState(0) == QtCore.Qt.Checked:
                     selected.append(child.text(0))
             enabled_tools[category] = selected
-        return {"enabled_tabs": enabled_tabs, "enabled_tools": enabled_tools}
+        output_dir = self.output_dir_edit.text().strip() or "dist"
+        return {
+            "enabled_tabs": enabled_tabs,
+            "enabled_tools": enabled_tools,
+            "build_output_dir": output_dir,
+        }
+
+    def choose_output_dir(self):
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Choose Build Output Directory",
+            self.output_dir_edit.text().strip() or str(Path.cwd()),
+        )
+        if chosen:
+            self.output_dir_edit.setText(chosen)
+
+    def set_category_checks(self, state):
+        category_name = self.category_select_combo.currentText()
+        for i in range(self.tree.topLevelItemCount()):
+            category_item = self.tree.topLevelItem(i)
+            if category_item.text(0) != category_name:
+                continue
+            for j in range(category_item.childCount()):
+                category_item.child(j).setCheckState(0, state)
+            break
 
     def reset_defaults(self):
         self.profile = default_profile()
         for tab, cb in self.tab_checks.items():
             cb.setChecked(tab in self.profile["enabled_tabs"])
+        self.output_dir_edit.setText(self.profile.get("build_output_dir", "dist"))
         self._populate_tool_tree()
         self.status.setText("Reset to defaults (not saved yet).")
 
@@ -140,39 +189,67 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
     def write_build_script(self):
         self.save_profile()
         script_path = Path("build_customer_release.sh")
+        output_dir = self.output_dir_edit.text().strip() or "dist"
         script_text = """#!/usr/bin/env bash
 set -euo pipefail
 echo "Building Analyze customer release using customer_build_config.json"
-pyinstaller --noconfirm --windowed --name AnalyzeCustomer main_app_refactored.py
-echo "Build complete: dist/AnalyzeCustomer"
+python3 -m PyInstaller --noconfirm --windowed --name AnalyzeCustomer --distpath "{output_dir}" main_app_refactored.py
+echo "Build complete: {output_dir}/AnalyzeCustomer"
 """
+        script_text = script_text.format(output_dir=output_dir)
         script_path.write_text(script_text, encoding="utf-8")
         script_path.chmod(0o755)
         self.status.setText(f"Wrote {script_path.resolve()}")
 
+    def _resolve_pyinstaller_command(self):
+        module_cmds = [
+            ["python3", "-m", "PyInstaller"],
+            [sys.executable, "-m", "PyInstaller"],
+        ]
+        for module_cmd in module_cmds:
+            try:
+                probe = subprocess.run(
+                    module_cmd + ["--version"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if probe.returncode == 0:
+                    return module_cmd
+            except Exception:
+                pass
+
+        binary = shutil.which("pyinstaller") or shutil.which("pyinstaller.exe")
+        if binary:
+            return [binary]
+        return None
+
     def build_executable(self):
         self.save_profile()
-        if not shutil.which("pyinstaller"):
+        pyinstaller_cmd = self._resolve_pyinstaller_command()
+        if not pyinstaller_cmd:
             QtWidgets.QMessageBox.warning(
                 self,
                 "PyInstaller Not Found",
-                "PyInstaller is not installed in this environment.\n"
-                "Install it with: pip install pyinstaller",
+                "Couldn't find PyInstaller in this Python environment.\n"
+                "Try one of these:\n"
+                "1) install into this interpreter: pip install pyinstaller\n"
+                "2) run with your working interpreter: python3 -m PyInstaller ...",
             )
             return
+        output_dir = self.output_dir_edit.text().strip() or "dist"
         try:
-            subprocess.run(
-                [
-                    "pyinstaller",
-                    "--noconfirm",
-                    "--windowed",
-                    "--name",
-                    "AnalyzeCustomer",
-                    "main_app_refactored.py",
-                ],
-                check=True,
-            )
-            self.status.setText("Build complete: dist/AnalyzeCustomer")
+            cmd = pyinstaller_cmd + [
+                "--noconfirm",
+                "--windowed",
+                "--name",
+                "AnalyzeCustomer",
+                "--distpath",
+                output_dir,
+                "main_app_refactored.py",
+            ]
+            subprocess.run(cmd, check=True)
+            self.status.setText(f"Build complete: {output_dir}/AnalyzeCustomer")
         except subprocess.CalledProcessError as exc:
             QtWidgets.QMessageBox.critical(
                 self,

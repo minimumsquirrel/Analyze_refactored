@@ -84,6 +84,7 @@ def default_profile() -> dict:
     return {
         "enabled_tabs": list(TAB_ORDER),
         "enabled_tools": {category: list(tools) for category, tools in TOOL_CATALOG.items()},
+        "build_output_dir": "dist",
     }
 
 
@@ -106,6 +107,9 @@ def load_profile(path: Path = PROFILE_PATH) -> dict:
         requested = enabled_tools.get(category, tools)
         merged_tools[category] = [tool for tool in requested if tool in tools]
     profile["enabled_tools"] = merged_tools
+    build_output_dir = raw.get("build_output_dir", "dist")
+    if isinstance(build_output_dir, str) and build_output_dir.strip():
+        profile["build_output_dir"] = build_output_dir.strip()
     return profile
 
 
@@ -119,5 +123,7 @@ def save_profile(profile: dict, path: Path = PROFILE_PATH) -> None:
     for category, tools in TOOL_CATALOG.items():
         requested = profile.get("enabled_tools", {}).get(category, tools)
         normalized["enabled_tools"][category] = [tool for tool in requested if tool in tools]
+    output_dir = profile.get("build_output_dir", "dist")
+    normalized["build_output_dir"] = output_dir.strip() if isinstance(output_dir, str) and output_dir.strip() else "dist"
 
     path.write_text(json.dumps(normalized, indent=2), encoding="utf-8")
