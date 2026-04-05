@@ -106,6 +106,7 @@ from sklearn.cluster import KMeans
 import importlib
 import uuid, hashlib
 import json, base64, re
+from customer_profile import TOOL_CATALOG, load_profile
 # keep this as a normal (unicode) string literal:
 with open("public.pem", "rb") as f:
     PUBLIC_PEM = f.read()
@@ -1081,6 +1082,28 @@ class MainWindow(
     DifarToolsMixin,
 ):
 
+    def _load_customer_profile(self):
+        profile = load_profile()
+        self.enabled_tabs = set(profile.get("enabled_tabs", []))
+        self.enabled_tools_by_category = {
+            category: set(tools)
+            for category, tools in profile.get("enabled_tools", {}).items()
+        }
+
+    def _is_tool_enabled(self, category, tool_name):
+        enabled = self.enabled_tools_by_category.get(category)
+        return enabled is None or tool_name in enabled
+
+    def _prune_tabs_by_profile(self):
+        if not hasattr(self, "tabs"):
+            return
+        if not self.enabled_tabs:
+            return
+        for i in range(self.tabs.count() - 1, -1, -1):
+            label = self.tabs.tabText(i)
+            if label not in self.enabled_tabs:
+                self.tabs.removeTab(i)
+
 
     def apply_ui_theme(self, theme_name: str):
         """Apply UI theme ('dark' or 'light') and persist setting."""
@@ -1455,6 +1478,7 @@ class MainWindow(
 
     def __init__(self):
         super().__init__()
+        self._load_customer_profile()
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self.setFocus()
         self.installEventFilter(self)
@@ -2957,13 +2981,9 @@ class MainWindow(
         row1.addWidget(self.channels_btn)
 
         self.category_combo = QtWidgets.QComboBox()
-        self.category_combo.addItems([
-            "WAV File Tools",
-            "Measurement Tools",
-            "Modelling & Plotting Tools",
-            "Detection & Classification Tools",
-            "Database Tools"
-        ])
+        for category in TOOL_CATALOG.keys():
+            if self.enabled_tools_by_category.get(category):
+                self.category_combo.addItem(category)
         self.category_combo.currentIndexChanged.connect(self.update_tool_list)
         self.category_combo.setFixedWidth(200)
         row1.addWidget(self.category_combo)
@@ -3089,6 +3109,7 @@ class MainWindow(
 
         # Add to main tabs
         self.tabs.addTab(matrix_tab, "Projects")
+        self._prune_tabs_by_profile()
         # populate the project list
         self.refresh_projects()
 
@@ -8608,81 +8629,10 @@ class MainWindow(
         category = self.category_combo.currentText()
         self.tool_combo.blockSignals(True)
         self.tool_combo.clear()
-
-        if category == "WAV File Tools":
-            self.tool_combo.addItems([
-                "Trim File",
-                "Denoise File",
-                "High/Low Pass Filter",
-                "Anti-Aliasing Filter",
-                "Recommend Sample Rate",
-                "Remove DC Offset",
-                "Normalize File",
-                "Downsample Bit Depth",
-                "Wav File Combine",
-                "Stack WAV Channels",
-                "Scale WAV Amplitude",
-                "Create WAV Playlist",
-                "Secure WAV Bundle (Pack/Unpack)",
-                "Channel Sync Tool"
-            ])
-        elif category == "Measurement Tools":
-            self.tool_combo.addItems([
-                "Ambient Noise",
-                "Electrical Noise",
-                "Peak Prominences Analysis",
-                "Interval Analysis",
-                "Depth Sounder Analysis",
-                "Slope De-Clipper",
-                "Find Peaks",
-                "Short-Time RMS",
-                "Crest Factor",
-                "Octave-Band Analysis",
-                "SNR Estimator",
-                "LFM Analysis",
-                "LFM Batch Analysis",
-                "HFM Analysis",
-                "Multi Frequency Analysis",
-                "SPL Transmit Analysis",
-                "Hydrophone Calibration",
-                "Duty Cycle Analysis",
-                "Exceedance Curves Lx",
-                "LTSA + PSD Percentiles",
-                "SEL",
-                "Recurrence Periodicity",
-                "Dominant Frequencies Over Time"              
-            ])
-
-        elif category == "Modelling & Plotting Tools":
-            self.tool_combo.addItems([
-                "Wenz Curves",
-                "Propagation Modelling",
-                "Cable Loss & Hydro Sensitivity",
-                "Simulated GPS Track Generator"
-            ])
-        
-        elif category == "Detection & Classification Tools":  # "Detection & Classification Tools"
-            self.tool_combo.addItems([
-                "Active Sonar",
-                "Cepstrum Analysis",
-                "Event Clustering",
-                "DIFAR Processing"
-            ])
-
-        else:  # "Database Tools"
-            self.tool_combo.addItems([
-                "Export Logs to Excel",
-                "Filter Measurements",
-                "Filter Logs by Date/Time",
-                "Database Maintenance",
-                "Clean Measurement Data",
-                "Annotate Measurements",
-                "Annotate SPL",
-                "Calibration Curve Manager",
-                "TVR Curve Manager",
-                "Measurement Voltage Correction",
-                "CTD Import"
-            ])
+        tools = TOOL_CATALOG.get(category, [])
+        enabled = self.enabled_tools_by_category.get(category, set())
+        visible_tools = [tool for tool in tools if tool in enabled]
+        self.tool_combo.addItems(visible_tools)
 
 
         
@@ -8702,6 +8652,13 @@ class MainWindow(
 
         category = self.category_combo.currentText()
         tool = self.tool_combo.currentText()
+        if not self._is_tool_enabled(category, tool):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Tool Disabled",
+                f"The tool '{tool}' is not enabled for this customer build.",
+            )
+            return
 
         if category == "WAV File Tools":
             if tool == "Trim File":
