@@ -12,10 +12,10 @@ import qdarkstyle
 from PyQt5 import QtCore, QtWidgets
 
 from customer_profile import (
-    PROFILE_PATH,
     TAB_ORDER,
     TOOL_CATALOG,
     default_profile,
+    get_profile_path,
     load_profile,
     save_profile,
 )
@@ -115,7 +115,7 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
         controls.addWidget(build_btn)
         controls.addStretch()
 
-        self.status = QtWidgets.QLabel(f"Profile file: {PROFILE_PATH.resolve()}")
+        self.status = QtWidgets.QLabel(f"Profile file: {get_profile_path().resolve()}")
         self.status.setStyleSheet("color: #6EE7B7;")
         root.addWidget(self.status)
 
@@ -184,7 +184,7 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
     def save_profile(self):
         self.profile = self._read_profile_from_ui()
         save_profile(self.profile)
-        self.status.setText(f"Saved profile to {PROFILE_PATH.resolve()}")
+        self.status.setText(f"Saved profile to {get_profile_path().resolve()}")
 
     def write_build_script(self):
         self.save_profile()
@@ -194,9 +194,10 @@ class CustomerBuildWindow(QtWidgets.QMainWindow):
 set -euo pipefail
 echo "Building Analyze customer release using customer_build_config.json"
 python3 -m PyInstaller --noconfirm --windowed --name AnalyzeCustomer --distpath "{output_dir}" main_app_refactored.py
+cp "{profile_src}" "{output_dir}/AnalyzeCustomer/customer_build_config.json"
 echo "Build complete: {output_dir}/AnalyzeCustomer"
 """
-        script_text = script_text.format(output_dir=output_dir)
+        script_text = script_text.format(output_dir=output_dir, profile_src=str(get_profile_path()))
         script_path.write_text(script_text, encoding="utf-8")
         script_path.chmod(0o755)
         self.status.setText(f"Wrote {script_path.resolve()}")
@@ -249,13 +250,20 @@ echo "Build complete: {output_dir}/AnalyzeCustomer"
                 "main_app_refactored.py",
             ]
             subprocess.run(cmd, check=True)
-            self.status.setText(f"Build complete: {output_dir}/AnalyzeCustomer")
+            self._copy_profile_to_build(output_dir)
+            self.status.setText(f"Build complete: {output_dir}/AnalyzeCustomer (profile copied)")
         except subprocess.CalledProcessError as exc:
             QtWidgets.QMessageBox.critical(
                 self,
                 "Build Failed",
                 f"PyInstaller returned code {exc.returncode}",
             )
+
+    def _copy_profile_to_build(self, output_dir):
+        profile_src = get_profile_path()
+        build_dir = Path(output_dir) / "AnalyzeCustomer"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(profile_src, build_dir / "customer_build_config.json")
 
 
 def main():

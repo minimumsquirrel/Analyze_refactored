@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List
 
-PROFILE_PATH = Path("customer_build_config.json")
+def get_profile_path() -> Path:
+    """Resolve profile path next to the app executable when frozen."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "customer_build_config.json"
+    return Path(__file__).resolve().parent / "customer_build_config.json"
+
+
+PROFILE_PATH = get_profile_path()
 
 TAB_ORDER = ["Analysis", "SPL", "Spectrogram", "Chart", "Logs", "Projects"]
 
@@ -88,7 +96,9 @@ def default_profile() -> dict:
     }
 
 
-def load_profile(path: Path = PROFILE_PATH) -> dict:
+def load_profile(path: Path | None = None) -> dict:
+    if path is None:
+        path = get_profile_path()
     profile = default_profile()
     if not path.exists():
         return profile
@@ -113,7 +123,9 @@ def load_profile(path: Path = PROFILE_PATH) -> dict:
     return profile
 
 
-def save_profile(profile: dict, path: Path = PROFILE_PATH) -> None:
+def save_profile(profile: dict, path: Path | None = None) -> None:
+    if path is None:
+        path = get_profile_path()
     normalized = default_profile()
     normalized["enabled_tabs"] = [
         t for t in profile.get("enabled_tabs", []) if t in TAB_ORDER
