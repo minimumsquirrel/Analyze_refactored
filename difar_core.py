@@ -93,6 +93,9 @@ class DifarConfig:
         frame_seconds: Frame size (seconds) for averaging bearings.
         hop_seconds: Hop size (seconds) between successive frames.
         bandpass_hz: Optional (low, high) bandpass limits in Hz.
+        adc_full_scale_volts: Scaling factor applied to normalized PCM input
+            to convert samples into volts before calibration. Use 1.0 when
+            input data are already in volts.
         filter_order: Butterworth filter order when bandpass_hz is set.
         eps: Small constant to avoid divide-by-zero and NaNs.
         start_time_utc: Optional UTC datetime for sample index 0.
@@ -122,6 +125,7 @@ class DifarConfig:
     frame_seconds: float = 1.0
     hop_seconds: float = 0.25
     bandpass_hz: Optional[Tuple[float, float]] = (20.0, 500.0)
+    adc_full_scale_volts: float = 1.0
     filter_order: int = 4
     eps: float = 1e-12
     start_time_utc: Optional[datetime] = None
@@ -384,6 +388,12 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         raise ValueError("DIFAR bearing extraction requires at least 3 channels (OMNI, X, Y).")
     if x.ndim != 2:
         raise ValueError(f"Expected data with ndim=2, got {x.ndim}")
+
+    adc_scale = float(getattr(cfg, "adc_full_scale_volts", 1.0) or 1.0)
+    if not np.isfinite(adc_scale) or adc_scale <= 0.0:
+        adc_scale = 1.0
+    if abs(adc_scale - 1.0) > 1e-12:
+        x = x.astype(np.float64, copy=False) * adc_scale
 
     n, ch = x.shape
     required_idx = [cfg.omni_channel, cfg.x_channel, cfg.y_channel]

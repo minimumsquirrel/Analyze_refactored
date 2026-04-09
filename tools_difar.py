@@ -963,6 +963,15 @@ class DifarToolsMixin:
         band_w = QtWidgets.QWidget(); band_w.setLayout(band_row)
         proc_form.addRow("Bandpass (Hz):", band_w)
 
+        adc_fs_spin = QtWidgets.QDoubleSpinBox()
+        adc_fs_spin.setRange(0.001, 1000.0)
+        adc_fs_spin.setDecimals(3)
+        adc_fs_spin.setSingleStep(0.1)
+        adc_fs_spin.setValue(1.0)
+        adc_fs_spin.setSuffix(" V FS")
+        adc_fs_spin.setToolTip("Normalized sample scaling to volts before calibration (set to DAQ full-scale volts if WAV is normalized).")
+        proc_form.addRow("DAQ full-scale:", adc_fs_spin)
+
         target_profile_summary = QtWidgets.QLabel("No target profile selected (using Bandpass above).")
         target_profile_summary.setWordWrap(True)
         manage_profiles_btn = QtWidgets.QPushButton("Target Profiles...")
@@ -1539,9 +1548,9 @@ class DifarToolsMixin:
                         ("" if row.get("detected_freq_hz") is None else f"{float(row.get('detected_freq_hz')):.2f}"),
                         ("" if row.get("peak_amp_db") is None else f"{float(row.get('peak_amp_db')):.2f}"),
                         ("" if row.get("omni_spl_db_re_1uPa") is None else f"{float(row.get('omni_spl_db_re_1uPa')):.2f}"),
-                        ("" if row.get("x_rms_mps") is None else f"{float(row.get('x_rms_mps')):.5f}"),
-                        ("" if row.get("y_rms_mps") is None else f"{float(row.get('y_rms_mps')):.5f}"),
-                        ("" if row.get("z_rms_mps") is None else f"{float(row.get('z_rms_mps')):.5f}"),
+                        ("" if row.get("x_rms_mps") is None else f"{float(row.get('x_rms_mps')):.6g}"),
+                        ("" if row.get("y_rms_mps") is None else f"{float(row.get('y_rms_mps')):.6g}"),
+                        ("" if row.get("z_rms_mps") is None else f"{float(row.get('z_rms_mps')):.6g}"),
                         str(row.get("mode", "")),
                     ]
                     for c_idx, txt in enumerate(vals):
@@ -2488,6 +2497,7 @@ class DifarToolsMixin:
                     bearing_smooth_frames=int(smooth_spin.value()),
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
+                    adc_full_scale_volts=float(adc_fs_spin.value()),
                 )
                 bands_text = (selected_target_bands_text or "").strip()
                 bands = _parse_target_bands(bands_text)
@@ -2551,6 +2561,7 @@ class DifarToolsMixin:
                     out.appendPlainText(
                         f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
                     )
+                    out.appendPlainText(f"Amplitude scaling: DAQ full-scale={adc_fs_spin.value():.3f} V before calibration.")
                     out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                     if run_export_path:
                         out.appendPlainText(f"Saved CSV: {run_export_path}")
@@ -2566,6 +2577,7 @@ class DifarToolsMixin:
                         "label": heatmap_label,
                         "omni_channel": int(omni_spin.value()) - 1,
                         "bandpass_hz": [float(bp_lo), float(bp_hi)],
+                        "adc_full_scale_volts": float(adc_fs_spin.value()),
                         "time_s": _safe_seq(result.get("time_s")),
                         "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
                         "confidence": _safe_seq(result.get("confidence")),
