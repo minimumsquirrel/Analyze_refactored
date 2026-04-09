@@ -1471,8 +1471,18 @@ class DifarToolsMixin:
             table_lay.setContentsMargins(0, 0, 0, 0)
 
             detection_table = QtWidgets.QTableWidget()
-            detection_table.setColumnCount(5)
-            detection_table.setHorizontalHeaderLabels(["Time Offset (s)", "Bearing (deg)", "Detected Freq (Hz)", "Peak Amp (dB)", "Mode"])
+            detection_table.setColumnCount(9)
+            detection_table.setHorizontalHeaderLabels([
+                "Time Offset (s)",
+                "Bearing (deg)",
+                "Detected Freq (Hz)",
+                "Peak Amp (dB)",
+                "OMNI SPL (dB re 1µPa)",
+                "X RMS (m/s)",
+                "Y RMS (m/s)",
+                "Z RMS (m/s)",
+                "Mode",
+            ])
             detection_table.horizontalHeader().setStretchLastSection(True)
             detection_table.setAlternatingRowColors(True)
             detection_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -1528,6 +1538,10 @@ class DifarToolsMixin:
                         f"{float(row.get('bearing_deg', 0.0)):.2f}",
                         ("" if row.get("detected_freq_hz") is None else f"{float(row.get('detected_freq_hz')):.2f}"),
                         ("" if row.get("peak_amp_db") is None else f"{float(row.get('peak_amp_db')):.2f}"),
+                        ("" if row.get("omni_spl_db_re_1uPa") is None else f"{float(row.get('omni_spl_db_re_1uPa')):.2f}"),
+                        ("" if row.get("x_rms_mps") is None else f"{float(row.get('x_rms_mps')):.5f}"),
+                        ("" if row.get("y_rms_mps") is None else f"{float(row.get('y_rms_mps')):.5f}"),
+                        ("" if row.get("z_rms_mps") is None else f"{float(row.get('z_rms_mps')):.5f}"),
                         str(row.get("mode", "")),
                     ]
                     for c_idx, txt in enumerate(vals):
@@ -1713,6 +1727,10 @@ class DifarToolsMixin:
                     t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
                     b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
                     c_raw = [float(v) for v in _safe_seq(meta.get("confidence"))]
+                    omni_spl_raw = [float(v) for v in _safe_seq(meta.get("omni_spl_db_re_1uPa"))]
+                    x_rms_raw = [float(v) for v in _safe_seq(meta.get("x_rms_mps"))]
+                    y_rms_raw = [float(v) for v in _safe_seq(meta.get("y_rms_mps"))]
+                    z_rms_raw = [float(v) for v in _safe_seq(meta.get("z_rms_mps"))]
                     n = min(len(t_raw), len(b_raw))
                     if n > 1:
                         t0 = float(start_sec.value())
@@ -1869,6 +1887,18 @@ class DifarToolsMixin:
                             ax_bear.legend(loc="upper right", framealpha=0.3)
 
                             table_rows = []
+                            import numpy as np
+                            t_ref = np.asarray(t_raw, dtype=float)
+                            def _nearest_metric(tt, arr):
+                                try:
+                                    if t_ref.size <= 0 or len(arr) <= 0:
+                                        return None
+                                    k = int(np.argmin(np.abs(t_ref - float(t0 + tt))))
+                                    if k < 0 or k >= len(arr):
+                                        return None
+                                    return float(arr[k])
+                                except Exception:
+                                    return None
                             for ti, bi, fi, di in zip(detected_t, detected_b, detected_f, detected_db):
                                 table_rows.append(
                                     {
@@ -1876,6 +1906,10 @@ class DifarToolsMixin:
                                         "bearing_deg": float(bi),
                                         "detected_freq_hz": (None if fi is None else float(fi)),
                                         "peak_amp_db": (None if di is None else float(di)),
+                                        "omni_spl_db_re_1uPa": _nearest_metric(float(ti), omni_spl_raw),
+                                        "x_rms_mps": _nearest_metric(float(ti), x_rms_raw),
+                                        "y_rms_mps": _nearest_metric(float(ti), y_rms_raw),
+                                        "z_rms_mps": _nearest_metric(float(ti), z_rms_raw),
                                         "mode": detected_mode,
                                     }
                                 )
@@ -2042,13 +2076,27 @@ class DifarToolsMixin:
                     import csv
                     with open(path, "w", newline="", encoding="utf-8") as f:
                         w = csv.writer(f)
-                        w.writerow(["time_offset_s", "bearing_deg", "detected_freq_hz", "peak_amp_db", "mode"])
+                        w.writerow([
+                            "time_offset_s",
+                            "bearing_deg",
+                            "detected_freq_hz",
+                            "peak_amp_db",
+                            "omni_spl_db_re_1uPa",
+                            "x_rms_mps",
+                            "y_rms_mps",
+                            "z_rms_mps",
+                            "mode",
+                        ])
                         for row in rows:
                             w.writerow([
                                 row.get("time_offset_s"),
                                 row.get("bearing_deg"),
                                 row.get("detected_freq_hz"),
                                 row.get("peak_amp_db"),
+                                row.get("omni_spl_db_re_1uPa"),
+                                row.get("x_rms_mps"),
+                                row.get("y_rms_mps"),
+                                row.get("z_rms_mps"),
                                 row.get("mode"),
                             ])
                     status_lbl.setText(f"Exported detection table CSV: {path}")
@@ -2521,6 +2569,10 @@ class DifarToolsMixin:
                         "time_s": _safe_seq(result.get("time_s")),
                         "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
                         "confidence": _safe_seq(result.get("confidence")),
+                        "omni_spl_db_re_1uPa": _safe_seq(result.get("omni_spl_db_re_1uPa")),
+                        "x_rms_mps": _safe_seq(result.get("x_rms_mps")),
+                        "y_rms_mps": _safe_seq(result.get("y_rms_mps")),
+                        "z_rms_mps": _safe_seq(result.get("z_rms_mps")),
                     }
 
                     run_id = None

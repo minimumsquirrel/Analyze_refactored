@@ -426,6 +426,8 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
 
     t_out, b_sensor_out, b_true_out, c_out, s_out, ts_out = [], [], [], [], [], []
     motion_db_out, pressure_db_out = [], []
+    omni_spl_db_re_1uPa_out = []
+    x_rms_out, y_rms_out, z_rms_out = [], [], []
     start_utc = _normalize_start_time_utc(cfg.start_time_utc)
 
     for start in range(0, max(1, n - frame_n + 1), hop_n):
@@ -503,9 +505,15 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         if cal is not None and (cal.x is not None or cal.y is not None):
             vrms_xy = float(np.sqrt(np.mean(x_f * x_f + y_f * y_f) / 2.0))
             motion_db_out.append(20.0 * np.log10(vrms_xy + cfg.eps))
+            x_rms_out.append(float(np.sqrt(np.mean(x_f * x_f))))
+            y_rms_out.append(float(np.sqrt(np.mean(y_f * y_f))))
+            if z_ch is not None:
+                z_f = z_ch[start:stop]
+                z_rms_out.append(float(np.sqrt(np.mean(z_f * z_f))))
         if cal is not None and cal.omni is not None:
             prms_pa = float(np.sqrt(np.mean(om_f * om_f)))
             pressure_db_out.append(20.0 * np.log10(prms_pa + cfg.eps))
+            omni_spl_db_re_1uPa_out.append(20.0 * np.log10((prms_pa / 1e-6) + cfg.eps))
 
     b_sensor_arr = np.asarray(b_sensor_out, dtype=np.float64)
     if int(cfg.bearing_smooth_frames) > 1:
@@ -527,6 +535,14 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         out["intensity_motion_db_re_1_mps"] = np.asarray(motion_db_out, dtype=np.float64)
     if pressure_db_out:
         out["intensity_pressure_db_re_1_Pa"] = np.asarray(pressure_db_out, dtype=np.float64)
+    if omni_spl_db_re_1uPa_out:
+        out["omni_spl_db_re_1uPa"] = np.asarray(omni_spl_db_re_1uPa_out, dtype=np.float64)
+    if x_rms_out:
+        out["x_rms_mps"] = np.asarray(x_rms_out, dtype=np.float64)
+    if y_rms_out:
+        out["y_rms_mps"] = np.asarray(y_rms_out, dtype=np.float64)
+    if z_rms_out:
+        out["z_rms_mps"] = np.asarray(z_rms_out, dtype=np.float64)
     return out
 
 
