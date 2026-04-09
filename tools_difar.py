@@ -1480,7 +1480,7 @@ class DifarToolsMixin:
             table_lay.setContentsMargins(0, 0, 0, 0)
 
             detection_table = QtWidgets.QTableWidget()
-            detection_table.setColumnCount(9)
+            detection_table.setColumnCount(12)
             detection_table.setHorizontalHeaderLabels([
                 "Time Offset (s)",
                 "Bearing (deg)",
@@ -1488,8 +1488,11 @@ class DifarToolsMixin:
                 "Peak Amp (dB)",
                 "OMNI SPL (dB re 1µPa)",
                 "X RMS (m/s)",
+                "X RMS (µm/s)",
                 "Y RMS (m/s)",
+                "Y RMS (µm/s)",
                 "Z RMS (m/s)",
+                "Z RMS (µm/s)",
                 "Mode",
             ])
             detection_table.horizontalHeader().setStretchLastSection(True)
@@ -1549,8 +1552,11 @@ class DifarToolsMixin:
                         ("" if row.get("peak_amp_db") is None else f"{float(row.get('peak_amp_db')):.2f}"),
                         ("" if row.get("omni_spl_db_re_1uPa") is None else f"{float(row.get('omni_spl_db_re_1uPa')):.2f}"),
                         ("" if row.get("x_rms_mps") is None else f"{float(row.get('x_rms_mps')):.6g}"),
+                        ("" if row.get("x_rms_umps") is None else f"{float(row.get('x_rms_umps')):.3f}"),
                         ("" if row.get("y_rms_mps") is None else f"{float(row.get('y_rms_mps')):.6g}"),
+                        ("" if row.get("y_rms_umps") is None else f"{float(row.get('y_rms_umps')):.3f}"),
                         ("" if row.get("z_rms_mps") is None else f"{float(row.get('z_rms_mps')):.6g}"),
+                        ("" if row.get("z_rms_umps") is None else f"{float(row.get('z_rms_umps')):.3f}"),
                         str(row.get("mode", "")),
                     ]
                     for c_idx, txt in enumerate(vals):
@@ -1909,6 +1915,9 @@ class DifarToolsMixin:
                                 except Exception:
                                     return None
                             for ti, bi, fi, di in zip(detected_t, detected_b, detected_f, detected_db):
+                                x_mps = _nearest_metric(float(ti), x_rms_raw)
+                                y_mps = _nearest_metric(float(ti), y_rms_raw)
+                                z_mps = _nearest_metric(float(ti), z_rms_raw)
                                 table_rows.append(
                                     {
                                         "time_offset_s": float(ti),
@@ -1916,9 +1925,12 @@ class DifarToolsMixin:
                                         "detected_freq_hz": (None if fi is None else float(fi)),
                                         "peak_amp_db": (None if di is None else float(di)),
                                         "omni_spl_db_re_1uPa": _nearest_metric(float(ti), omni_spl_raw),
-                                        "x_rms_mps": _nearest_metric(float(ti), x_rms_raw),
-                                        "y_rms_mps": _nearest_metric(float(ti), y_rms_raw),
-                                        "z_rms_mps": _nearest_metric(float(ti), z_rms_raw),
+                                        "x_rms_mps": x_mps,
+                                        "x_rms_umps": (None if x_mps is None else float(x_mps) * 1e6),
+                                        "y_rms_mps": y_mps,
+                                        "y_rms_umps": (None if y_mps is None else float(y_mps) * 1e6),
+                                        "z_rms_mps": z_mps,
+                                        "z_rms_umps": (None if z_mps is None else float(z_mps) * 1e6),
                                         "mode": detected_mode,
                                     }
                                 )
@@ -2092,8 +2104,11 @@ class DifarToolsMixin:
                             "peak_amp_db",
                             "omni_spl_db_re_1uPa",
                             "x_rms_mps",
+                            "x_rms_um_per_s",
                             "y_rms_mps",
+                            "y_rms_um_per_s",
                             "z_rms_mps",
+                            "z_rms_um_per_s",
                             "mode",
                         ])
                         for row in rows:
@@ -2104,8 +2119,11 @@ class DifarToolsMixin:
                                 row.get("peak_amp_db"),
                                 row.get("omni_spl_db_re_1uPa"),
                                 row.get("x_rms_mps"),
+                                row.get("x_rms_umps"),
                                 row.get("y_rms_mps"),
+                                row.get("y_rms_umps"),
                                 row.get("z_rms_mps"),
+                                row.get("z_rms_umps"),
                                 row.get("mode"),
                             ])
                     status_lbl.setText(f"Exported detection table CSV: {path}")
