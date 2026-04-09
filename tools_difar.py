@@ -1524,6 +1524,7 @@ class DifarToolsMixin:
             ax_polar = None
             cax_bearing = None
             bearing_cbar = {"obj": None}
+            hover_state = {"anno": None, "rows": []}
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -1543,6 +1544,7 @@ class DifarToolsMixin:
             def _set_detection_table(rows):
                 rows = rows if isinstance(rows, list) else []
                 last_detection_rows["rows"] = rows
+                hover_state["rows"] = rows
                 detection_table.setRowCount(len(rows))
                 for r, row in enumerate(rows):
                     vals = [
@@ -1562,6 +1564,75 @@ class DifarToolsMixin:
                     for c_idx, txt in enumerate(vals):
                         detection_table.setItem(r, c_idx, QtWidgets.QTableWidgetItem(txt))
                 detection_table.resizeColumnsToContents()
+
+            def _on_bearing_hover(event):
+                if fig is None or canvas is None or ax_bear is None:
+                    return
+                if event is None or event.inaxes != ax_bear:
+                    anno = hover_state.get("anno")
+                    if anno is not None:
+                        anno.set_visible(False)
+                        canvas.draw_idle()
+                    return
+                rows = hover_state.get("rows") if isinstance(hover_state, dict) else []
+                if not isinstance(rows, list) or len(rows) <= 0:
+                    return
+                try:
+                    import numpy as np
+                    xvals = np.asarray([float(r.get("time_offset_s", 0.0)) for r in rows], dtype=float)
+                    yvals = np.asarray([float(r.get("bearing_deg", 0.0)) for r in rows], dtype=float)
+                    if xvals.size <= 0 or yvals.size <= 0:
+                        return
+                    if event.xdata is None or event.ydata is None:
+                        return
+                    x0 = float(event.xdata); y0 = float(event.ydata)
+                    dx = xvals - x0
+                    dy = yvals - y0
+                    d2 = dx * dx + dy * dy
+                    k = int(np.argmin(d2))
+                    xk = float(xvals[k]); yk = float(yvals[k])
+                    xspan = max(1e-6, abs(float(ax_bear.get_xlim()[1] - ax_bear.get_xlim()[0])))
+                    yspan = max(1e-6, abs(float(ax_bear.get_ylim()[1] - ax_bear.get_ylim()[0])))
+                    nd = ((xk - x0) / xspan) ** 2 + ((yk - y0) / yspan) ** 2
+                    if nd > 0.0025:
+                        anno = hover_state.get("anno")
+                        if anno is not None:
+                            anno.set_visible(False)
+                            canvas.draw_idle()
+                        return
+                    row = rows[k]
+                    spl = row.get("omni_spl_db_re_1uPa")
+                    xu = row.get("x_rms_umps")
+                    yu = row.get("y_rms_umps")
+                    zu = row.get("z_rms_umps")
+                    txt = (
+                        f"t={xk:.3f}s\n"
+                        f"bearing={yk:.2f}°\n"
+                        f"OMNI SPL={'' if spl is None else f'{float(spl):.2f}'} dB re 1µPa\n"
+                        f"X={'' if xu is None else f'{float(xu):.3f}'} µm/s\n"
+                        f"Y={'' if yu is None else f'{float(yu):.3f}'} µm/s\n"
+                        f"Z={'' if zu is None else f'{float(zu):.3f}'} µm/s"
+                    )
+                    anno = hover_state.get("anno")
+                    if anno is None:
+                        anno = ax_bear.annotate(
+                            txt,
+                            xy=(xk, yk),
+                            xytext=(10, 10),
+                            textcoords="offset points",
+                            bbox=dict(boxstyle="round,pad=0.25", fc="#111111", ec="#03DFE2", alpha=0.92),
+                            color="#E6F1FF",
+                            fontsize=8.5,
+                            zorder=20,
+                        )
+                        hover_state["anno"] = anno
+                    else:
+                        anno.xy = (xk, yk)
+                        anno.set_text(txt)
+                    anno.set_visible(True)
+                    canvas.draw_idle()
+                except Exception:
+                    return
 
             def _default_seconds_from_detection():
                 meta = getattr(self, "_difar_last_run_meta", None)
@@ -2129,6 +2200,12 @@ class DifarToolsMixin:
                     status_lbl.setText(f"Exported detection table CSV: {path}")
                 except Exception as e:
                     status_lbl.setText(f"Failed exporting detection table CSV: {e}")
+
+            if canvas is not None:
+                try:
+                    canvas.mpl_connect("motion_notify_event", _on_bearing_hover)
+                except Exception:
+                    pass
 
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
