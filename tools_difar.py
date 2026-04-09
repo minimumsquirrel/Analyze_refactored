@@ -1462,6 +1462,31 @@ class DifarToolsMixin:
             status_lbl.setWordWrap(True)
             lay.addWidget(status_lbl)
 
+            tabs = QtWidgets.QTabWidget()
+            plot_tab = QtWidgets.QWidget()
+            plot_lay = QtWidgets.QVBoxLayout(plot_tab)
+            plot_lay.setContentsMargins(0, 0, 0, 0)
+            table_tab = QtWidgets.QWidget()
+            table_lay = QtWidgets.QVBoxLayout(table_tab)
+            table_lay.setContentsMargins(0, 0, 0, 0)
+
+            detection_table = QtWidgets.QTableWidget()
+            detection_table.setColumnCount(5)
+            detection_table.setHorizontalHeaderLabels(["Time Offset (s)", "Bearing (deg)", "Detected Freq (Hz)", "Peak Amp (dB)", "Mode"])
+            detection_table.horizontalHeader().setStretchLastSection(True)
+            detection_table.setAlternatingRowColors(True)
+            detection_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            export_csv_btn = QtWidgets.QPushButton("Export CSV...")
+            table_btn_row = QtWidgets.QHBoxLayout()
+            table_btn_row.addStretch(1)
+            table_btn_row.addWidget(export_csv_btn)
+            table_lay.addLayout(table_btn_row)
+            table_lay.addWidget(detection_table, 1)
+
+            tabs.addTab(plot_tab, "Plots")
+            tabs.addTab(table_tab, "Data Table")
+            lay.addWidget(tabs, 1)
+
             def _sync_track_controls():
                 is_custom = (track_mode_combo.currentText() == "Custom-band track")
                 track_lo_hz_spin.setEnabled(is_custom)
@@ -1482,14 +1507,32 @@ class DifarToolsMixin:
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 2.8, 0.12], height_ratios=[2.2, 1.0], wspace=0.38, hspace=0.24)
-                ax_polar = fig.add_subplot(gs[:, 0], projection="polar")
+                gs = fig.add_gridspec(2, 3, width_ratios=[1.6, 2.5, 0.12], height_ratios=[1.9, 1.25], wspace=0.30, hspace=0.22)
+                ax_polar = fig.add_subplot(gs[0, 0], projection="polar")
                 ax_spec = fig.add_subplot(gs[0, 1])
-                ax_bear = fig.add_subplot(gs[1, 1], sharex=ax_spec)
+                ax_bear = fig.add_subplot(gs[1, :2], sharex=ax_spec)
                 cax_bearing = fig.add_subplot(gs[:, 2])
-                lay.addWidget(canvas, 1)
+                plot_lay.addWidget(canvas, 1)
             except Exception:
                 status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
+
+            last_detection_rows = {"rows": []}
+
+            def _set_detection_table(rows):
+                rows = rows if isinstance(rows, list) else []
+                last_detection_rows["rows"] = rows
+                detection_table.setRowCount(len(rows))
+                for r, row in enumerate(rows):
+                    vals = [
+                        f"{float(row.get('time_offset_s', 0.0)):.3f}",
+                        f"{float(row.get('bearing_deg', 0.0)):.2f}",
+                        ("" if row.get("detected_freq_hz") is None else f"{float(row.get('detected_freq_hz')):.2f}"),
+                        ("" if row.get("peak_amp_db") is None else f"{float(row.get('peak_amp_db')):.2f}"),
+                        str(row.get("mode", "")),
+                    ]
+                    for c_idx, txt in enumerate(vals):
+                        detection_table.setItem(r, c_idx, QtWidgets.QTableWidgetItem(txt))
+                detection_table.resizeColumnsToContents()
 
             def _default_seconds_from_detection():
                 meta = getattr(self, "_difar_last_run_meta", None)
@@ -1689,6 +1732,9 @@ class DifarToolsMixin:
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
                             detected_t = list(t)
                             detected_b = list(b_plot)
+                            detected_f = [None for _ in detected_t]
+                            detected_db = [None for _ in detected_t]
+                            detected_mode = "fallback_unfiltered"
 
                             try:
                                 from matplotlib import cm, colors
@@ -1759,6 +1805,9 @@ class DifarToolsMixin:
                                     if len(ridge_t) > 1:
                                         detected_t = [float(v) for v in ridge_t]
                                         detected_b = [float(v) for v in ridge_b]
+                                        detected_f = [float(v) for v in ridge_f]
+                                        detected_db = [float(v) for v in ridge_db]
+                                        detected_mode = "ridge_filtered"
                                         half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
                                         if freqs_arr.size > 1:
                                             f_step = float(np.median(np.diff(freqs_arr)))
@@ -1819,6 +1868,19 @@ class DifarToolsMixin:
                                 ax_bear.scatter(t, b_plot, color="#03DFE2", s=9, alpha=0.55)
                             ax_bear.legend(loc="upper right", framealpha=0.3)
 
+                            table_rows = []
+                            for ti, bi, fi, di in zip(detected_t, detected_b, detected_f, detected_db):
+                                table_rows.append(
+                                    {
+                                        "time_offset_s": float(ti),
+                                        "bearing_deg": float(bi),
+                                        "detected_freq_hz": (None if fi is None else float(fi)),
+                                        "peak_amp_db": (None if di is None else float(di)),
+                                        "mode": detected_mode,
+                                    }
+                                )
+                            _set_detection_table(table_rows)
+
                             # Third panel: polar plot of bearing detections (radius = relative time in window)
                             try:
                                 import numpy as np
@@ -1836,6 +1898,10 @@ class DifarToolsMixin:
                                 ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
                             except Exception:
                                 pass
+                        else:
+                            _set_detection_table([])
+                    else:
+                        _set_detection_table([])
                     ax_bear.set_xlim(0.0, float(win_sec.value()))
                     ax_bear.set_ylim(0.0, 360.0)
                     ax_bear.set_xlabel("Time within selected segment (s)")
@@ -1854,6 +1920,7 @@ class DifarToolsMixin:
                         mode_txt = f"Custom-band track ({float(track_lo_hz_spin.value()):.1f}-{float(track_hi_hz_spin.value()):.1f} Hz)"
                     status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.")
                 except Exception as e:
+                    _set_detection_table([])
                     status_lbl.setText(f"DIFARGram render failed: {e}")
 
             def _save_jpg():
@@ -1948,9 +2015,50 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Amplitude suggestion failed: {e}")
 
+            def _export_detection_csv():
+                rows = last_detection_rows.get("rows") if isinstance(last_detection_rows, dict) else None
+                rows = rows if isinstance(rows, list) else []
+                if len(rows) <= 0:
+                    status_lbl.setText("No detection rows to export. Render DIFARGram first.")
+                    return
+                meta = getattr(self, "_difar_last_run_meta", {}) or {}
+                wav_path = str(meta.get("wav_path") or "")
+                wav_name = os.path.splitext(os.path.basename(wav_path))[0] if wav_path else "unknown_wav"
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        out_dir = self._project_subdir("difargram_tables")
+                    except Exception:
+                        out_dir = os.path.join(os.getcwd(), "difargram_tables")
+                else:
+                    out_dir = os.path.join(os.getcwd(), "difargram_tables")
+                os.makedirs(out_dir, exist_ok=True)
+                default_path = os.path.join(out_dir, f"{wav_name}_detections.csv")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Export Detection Table CSV", default_path, "CSV Files (*.csv)")
+                if not path:
+                    return
+                if not path.lower().endswith(".csv"):
+                    path = f"{path}.csv"
+                try:
+                    import csv
+                    with open(path, "w", newline="", encoding="utf-8") as f:
+                        w = csv.writer(f)
+                        w.writerow(["time_offset_s", "bearing_deg", "detected_freq_hz", "peak_amp_db", "mode"])
+                        for row in rows:
+                            w.writerow([
+                                row.get("time_offset_s"),
+                                row.get("bearing_deg"),
+                                row.get("detected_freq_hz"),
+                                row.get("peak_amp_db"),
+                                row.get("mode"),
+                            ])
+                    status_lbl.setText(f"Exported detection table CSV: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed exporting detection table CSV: {e}")
+
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
             suggest_amp_btn.clicked.connect(_suggest_target_amplitude)
+            export_csv_btn.clicked.connect(_export_detection_csv)
             _default_seconds_from_detection()
             status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
