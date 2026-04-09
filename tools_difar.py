@@ -1687,10 +1687,8 @@ class DifarToolsMixin:
                             b_plot = list(b)
                             if smooth_mode_combo.currentText() == "Moving average":
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
-
-                            # Bearing-colored overlays on spectrogram (0..360 cyclic hue).
-                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.3, alpha=0.9, label="Bearing")
-                            ax_bear.scatter(t, b_plot, color="#03DFE2", s=10, alpha=0.65)
+                            detected_t = list(t)
+                            detected_b = list(b_plot)
 
                             try:
                                 from matplotlib import cm, colors
@@ -1759,6 +1757,8 @@ class DifarToolsMixin:
                                         ridge_db.append(float(peak_db))
 
                                     if len(ridge_t) > 1:
+                                        detected_t = [float(v) for v in ridge_t]
+                                        detected_b = [float(v) for v in ridge_b]
                                         half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
                                         if freqs_arr.size > 1:
                                             f_step = float(np.median(np.diff(freqs_arr)))
@@ -1811,20 +1811,26 @@ class DifarToolsMixin:
                                             tick.set_color(gui_fg)
                             except Exception:
                                 pass
+                            if len(detected_t) > 1:
+                                ax_bear.plot(detected_t, detected_b, color="#03DFE2", linewidth=1.5, alpha=0.95, label="Detected bearing")
+                                ax_bear.scatter(detected_t, detected_b, color="#03DFE2", s=12, alpha=0.8)
+                            else:
+                                ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.2, alpha=0.7, label="Bearing (unfiltered fallback)")
+                                ax_bear.scatter(t, b_plot, color="#03DFE2", s=9, alpha=0.55)
                             ax_bear.legend(loc="upper right", framealpha=0.3)
 
                             # Third panel: polar plot of bearing detections (radius = relative time in window)
                             try:
                                 import numpy as np
-                                theta = np.deg2rad(np.asarray(b_plot, dtype=float) % 360.0)
-                                t_arr = np.asarray(t, dtype=float)
+                                theta = np.deg2rad(np.asarray(detected_b, dtype=float) % 360.0)
+                                t_arr = np.asarray(detected_t, dtype=float)
                                 if t_arr.size > 1:
                                     t0p = float(np.min(t_arr)); t1p = float(np.max(t_arr))
                                     denom = max(1e-9, (t1p - t0p))
                                     r = (t_arr - t0p) / denom
                                 else:
                                     r = np.ones_like(theta) * 0.5
-                                ax_polar.scatter(theta, r, c=np.asarray(b_plot, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+                                ax_polar.scatter(theta, r, c=np.asarray(detected_b, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
                                 ax_polar.set_ylim(0.0, 1.0)
                                 ax_polar.set_yticks([0.25, 0.5, 0.75, 1.0])
                                 ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
