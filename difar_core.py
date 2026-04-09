@@ -93,6 +93,9 @@ class DifarConfig:
         frame_seconds: Frame size (seconds) for averaging bearings.
         hop_seconds: Hop size (seconds) between successive frames.
         bandpass_hz: Optional (low, high) bandpass limits in Hz.
+        adc_full_scale_volts: Scaling factor applied to normalized PCM input
+            to convert samples into volts before calibration. Use 1.0 when
+            input data are already in volts.
         filter_order: Butterworth filter order when bandpass_hz is set.
         eps: Small constant to avoid divide-by-zero and NaNs.
         start_time_utc: Optional UTC datetime for sample index 0.
@@ -122,6 +125,7 @@ class DifarConfig:
     frame_seconds: float = 1.0
     hop_seconds: float = 0.25
     bandpass_hz: Optional[Tuple[float, float]] = (20.0, 500.0)
+    adc_full_scale_volts: float = 1.0
     filter_order: int = 4
     eps: float = 1e-12
     start_time_utc: Optional[datetime] = None
@@ -385,6 +389,12 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
     if x.ndim != 2:
         raise ValueError(f"Expected data with ndim=2, got {x.ndim}")
 
+    adc_scale = float(getattr(cfg, "adc_full_scale_volts", 1.0) or 1.0)
+    if not np.isfinite(adc_scale) or adc_scale <= 0.0:
+        adc_scale = 1.0
+    if abs(adc_scale - 1.0) > 1e-12:
+        x = x.astype(np.float64, copy=False) * adc_scale
+
     n, ch = x.shape
     required_idx = [cfg.omni_channel, cfg.x_channel, cfg.y_channel]
     if cfg.z_channel is not None:
@@ -426,6 +436,8 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
 
     t_out, b_sensor_out, b_true_out, c_out, s_out, ts_out = [], [], [], [], [], []
     motion_db_out, pressure_db_out = [], []
+    omni_spl_db_re_1uPa_out = []
+    x_rms_out, y_rms_out, z_rms_out = [], [], []
     start_utc = _normalize_start_time_utc(cfg.start_time_utc)
 
     for start in range(0, max(1, n - frame_n + 1), hop_n):
@@ -503,9 +515,15 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         if cal is not None and (cal.x is not None or cal.y is not None):
             vrms_xy = float(np.sqrt(np.mean(x_f * x_f + y_f * y_f) / 2.0))
             motion_db_out.append(20.0 * np.log10(vrms_xy + cfg.eps))
+            x_rms_out.append(float(np.sqrt(np.mean(x_f * x_f))))
+            y_rms_out.append(float(np.sqrt(np.mean(y_f * y_f))))
+            if z_ch is not None:
+                z_f = z_ch[start:stop]
+                z_rms_out.append(float(np.sqrt(np.mean(z_f * z_f))))
         if cal is not None and cal.omni is not None:
             prms_pa = float(np.sqrt(np.mean(om_f * om_f)))
             pressure_db_out.append(20.0 * np.log10(prms_pa + cfg.eps))
+            omni_spl_db_re_1uPa_out.append(20.0 * np.log10((prms_pa / 1e-6) + cfg.eps))
 
     b_sensor_arr = np.asarray(b_sensor_out, dtype=np.float64)
     if int(cfg.bearing_smooth_frames) > 1:
@@ -527,6 +545,14 @@ def compute_bearing_time_series(data: np.ndarray, fs: float, cfg: DifarConfig | 
         out["intensity_motion_db_re_1_mps"] = np.asarray(motion_db_out, dtype=np.float64)
     if pressure_db_out:
         out["intensity_pressure_db_re_1_Pa"] = np.asarray(pressure_db_out, dtype=np.float64)
+    if omni_spl_db_re_1uPa_out:
+        out["omni_spl_db_re_1uPa"] = np.asarray(omni_spl_db_re_1uPa_out, dtype=np.float64)
+    if x_rms_out:
+        out["x_rms_mps"] = np.asarray(x_rms_out, dtype=np.float64)
+    if y_rms_out:
+        out["y_rms_mps"] = np.asarray(y_rms_out, dtype=np.float64)
+    if z_rms_out:
+        out["z_rms_mps"] = np.asarray(z_rms_out, dtype=np.float64)
     return out
 
 
