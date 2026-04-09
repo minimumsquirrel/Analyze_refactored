@@ -1438,6 +1438,11 @@ class DifarToolsMixin:
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            track_mode_combo = QtWidgets.QComboBox(); track_mode_combo.addItems(["Full-band track", "Processed-band track", "Custom-band track"]); track_mode_combo.setCurrentText("Processed-band track")
+            track_lo_hz_spin = QtWidgets.QDoubleSpinBox(); track_lo_hz_spin.setRange(0.0, 100000.0); track_lo_hz_spin.setDecimals(1); track_lo_hz_spin.setValue(0.0); track_lo_hz_spin.setSuffix(" Hz")
+            track_hi_hz_spin = QtWidgets.QDoubleSpinBox(); track_hi_hz_spin.setRange(1.0, 100000.0); track_hi_hz_spin.setDecimals(1); track_hi_hz_spin.setValue(1500.0); track_hi_hz_spin.setSuffix(" Hz")
+            amp_min_db_spin = QtWidgets.QDoubleSpinBox(); amp_min_db_spin.setRange(-240.0, 120.0); amp_min_db_spin.setDecimals(1); amp_min_db_spin.setSingleStep(1.0); amp_min_db_spin.setValue(-120.0); amp_min_db_spin.setSuffix(" dB min")
+            suggest_amp_btn = QtWidgets.QPushButton("Suggest Amp")
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
@@ -1445,6 +1450,9 @@ class DifarToolsMixin:
             ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
             ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
             ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
+            ctl.addWidget(QtWidgets.QLabel("Track")); ctl.addWidget(track_mode_combo)
+            ctl.addWidget(QtWidgets.QLabel("Track Hz")); ctl.addWidget(track_lo_hz_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(track_hi_hz_spin)
+            ctl.addWidget(QtWidgets.QLabel("Amp")); ctl.addWidget(amp_min_db_spin); ctl.addWidget(suggest_amp_btn)
             ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
@@ -1453,6 +1461,14 @@ class DifarToolsMixin:
             status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
             status_lbl.setWordWrap(True)
             lay.addWidget(status_lbl)
+
+            def _sync_track_controls():
+                is_custom = (track_mode_combo.currentText() == "Custom-band track")
+                track_lo_hz_spin.setEnabled(is_custom)
+                track_hi_hz_spin.setEnabled(is_custom)
+
+            track_mode_combo.currentIndexChanged.connect(lambda *_: _sync_track_controls())
+            _sync_track_controls()
 
             fig = None
             canvas = None
@@ -1490,6 +1506,17 @@ class DifarToolsMixin:
                 span = max(2.0, t1 - t0)
                 start_sec.setValue(max(0.0, t0))
                 win_sec.setValue(span)
+                try:
+                    bp = meta.get("bandpass_hz")
+                    if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                        lo = max(0.0, float(bp[0]))
+                        hi = max(lo + 0.1, float(bp[1]))
+                        spec_ymin_spin.setValue(lo)
+                        spec_ymax_spin.setValue(hi)
+                        track_lo_hz_spin.setValue(lo)
+                        track_hi_hz_spin.setValue(hi)
+                except Exception:
+                    pass
 
             def _style_ax(ax):
                 ax.set_facecolor(gui_bg)
@@ -1660,10 +1687,8 @@ class DifarToolsMixin:
                             b_plot = list(b)
                             if smooth_mode_combo.currentText() == "Moving average":
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
-
-                            # Bearing-colored overlays on spectrogram (0..360 cyclic hue).
-                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.3, alpha=0.9, label="Bearing")
-                            ax_bear.scatter(t, b_plot, color="#03DFE2", s=10, alpha=0.65)
+                            detected_t = list(t)
+                            detected_b = list(b_plot)
 
                             try:
                                 from matplotlib import cm, colors
@@ -1677,9 +1702,26 @@ class DifarToolsMixin:
                                 freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
                                 pxx_arr = np.asarray(pxx, dtype=float)
                                 if pxx_arr.ndim == 2 and bins_arr.size > 0 and freqs_arr.size > 0:
+                                    track_lo = None
+                                    track_hi = None
+                                    mode = track_mode_combo.currentText()
+                                    if mode == "Processed-band track":
+                                        bp = meta.get("bandpass_hz")
+                                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                                            track_lo = float(bp[0])
+                                            track_hi = float(bp[1])
+                                    elif mode == "Custom-band track":
+                                        track_lo = float(track_lo_hz_spin.value())
+                                        track_hi = float(track_hi_hz_spin.value())
+                                    if track_lo is not None and track_hi is not None:
+                                        if track_hi <= track_lo:
+                                            track_lo, track_hi = None, None
+                                    amp_min_db = float(amp_min_db_spin.value())
+
                                     ridge_t = []
                                     ridge_f = []
                                     ridge_b = []
+                                    ridge_db = []
                                     for ti, bi in zip(t, b_plot):
                                         j = int(np.argmin(np.abs(bins_arr - float(ti))))
                                         if j < 0 or j >= pxx_arr.shape[1]:
@@ -1687,8 +1729,24 @@ class DifarToolsMixin:
                                         col_pow = pxx_arr[:, j]
                                         if col_pow.size == 0:
                                             continue
-                                        fi = int(np.nanargmax(col_pow))
+                                        if track_lo is not None and track_hi is not None:
+                                            band_mask = (freqs_arr >= float(track_lo)) & (freqs_arr <= float(track_hi))
+                                            idx = np.where(band_mask)[0]
+                                            if idx.size <= 0:
+                                                continue
+                                            band_pow = col_pow[idx]
+                                            if band_pow.size <= 0:
+                                                continue
+                                            fi = int(idx[int(np.nanargmax(band_pow))])
+                                        else:
+                                            fi = int(np.nanargmax(col_pow))
                                         if fi < 0 or fi >= freqs_arr.size:
+                                            continue
+                                        peak_pow = float(col_pow[fi])
+                                        if not np.isfinite(peak_pow):
+                                            continue
+                                        peak_db = float(10.0 * np.log10(max(peak_pow, 1e-30)))
+                                        if peak_db < amp_min_db:
                                             continue
                                         ff = float(freqs_arr[fi])
                                         if ff < spec_y0 or ff > spec_y1:
@@ -1696,8 +1754,11 @@ class DifarToolsMixin:
                                         ridge_t.append(float(ti))
                                         ridge_f.append(ff)
                                         ridge_b.append(float(bi) % 360.0)
+                                        ridge_db.append(float(peak_db))
 
                                     if len(ridge_t) > 1:
+                                        detected_t = [float(v) for v in ridge_t]
+                                        detected_b = [float(v) for v in ridge_b]
                                         half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
                                         if freqs_arr.size > 1:
                                             f_step = float(np.median(np.diff(freqs_arr)))
@@ -1709,10 +1770,11 @@ class DifarToolsMixin:
                                         band_f = []
                                         band_rgba = []
 
-                                        for ti, ff, bb in zip(ridge_t, ridge_f, ridge_b):
+                                        for ti, ff, bb, p_db in zip(ridge_t, ridge_f, ridge_b, ridge_db):
                                             base_rgba = list(cmap(norm(float(bb) % 360.0)))
                                             if half_hz <= 1e-9:
-                                                rgba = tuple(base_rgba[:3] + [0.95])
+                                                alpha_peak = 0.35 + 0.60 * min(1.0, max(0.0, (float(p_db) - amp_min_db) / 24.0))
+                                                rgba = tuple(base_rgba[:3] + [alpha_peak])
                                                 band_t.append(float(ti)); band_f.append(float(ff)); band_rgba.append(rgba)
                                                 continue
 
@@ -1749,20 +1811,26 @@ class DifarToolsMixin:
                                             tick.set_color(gui_fg)
                             except Exception:
                                 pass
+                            if len(detected_t) > 1:
+                                ax_bear.plot(detected_t, detected_b, color="#03DFE2", linewidth=1.5, alpha=0.95, label="Detected bearing")
+                                ax_bear.scatter(detected_t, detected_b, color="#03DFE2", s=12, alpha=0.8)
+                            else:
+                                ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.2, alpha=0.7, label="Bearing (unfiltered fallback)")
+                                ax_bear.scatter(t, b_plot, color="#03DFE2", s=9, alpha=0.55)
                             ax_bear.legend(loc="upper right", framealpha=0.3)
 
                             # Third panel: polar plot of bearing detections (radius = relative time in window)
                             try:
                                 import numpy as np
-                                theta = np.deg2rad(np.asarray(b_plot, dtype=float) % 360.0)
-                                t_arr = np.asarray(t, dtype=float)
+                                theta = np.deg2rad(np.asarray(detected_b, dtype=float) % 360.0)
+                                t_arr = np.asarray(detected_t, dtype=float)
                                 if t_arr.size > 1:
                                     t0p = float(np.min(t_arr)); t1p = float(np.max(t_arr))
                                     denom = max(1e-9, (t1p - t0p))
                                     r = (t_arr - t0p) / denom
                                 else:
                                     r = np.ones_like(theta) * 0.5
-                                ax_polar.scatter(theta, r, c=np.asarray(b_plot, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+                                ax_polar.scatter(theta, r, c=np.asarray(detected_b, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
                                 ax_polar.set_ylim(0.0, 1.0)
                                 ax_polar.set_yticks([0.25, 0.5, 0.75, 1.0])
                                 ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
@@ -1777,7 +1845,14 @@ class DifarToolsMixin:
                     _style_ax(ax_spec)
                     _style_ax(ax_bear)
                     canvas.draw_idle()
-                    status_lbl.setText("Rendered DIFARGram-style display from latest run.")
+                    mode_txt = track_mode_combo.currentText()
+                    if mode_txt == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            mode_txt = f"Processed-band track ({float(bp[0]):.1f}-{float(bp[1]):.1f} Hz)"
+                    elif mode_txt == "Custom-band track":
+                        mode_txt = f"Custom-band track ({float(track_lo_hz_spin.value()):.1f}-{float(track_hi_hz_spin.value()):.1f} Hz)"
+                    status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.")
                 except Exception as e:
                     status_lbl.setText(f"DIFARGram render failed: {e}")
 
@@ -1809,8 +1884,73 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Failed saving JPG: {e}")
 
+            def _suggest_target_amplitude():
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    status_lbl.setText("No recent DIFAR run context available for amplitude suggestion.")
+                    return
+                wav_path = str(meta.get("wav_path") or "")
+                if not wav_path or not os.path.isfile(wav_path):
+                    status_lbl.setText("Recent run WAV path is unavailable for amplitude suggestion.")
+                    return
+                try:
+                    import numpy as np
+                    ch_idx = int(meta.get("omni_channel", 0))
+                    samples, fs = _read_wav_segment(wav_path, ch_idx, float(start_sec.value()), float(win_sec.value()))
+                    if len(samples) <= 8:
+                        status_lbl.setText("Selected segment has no audio samples for amplitude suggestion.")
+                        return
+
+                    nfft = int(nfft_combo.currentText())
+                    nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
+                    noverlap = max(0, int(nfft * 0.75))
+                    pxx, freqs, bins, _im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    pxx_arr = np.asarray(pxx, dtype=float)
+                    freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
+                    if pxx_arr.ndim != 2 or pxx_arr.size <= 0 or freqs_arr.size <= 0:
+                        status_lbl.setText("Could not compute amplitude suggestion from spectrogram.")
+                        return
+
+                    mode = track_mode_combo.currentText()
+                    track_lo = float(spec_ymin_spin.value())
+                    track_hi = float(spec_ymax_spin.value())
+                    if mode == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            track_lo = float(bp[0]); track_hi = float(bp[1])
+                    elif mode == "Custom-band track":
+                        track_lo = float(track_lo_hz_spin.value()); track_hi = float(track_hi_hz_spin.value())
+                    if track_hi <= track_lo:
+                        track_lo, track_hi = float(spec_ymin_spin.value()), float(spec_ymax_spin.value())
+                    mask = (freqs_arr >= track_lo) & (freqs_arr <= track_hi)
+                    idx = np.where(mask)[0]
+                    if idx.size <= 0:
+                        status_lbl.setText(f"No frequency bins in {track_lo:.1f}-{track_hi:.1f} Hz for amplitude suggestion.")
+                        return
+                    band = pxx_arr[idx, :]
+                    if band.size <= 0:
+                        status_lbl.setText("No band power data available for amplitude suggestion.")
+                        return
+                    peak_per_t = np.nanmax(band, axis=0)
+                    peak_db = 10.0 * np.log10(np.maximum(peak_per_t, 1e-30))
+                    peak_db = peak_db[np.isfinite(peak_db)]
+                    if peak_db.size <= 4:
+                        status_lbl.setText("Not enough valid amplitude samples to suggest a threshold.")
+                        return
+                    p50 = float(np.percentile(peak_db, 50.0))
+                    p75 = float(np.percentile(peak_db, 75.0))
+                    p90 = float(np.percentile(peak_db, 90.0))
+                    suggested = p75
+                    amp_min_db_spin.setValue(suggested)
+                    status_lbl.setText(
+                        f"Suggested amp min set to {suggested:.1f} dB (p50={p50:.1f}, p75={p75:.1f}, p90={p90:.1f}) in {track_lo:.1f}-{track_hi:.1f} Hz."
+                    )
+                except Exception as e:
+                    status_lbl.setText(f"Amplitude suggestion failed: {e}")
+
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
+            suggest_amp_btn.clicked.connect(_suggest_target_amplitude)
             _default_seconds_from_detection()
             status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
@@ -2269,6 +2409,7 @@ class DifarToolsMixin:
                         "wav_path": wav_path,
                         "label": heatmap_label,
                         "omni_channel": int(omni_spin.value()) - 1,
+                        "bandpass_hz": [float(bp_lo), float(bp_hi)],
                         "time_s": _safe_seq(result.get("time_s")),
                         "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
                         "confidence": _safe_seq(result.get("confidence")),
