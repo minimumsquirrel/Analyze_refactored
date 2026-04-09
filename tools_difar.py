@@ -1441,6 +1441,8 @@ class DifarToolsMixin:
             track_mode_combo = QtWidgets.QComboBox(); track_mode_combo.addItems(["Full-band track", "Processed-band track", "Custom-band track"]); track_mode_combo.setCurrentText("Processed-band track")
             track_lo_hz_spin = QtWidgets.QDoubleSpinBox(); track_lo_hz_spin.setRange(0.0, 100000.0); track_lo_hz_spin.setDecimals(1); track_lo_hz_spin.setValue(0.0); track_lo_hz_spin.setSuffix(" Hz")
             track_hi_hz_spin = QtWidgets.QDoubleSpinBox(); track_hi_hz_spin.setRange(1.0, 100000.0); track_hi_hz_spin.setDecimals(1); track_hi_hz_spin.setValue(1500.0); track_hi_hz_spin.setSuffix(" Hz")
+            amp_min_db_spin = QtWidgets.QDoubleSpinBox(); amp_min_db_spin.setRange(-240.0, 120.0); amp_min_db_spin.setDecimals(1); amp_min_db_spin.setSingleStep(1.0); amp_min_db_spin.setValue(-120.0); amp_min_db_spin.setSuffix(" dB min")
+            suggest_amp_btn = QtWidgets.QPushButton("Suggest Amp")
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
@@ -1450,6 +1452,7 @@ class DifarToolsMixin:
             ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
             ctl.addWidget(QtWidgets.QLabel("Track")); ctl.addWidget(track_mode_combo)
             ctl.addWidget(QtWidgets.QLabel("Track Hz")); ctl.addWidget(track_lo_hz_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(track_hi_hz_spin)
+            ctl.addWidget(QtWidgets.QLabel("Amp")); ctl.addWidget(amp_min_db_spin); ctl.addWidget(suggest_amp_btn)
             ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
@@ -1715,10 +1718,12 @@ class DifarToolsMixin:
                                     if track_lo is not None and track_hi is not None:
                                         if track_hi <= track_lo:
                                             track_lo, track_hi = None, None
+                                    amp_min_db = float(amp_min_db_spin.value())
 
                                     ridge_t = []
                                     ridge_f = []
                                     ridge_b = []
+                                    ridge_db = []
                                     for ti, bi in zip(t, b_plot):
                                         j = int(np.argmin(np.abs(bins_arr - float(ti))))
                                         if j < 0 or j >= pxx_arr.shape[1]:
@@ -1739,12 +1744,19 @@ class DifarToolsMixin:
                                             fi = int(np.nanargmax(col_pow))
                                         if fi < 0 or fi >= freqs_arr.size:
                                             continue
+                                        peak_pow = float(col_pow[fi])
+                                        if not np.isfinite(peak_pow):
+                                            continue
+                                        peak_db = float(10.0 * np.log10(max(peak_pow, 1e-30)))
+                                        if peak_db < amp_min_db:
+                                            continue
                                         ff = float(freqs_arr[fi])
                                         if ff < spec_y0 or ff > spec_y1:
                                             continue
                                         ridge_t.append(float(ti))
                                         ridge_f.append(ff)
                                         ridge_b.append(float(bi) % 360.0)
+                                        ridge_db.append(float(peak_db))
 
                                     if len(ridge_t) > 1:
                                         half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
@@ -1758,10 +1770,11 @@ class DifarToolsMixin:
                                         band_f = []
                                         band_rgba = []
 
-                                        for ti, ff, bb in zip(ridge_t, ridge_f, ridge_b):
+                                        for ti, ff, bb, p_db in zip(ridge_t, ridge_f, ridge_b, ridge_db):
                                             base_rgba = list(cmap(norm(float(bb) % 360.0)))
                                             if half_hz <= 1e-9:
-                                                rgba = tuple(base_rgba[:3] + [0.95])
+                                                alpha_peak = 0.35 + 0.60 * min(1.0, max(0.0, (float(p_db) - amp_min_db) / 24.0))
+                                                rgba = tuple(base_rgba[:3] + [alpha_peak])
                                                 band_t.append(float(ti)); band_f.append(float(ff)); band_rgba.append(rgba)
                                                 continue
 
@@ -1865,8 +1878,73 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Failed saving JPG: {e}")
 
+            def _suggest_target_amplitude():
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    status_lbl.setText("No recent DIFAR run context available for amplitude suggestion.")
+                    return
+                wav_path = str(meta.get("wav_path") or "")
+                if not wav_path or not os.path.isfile(wav_path):
+                    status_lbl.setText("Recent run WAV path is unavailable for amplitude suggestion.")
+                    return
+                try:
+                    import numpy as np
+                    ch_idx = int(meta.get("omni_channel", 0))
+                    samples, fs = _read_wav_segment(wav_path, ch_idx, float(start_sec.value()), float(win_sec.value()))
+                    if len(samples) <= 8:
+                        status_lbl.setText("Selected segment has no audio samples for amplitude suggestion.")
+                        return
+
+                    nfft = int(nfft_combo.currentText())
+                    nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
+                    noverlap = max(0, int(nfft * 0.75))
+                    pxx, freqs, bins, _im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    pxx_arr = np.asarray(pxx, dtype=float)
+                    freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
+                    if pxx_arr.ndim != 2 or pxx_arr.size <= 0 or freqs_arr.size <= 0:
+                        status_lbl.setText("Could not compute amplitude suggestion from spectrogram.")
+                        return
+
+                    mode = track_mode_combo.currentText()
+                    track_lo = float(spec_ymin_spin.value())
+                    track_hi = float(spec_ymax_spin.value())
+                    if mode == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            track_lo = float(bp[0]); track_hi = float(bp[1])
+                    elif mode == "Custom-band track":
+                        track_lo = float(track_lo_hz_spin.value()); track_hi = float(track_hi_hz_spin.value())
+                    if track_hi <= track_lo:
+                        track_lo, track_hi = float(spec_ymin_spin.value()), float(spec_ymax_spin.value())
+                    mask = (freqs_arr >= track_lo) & (freqs_arr <= track_hi)
+                    idx = np.where(mask)[0]
+                    if idx.size <= 0:
+                        status_lbl.setText(f"No frequency bins in {track_lo:.1f}-{track_hi:.1f} Hz for amplitude suggestion.")
+                        return
+                    band = pxx_arr[idx, :]
+                    if band.size <= 0:
+                        status_lbl.setText("No band power data available for amplitude suggestion.")
+                        return
+                    peak_per_t = np.nanmax(band, axis=0)
+                    peak_db = 10.0 * np.log10(np.maximum(peak_per_t, 1e-30))
+                    peak_db = peak_db[np.isfinite(peak_db)]
+                    if peak_db.size <= 4:
+                        status_lbl.setText("Not enough valid amplitude samples to suggest a threshold.")
+                        return
+                    p50 = float(np.percentile(peak_db, 50.0))
+                    p75 = float(np.percentile(peak_db, 75.0))
+                    p90 = float(np.percentile(peak_db, 90.0))
+                    suggested = p75
+                    amp_min_db_spin.setValue(suggested)
+                    status_lbl.setText(
+                        f"Suggested amp min set to {suggested:.1f} dB (p50={p50:.1f}, p75={p75:.1f}, p90={p90:.1f}) in {track_lo:.1f}-{track_hi:.1f} Hz."
+                    )
+                except Exception as e:
+                    status_lbl.setText(f"Amplitude suggestion failed: {e}")
+
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
+            suggest_amp_btn.clicked.connect(_suggest_target_amplitude)
             _default_seconds_from_detection()
             status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
