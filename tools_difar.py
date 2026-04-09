@@ -1438,6 +1438,9 @@ class DifarToolsMixin:
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            track_mode_combo = QtWidgets.QComboBox(); track_mode_combo.addItems(["Full-band track", "Processed-band track", "Custom-band track"]); track_mode_combo.setCurrentText("Processed-band track")
+            track_lo_hz_spin = QtWidgets.QDoubleSpinBox(); track_lo_hz_spin.setRange(0.0, 100000.0); track_lo_hz_spin.setDecimals(1); track_lo_hz_spin.setValue(0.0); track_lo_hz_spin.setSuffix(" Hz")
+            track_hi_hz_spin = QtWidgets.QDoubleSpinBox(); track_hi_hz_spin.setRange(1.0, 100000.0); track_hi_hz_spin.setDecimals(1); track_hi_hz_spin.setValue(1500.0); track_hi_hz_spin.setSuffix(" Hz")
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
@@ -1445,6 +1448,8 @@ class DifarToolsMixin:
             ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
             ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
             ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
+            ctl.addWidget(QtWidgets.QLabel("Track")); ctl.addWidget(track_mode_combo)
+            ctl.addWidget(QtWidgets.QLabel("Track Hz")); ctl.addWidget(track_lo_hz_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(track_hi_hz_spin)
             ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
             ctl.addWidget(render_btn); ctl.addWidget(save_btn)
             ctl.addStretch(1)
@@ -1453,6 +1458,14 @@ class DifarToolsMixin:
             status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
             status_lbl.setWordWrap(True)
             lay.addWidget(status_lbl)
+
+            def _sync_track_controls():
+                is_custom = (track_mode_combo.currentText() == "Custom-band track")
+                track_lo_hz_spin.setEnabled(is_custom)
+                track_hi_hz_spin.setEnabled(is_custom)
+
+            track_mode_combo.currentIndexChanged.connect(lambda *_: _sync_track_controls())
+            _sync_track_controls()
 
             fig = None
             canvas = None
@@ -1490,6 +1503,17 @@ class DifarToolsMixin:
                 span = max(2.0, t1 - t0)
                 start_sec.setValue(max(0.0, t0))
                 win_sec.setValue(span)
+                try:
+                    bp = meta.get("bandpass_hz")
+                    if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                        lo = max(0.0, float(bp[0]))
+                        hi = max(lo + 0.1, float(bp[1]))
+                        spec_ymin_spin.setValue(lo)
+                        spec_ymax_spin.setValue(hi)
+                        track_lo_hz_spin.setValue(lo)
+                        track_hi_hz_spin.setValue(hi)
+                except Exception:
+                    pass
 
             def _style_ax(ax):
                 ax.set_facecolor(gui_bg)
@@ -1677,6 +1701,21 @@ class DifarToolsMixin:
                                 freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
                                 pxx_arr = np.asarray(pxx, dtype=float)
                                 if pxx_arr.ndim == 2 and bins_arr.size > 0 and freqs_arr.size > 0:
+                                    track_lo = None
+                                    track_hi = None
+                                    mode = track_mode_combo.currentText()
+                                    if mode == "Processed-band track":
+                                        bp = meta.get("bandpass_hz")
+                                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                                            track_lo = float(bp[0])
+                                            track_hi = float(bp[1])
+                                    elif mode == "Custom-band track":
+                                        track_lo = float(track_lo_hz_spin.value())
+                                        track_hi = float(track_hi_hz_spin.value())
+                                    if track_lo is not None and track_hi is not None:
+                                        if track_hi <= track_lo:
+                                            track_lo, track_hi = None, None
+
                                     ridge_t = []
                                     ridge_f = []
                                     ridge_b = []
@@ -1687,7 +1726,17 @@ class DifarToolsMixin:
                                         col_pow = pxx_arr[:, j]
                                         if col_pow.size == 0:
                                             continue
-                                        fi = int(np.nanargmax(col_pow))
+                                        if track_lo is not None and track_hi is not None:
+                                            band_mask = (freqs_arr >= float(track_lo)) & (freqs_arr <= float(track_hi))
+                                            idx = np.where(band_mask)[0]
+                                            if idx.size <= 0:
+                                                continue
+                                            band_pow = col_pow[idx]
+                                            if band_pow.size <= 0:
+                                                continue
+                                            fi = int(idx[int(np.nanargmax(band_pow))])
+                                        else:
+                                            fi = int(np.nanargmax(col_pow))
                                         if fi < 0 or fi >= freqs_arr.size:
                                             continue
                                         ff = float(freqs_arr[fi])
@@ -1777,7 +1826,14 @@ class DifarToolsMixin:
                     _style_ax(ax_spec)
                     _style_ax(ax_bear)
                     canvas.draw_idle()
-                    status_lbl.setText("Rendered DIFARGram-style display from latest run.")
+                    mode_txt = track_mode_combo.currentText()
+                    if mode_txt == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            mode_txt = f"Processed-band track ({float(bp[0]):.1f}-{float(bp[1]):.1f} Hz)"
+                    elif mode_txt == "Custom-band track":
+                        mode_txt = f"Custom-band track ({float(track_lo_hz_spin.value()):.1f}-{float(track_hi_hz_spin.value()):.1f} Hz)"
+                    status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.")
                 except Exception as e:
                     status_lbl.setText(f"DIFARGram render failed: {e}")
 
@@ -2269,6 +2325,7 @@ class DifarToolsMixin:
                         "wav_path": wav_path,
                         "label": heatmap_label,
                         "omni_channel": int(omni_spin.value()) - 1,
+                        "bandpass_hz": [float(bp_lo), float(bp_hi)],
                         "time_s": _safe_seq(result.get("time_s")),
                         "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
                         "confidence": _safe_seq(result.get("confidence")),
