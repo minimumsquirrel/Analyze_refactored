@@ -1444,7 +1444,7 @@ class DifarToolsMixin:
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
             nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
-            spec_cmap_combo = QtWidgets.QComboBox(); spec_cmap_combo.addItems(["inferno", "magma", "plasma", "viridis", "cividis", "turbo", "inferno_r", "viridis_r", "turbo_r"]); spec_cmap_combo.setCurrentText("magma")
+            spec_cmap_combo = QtWidgets.QComboBox(); spec_cmap_combo.addItems(["inferno", "magma", "plasma", "viridis", "cividis", "turbo", "gray", "gray_r", "inferno_r", "viridis_r", "turbo_r"]); spec_cmap_combo.setCurrentText("magma")
             smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"]); smooth_mode_combo.setCurrentText("Moving average")
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
