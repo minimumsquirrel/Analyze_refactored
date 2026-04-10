@@ -1535,7 +1535,7 @@ class DifarToolsMixin:
                 gs = fig.add_gridspec(2, 3, width_ratios=[1.6, 2.5, 0.12], height_ratios=[1.9, 1.25], wspace=0.30, hspace=0.22)
                 ax_polar = fig.add_subplot(gs[0, 0], projection="polar")
                 ax_spec = fig.add_subplot(gs[0, 1])
-                ax_bear = fig.add_subplot(gs[1, :2], sharex=ax_spec)
+                ax_bear = fig.add_subplot(gs[1, :2])
                 cax_bearing = fig.add_subplot(gs[:, 2])
                 plot_lay.addWidget(canvas, 1)
             except Exception:
@@ -1810,6 +1810,7 @@ class DifarToolsMixin:
                     if spec_y1 <= spec_y0:
                         spec_y0, spec_y1 = 0.0, float(max_freq.value())
                     spec_swapped = (spec_axes_combo.currentIndex() == 1)
+                    spec_note = ""
                     try:
                         import numpy as np
                         pxx_db = 10.0 * np.log10(np.maximum(np.asarray(pxx, dtype=float), 1e-30))
@@ -1817,6 +1818,13 @@ class DifarToolsMixin:
                         pxx_db = None
                     if pxx_db is not None:
                         if spec_swapped:
+                            fmin = float(np.min(freqs)); fmax = float(np.max(freqs))
+                            x0 = max(fmin, spec_y0)
+                            x1 = min(fmax, spec_y1)
+                            if x1 <= x0:
+                                x0, x1 = fmin, fmax
+                            if spec_y1 > fmax + 1e-9:
+                                spec_note = f" (freq limited by Nyquist to {fmax:.1f} Hz)"
                             ax_spec.imshow(
                                 pxx_db.T,
                                 origin="lower",
@@ -1824,7 +1832,7 @@ class DifarToolsMixin:
                                 extent=[float(np.min(freqs)), float(np.max(freqs)), 0.0, float(win_sec.value())],
                                 cmap="magma",
                             )
-                            ax_spec.set_xlim(spec_y0, spec_y1)
+                            ax_spec.set_xlim(x0, x1)
                             ax_spec.set_ylim(0.0, float(win_sec.value()))
                             ax_spec.set_xlabel("Frequency (Hz)")
                             ax_spec.set_ylabel("Time within selected segment (s)")
@@ -1836,6 +1844,7 @@ class DifarToolsMixin:
                                 extent=[0.0, float(win_sec.value()), float(np.min(freqs)), float(np.max(freqs))],
                                 cmap="magma",
                             )
+                            ax_spec.set_xlim(0.0, float(win_sec.value()))
                             ax_spec.set_ylim(spec_y0, spec_y1)
                             ax_spec.set_xlabel("Time within selected segment (s)")
                             ax_spec.set_ylabel("Frequency (Hz)")
@@ -2088,7 +2097,7 @@ class DifarToolsMixin:
                             mode_txt = f"Processed-band track ({float(bp[0]):.1f}-{float(bp[1]):.1f} Hz)"
                     elif mode_txt == "Custom-band track":
                         mode_txt = f"Custom-band track ({float(track_lo_hz_spin.value()):.1f}-{float(track_hi_hz_spin.value()):.1f} Hz)"
-                    status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.")
+                    status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.{spec_note}")
                 except Exception as e:
                     _set_detection_table([])
                     status_lbl.setText(f"DIFARGram render failed: {e}")
