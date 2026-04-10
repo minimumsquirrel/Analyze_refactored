@@ -1447,6 +1447,7 @@ class DifarToolsMixin:
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            spec_axes_combo = QtWidgets.QComboBox(); spec_axes_combo.addItems(["Time→X | Freq→Y", "Freq→X | Time→Y"]); spec_axes_combo.setCurrentIndex(0)
             track_mode_combo = QtWidgets.QComboBox(); track_mode_combo.addItems(["Full-band track", "Processed-band track", "Custom-band track"]); track_mode_combo.setCurrentText("Processed-band track")
             track_lo_hz_spin = QtWidgets.QDoubleSpinBox(); track_lo_hz_spin.setRange(0.0, 100000.0); track_lo_hz_spin.setDecimals(1); track_lo_hz_spin.setValue(0.0); track_lo_hz_spin.setSuffix(" Hz")
             track_hi_hz_spin = QtWidgets.QDoubleSpinBox(); track_hi_hz_spin.setRange(1.0, 100000.0); track_hi_hz_spin.setDecimals(1); track_hi_hz_spin.setValue(1500.0); track_hi_hz_spin.setSuffix(" Hz")
@@ -1458,6 +1459,7 @@ class DifarToolsMixin:
             ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
             ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
             ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
+            ctl.addWidget(QtWidgets.QLabel("Spec axes")); ctl.addWidget(spec_axes_combo)
             ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
             ctl.addWidget(QtWidgets.QLabel("Track")); ctl.addWidget(track_mode_combo)
             ctl.addWidget(QtWidgets.QLabel("Track Hz")); ctl.addWidget(track_lo_hz_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(track_hi_hz_spin)
@@ -1802,12 +1804,44 @@ class DifarToolsMixin:
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
                     noverlap = max(0, int(nfft * 0.75))
                     pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    im.remove()
                     spec_y0 = float(spec_ymin_spin.value())
                     spec_y1 = float(spec_ymax_spin.value())
                     if spec_y1 <= spec_y0:
                         spec_y0, spec_y1 = 0.0, float(max_freq.value())
-                    ax_spec.set_ylim(spec_y0, spec_y1)
-                    ax_spec.set_ylabel("Frequency (Hz)")
+                    spec_swapped = (spec_axes_combo.currentIndex() == 1)
+                    try:
+                        import numpy as np
+                        pxx_db = 10.0 * np.log10(np.maximum(np.asarray(pxx, dtype=float), 1e-30))
+                    except Exception:
+                        pxx_db = None
+                    if pxx_db is not None:
+                        if spec_swapped:
+                            ax_spec.imshow(
+                                pxx_db.T,
+                                origin="lower",
+                                aspect="auto",
+                                extent=[float(np.min(freqs)), float(np.max(freqs)), 0.0, float(win_sec.value())],
+                                cmap="magma",
+                            )
+                            ax_spec.set_xlim(spec_y0, spec_y1)
+                            ax_spec.set_ylim(0.0, float(win_sec.value()))
+                            ax_spec.set_xlabel("Frequency (Hz)")
+                            ax_spec.set_ylabel("Time within selected segment (s)")
+                        else:
+                            ax_spec.imshow(
+                                pxx_db,
+                                origin="lower",
+                                aspect="auto",
+                                extent=[0.0, float(win_sec.value()), float(np.min(freqs)), float(np.max(freqs))],
+                                cmap="magma",
+                            )
+                            ax_spec.set_ylim(spec_y0, spec_y1)
+                            ax_spec.set_xlabel("Time within selected segment (s)")
+                            ax_spec.set_ylabel("Frequency (Hz)")
+                    else:
+                        ax_spec.set_ylim(spec_y0, spec_y1)
+                        ax_spec.set_ylabel("Frequency (Hz)")
                     ax_spec.set_title(f"DIFARGram Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
 
                     t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
@@ -1945,14 +1979,24 @@ class DifarToolsMixin:
                                                 band_rgba.append(rgba)
 
                                         if band_t:
-                                            ax_spec.scatter(
-                                                band_t,
-                                                band_f,
-                                                c=band_rgba,
-                                                s=14,
-                                                linewidths=0.0,
-                                                marker="s",
-                                            )
+                                            if spec_swapped:
+                                                ax_spec.scatter(
+                                                    band_f,
+                                                    band_t,
+                                                    c=band_rgba,
+                                                    s=14,
+                                                    linewidths=0.0,
+                                                    marker="s",
+                                                )
+                                            else:
+                                                ax_spec.scatter(
+                                                    band_t,
+                                                    band_f,
+                                                    c=band_rgba,
+                                                    s=14,
+                                                    linewidths=0.0,
+                                                    marker="s",
+                                                )
 
                                         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
                                         sm.set_array([])
