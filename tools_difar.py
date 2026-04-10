@@ -1805,6 +1805,7 @@ class DifarToolsMixin:
                     bearing_cbar["obj"] = None
 
                     ax_spec.clear(); ax_bear.clear(); ax_polar.clear()
+                    hover_state["anno"] = None
                     _style_ax(ax_spec); _style_ax(ax_bear); _style_polar_ax(ax_polar)
 
                     nfft = int(nfft_combo.currentText())
