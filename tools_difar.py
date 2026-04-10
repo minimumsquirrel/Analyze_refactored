@@ -1438,11 +1438,13 @@ class DifarToolsMixin:
             pop.setWindowState(pop.windowState() | QtCore.Qt.WindowMaximized)
             lay = QtWidgets.QVBoxLayout(pop)
 
-            ctl = QtWidgets.QHBoxLayout()
+            ctl_top = QtWidgets.QHBoxLayout()
+            ctl_bottom = QtWidgets.QHBoxLayout()
             start_sec = QtWidgets.QDoubleSpinBox(); start_sec.setRange(0.0, 86400.0); start_sec.setDecimals(2); start_sec.setValue(0.0); start_sec.setSuffix(" s start")
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
             nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
+            spec_cmap_combo = QtWidgets.QComboBox(); spec_cmap_combo.addItems(["inferno", "magma", "plasma", "viridis", "cividis", "turbo", "inferno_r", "viridis_r", "turbo_r"]); spec_cmap_combo.setCurrentText("magma")
             smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"]); smooth_mode_combo.setCurrentText("Moving average")
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
@@ -1456,18 +1458,23 @@ class DifarToolsMixin:
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
-            ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
-            ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
-            ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
-            ctl.addWidget(QtWidgets.QLabel("Spec axes")); ctl.addWidget(spec_axes_combo)
-            ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
-            ctl.addWidget(QtWidgets.QLabel("Track")); ctl.addWidget(track_mode_combo)
-            ctl.addWidget(QtWidgets.QLabel("Track Hz")); ctl.addWidget(track_lo_hz_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(track_hi_hz_spin)
-            ctl.addWidget(QtWidgets.QLabel("Amp")); ctl.addWidget(amp_min_db_spin); ctl.addWidget(suggest_amp_btn)
-            ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
-            ctl.addWidget(render_btn); ctl.addWidget(save_btn)
-            ctl.addStretch(1)
-            lay.addLayout(ctl)
+            ctl_top.addWidget(QtWidgets.QLabel("Segment:")); ctl_top.addWidget(start_sec); ctl_top.addWidget(win_sec)
+            ctl_top.addWidget(max_freq); ctl_top.addWidget(QtWidgets.QLabel("NFFT")); ctl_top.addWidget(nfft_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Spec axes")); ctl_top.addWidget(spec_axes_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Theme")); ctl_top.addWidget(spec_cmap_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Spec Y")); ctl_top.addWidget(spec_ymin_spin); ctl_top.addWidget(QtWidgets.QLabel("to")); ctl_top.addWidget(spec_ymax_spin)
+            ctl_top.addStretch(1)
+
+            ctl_bottom.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl_bottom.addWidget(smooth_mode_combo); ctl_bottom.addWidget(smooth_win_spin)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Track")); ctl_bottom.addWidget(track_mode_combo)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Track Hz")); ctl_bottom.addWidget(track_lo_hz_spin); ctl_bottom.addWidget(QtWidgets.QLabel("to")); ctl_bottom.addWidget(track_hi_hz_spin)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Amp")); ctl_bottom.addWidget(amp_min_db_spin); ctl_bottom.addWidget(suggest_amp_btn)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl_bottom.addWidget(color_band_halfwidth_hz)
+            ctl_bottom.addWidget(render_btn); ctl_bottom.addWidget(save_btn)
+            ctl_bottom.addStretch(1)
+
+            lay.addLayout(ctl_top)
+            lay.addLayout(ctl_bottom)
 
             status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
             status_lbl.setWordWrap(True)
@@ -1803,7 +1810,8 @@ class DifarToolsMixin:
                     nfft = int(nfft_combo.currentText())
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
                     noverlap = max(0, int(nfft * 0.75))
-                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    spec_cmap = (spec_cmap_combo.currentText().strip() or "magma")
+                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap=spec_cmap)
                     im.remove()
                     spec_y0 = float(spec_ymin_spin.value())
                     spec_y1 = float(spec_ymax_spin.value())
@@ -1830,7 +1838,7 @@ class DifarToolsMixin:
                                 origin="lower",
                                 aspect="auto",
                                 extent=[float(np.min(freqs)), float(np.max(freqs)), 0.0, float(win_sec.value())],
-                                cmap="magma",
+                                cmap=spec_cmap,
                             )
                             ax_spec.set_xlim(x0, x1)
                             ax_spec.set_ylim(0.0, float(win_sec.value()))
@@ -1842,7 +1850,7 @@ class DifarToolsMixin:
                                 origin="lower",
                                 aspect="auto",
                                 extent=[0.0, float(win_sec.value()), float(np.min(freqs)), float(np.max(freqs))],
-                                cmap="magma",
+                                cmap=spec_cmap,
                             )
                             ax_spec.set_xlim(0.0, float(win_sec.value()))
                             ax_spec.set_ylim(spec_y0, spec_y1)
@@ -2150,7 +2158,8 @@ class DifarToolsMixin:
                     nfft = int(nfft_combo.currentText())
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
                     noverlap = max(0, int(nfft * 0.75))
-                    pxx, freqs, bins, _im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    spec_cmap = (spec_cmap_combo.currentText().strip() or "magma")
+                    pxx, freqs, bins, _im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap=spec_cmap)
                     pxx_arr = np.asarray(pxx, dtype=float)
                     freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
                     if pxx_arr.ndim != 2 or pxx_arr.size <= 0 or freqs_arr.size <= 0:
