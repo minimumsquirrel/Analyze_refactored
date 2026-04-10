@@ -963,6 +963,15 @@ class DifarToolsMixin:
         band_w = QtWidgets.QWidget(); band_w.setLayout(band_row)
         proc_form.addRow("Bandpass (Hz):", band_w)
 
+        adc_fs_spin = QtWidgets.QDoubleSpinBox()
+        adc_fs_spin.setRange(0.001, 1000.0)
+        adc_fs_spin.setDecimals(3)
+        adc_fs_spin.setSingleStep(0.1)
+        adc_fs_spin.setValue(1.0)
+        adc_fs_spin.setSuffix(" V FS")
+        adc_fs_spin.setToolTip("Normalized sample scaling to volts before calibration (set to DAQ full-scale volts if WAV is normalized).")
+        proc_form.addRow("DAQ full-scale:", adc_fs_spin)
+
         target_profile_summary = QtWidgets.QLabel("No target profile selected (using Bandpass above).")
         target_profile_summary.setWordWrap(True)
         manage_profiles_btn = QtWidgets.QPushButton("Target Profiles...")
@@ -1429,30 +1438,93 @@ class DifarToolsMixin:
             pop.setWindowState(pop.windowState() | QtCore.Qt.WindowMaximized)
             lay = QtWidgets.QVBoxLayout(pop)
 
-            ctl = QtWidgets.QHBoxLayout()
+            ctl_top = QtWidgets.QHBoxLayout()
+            ctl_bottom = QtWidgets.QHBoxLayout()
             start_sec = QtWidgets.QDoubleSpinBox(); start_sec.setRange(0.0, 86400.0); start_sec.setDecimals(2); start_sec.setValue(0.0); start_sec.setSuffix(" s start")
             win_sec = QtWidgets.QDoubleSpinBox(); win_sec.setRange(2.0, 600.0); win_sec.setDecimals(1); win_sec.setValue(60.0); win_sec.setSuffix(" s window")
             max_freq = QtWidgets.QDoubleSpinBox(); max_freq.setRange(100.0, 100000.0); max_freq.setDecimals(1); max_freq.setValue(1500.0); max_freq.setSuffix(" Hz max")
             nfft_combo = QtWidgets.QComboBox(); nfft_combo.addItems(["512", "1024", "2048", "4096", "8192"]); nfft_combo.setCurrentText("1024")
+            spec_cmap_combo = QtWidgets.QComboBox(); spec_cmap_combo.addItems(["inferno", "magma", "plasma", "viridis", "cividis", "turbo", "inferno_r", "viridis_r", "turbo_r"]); spec_cmap_combo.setCurrentText("magma")
             smooth_mode_combo = QtWidgets.QComboBox(); smooth_mode_combo.addItems(["None", "Moving average"]); smooth_mode_combo.setCurrentText("Moving average")
             smooth_win_spin = QtWidgets.QSpinBox(); smooth_win_spin.setRange(1, 101); smooth_win_spin.setValue(40); smooth_win_spin.setSuffix(" pts")
             spec_ymin_spin = QtWidgets.QDoubleSpinBox(); spec_ymin_spin.setRange(0.0, 100000.0); spec_ymin_spin.setDecimals(1); spec_ymin_spin.setValue(0.0); spec_ymin_spin.setSuffix(" Hz")
             spec_ymax_spin = QtWidgets.QDoubleSpinBox(); spec_ymax_spin.setRange(1.0, 100000.0); spec_ymax_spin.setDecimals(1); spec_ymax_spin.setValue(1500.0); spec_ymax_spin.setSuffix(" Hz")
+            spec_axes_combo = QtWidgets.QComboBox(); spec_axes_combo.addItems(["Time→X | Freq→Y", "Freq→X | Time→Y"]); spec_axes_combo.setCurrentIndex(0)
+            track_mode_combo = QtWidgets.QComboBox(); track_mode_combo.addItems(["Full-band track", "Processed-band track", "Custom-band track"]); track_mode_combo.setCurrentText("Processed-band track")
+            track_lo_hz_spin = QtWidgets.QDoubleSpinBox(); track_lo_hz_spin.setRange(0.0, 100000.0); track_lo_hz_spin.setDecimals(1); track_lo_hz_spin.setValue(0.0); track_lo_hz_spin.setSuffix(" Hz")
+            track_hi_hz_spin = QtWidgets.QDoubleSpinBox(); track_hi_hz_spin.setRange(1.0, 100000.0); track_hi_hz_spin.setDecimals(1); track_hi_hz_spin.setValue(1500.0); track_hi_hz_spin.setSuffix(" Hz")
+            amp_min_db_spin = QtWidgets.QDoubleSpinBox(); amp_min_db_spin.setRange(-240.0, 120.0); amp_min_db_spin.setDecimals(1); amp_min_db_spin.setSingleStep(1.0); amp_min_db_spin.setValue(-120.0); amp_min_db_spin.setSuffix(" dB min")
+            suggest_amp_btn = QtWidgets.QPushButton("Suggest Amp")
             color_band_halfwidth_hz = QtWidgets.QDoubleSpinBox(); color_band_halfwidth_hz.setRange(0.0, 5000.0); color_band_halfwidth_hz.setDecimals(1); color_band_halfwidth_hz.setValue(50.0); color_band_halfwidth_hz.setSuffix(" Hz")
             render_btn = QtWidgets.QPushButton("Render")
             save_btn = QtWidgets.QPushButton("Save JPG...")
-            ctl.addWidget(QtWidgets.QLabel("Segment:")); ctl.addWidget(start_sec); ctl.addWidget(win_sec)
-            ctl.addWidget(max_freq); ctl.addWidget(QtWidgets.QLabel("NFFT")); ctl.addWidget(nfft_combo)
-            ctl.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl.addWidget(smooth_mode_combo); ctl.addWidget(smooth_win_spin)
-            ctl.addWidget(QtWidgets.QLabel("Spec Y")); ctl.addWidget(spec_ymin_spin); ctl.addWidget(QtWidgets.QLabel("to")); ctl.addWidget(spec_ymax_spin)
-            ctl.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl.addWidget(color_band_halfwidth_hz)
-            ctl.addWidget(render_btn); ctl.addWidget(save_btn)
-            ctl.addStretch(1)
-            lay.addLayout(ctl)
+            ctl_top.addWidget(QtWidgets.QLabel("Segment:")); ctl_top.addWidget(start_sec); ctl_top.addWidget(win_sec)
+            ctl_top.addWidget(max_freq); ctl_top.addWidget(QtWidgets.QLabel("NFFT")); ctl_top.addWidget(nfft_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Spec axes")); ctl_top.addWidget(spec_axes_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Theme")); ctl_top.addWidget(spec_cmap_combo)
+            ctl_top.addWidget(QtWidgets.QLabel("Spec Y")); ctl_top.addWidget(spec_ymin_spin); ctl_top.addWidget(QtWidgets.QLabel("to")); ctl_top.addWidget(spec_ymax_spin)
+            ctl_top.addStretch(1)
+
+            ctl_bottom.addWidget(QtWidgets.QLabel("Bearing smooth")); ctl_bottom.addWidget(smooth_mode_combo); ctl_bottom.addWidget(smooth_win_spin)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Track")); ctl_bottom.addWidget(track_mode_combo)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Track Hz")); ctl_bottom.addWidget(track_lo_hz_spin); ctl_bottom.addWidget(QtWidgets.QLabel("to")); ctl_bottom.addWidget(track_hi_hz_spin)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Amp")); ctl_bottom.addWidget(amp_min_db_spin); ctl_bottom.addWidget(suggest_amp_btn)
+            ctl_bottom.addWidget(QtWidgets.QLabel("Color ±Hz")); ctl_bottom.addWidget(color_band_halfwidth_hz)
+            ctl_bottom.addWidget(render_btn); ctl_bottom.addWidget(save_btn)
+            ctl_bottom.addStretch(1)
+
+            lay.addLayout(ctl_top)
+            lay.addLayout(ctl_bottom)
 
             status_lbl = QtWidgets.QLabel("DIFARGram view of latest DIFAR run: spectrogram + bearing track.")
             status_lbl.setWordWrap(True)
             lay.addWidget(status_lbl)
+
+            tabs = QtWidgets.QTabWidget()
+            plot_tab = QtWidgets.QWidget()
+            plot_lay = QtWidgets.QVBoxLayout(plot_tab)
+            plot_lay.setContentsMargins(0, 0, 0, 0)
+            table_tab = QtWidgets.QWidget()
+            table_lay = QtWidgets.QVBoxLayout(table_tab)
+            table_lay.setContentsMargins(0, 0, 0, 0)
+
+            detection_table = QtWidgets.QTableWidget()
+            detection_table.setColumnCount(12)
+            detection_table.setHorizontalHeaderLabels([
+                "Time Offset (s)",
+                "Bearing (deg)",
+                "Detected Freq (Hz)",
+                "Peak Amp (dB)",
+                "OMNI SPL (dB re 1µPa)",
+                "X RMS (m/s)",
+                "X RMS (µm/s)",
+                "Y RMS (m/s)",
+                "Y RMS (µm/s)",
+                "Z RMS (m/s)",
+                "Z RMS (µm/s)",
+                "Mode",
+            ])
+            detection_table.horizontalHeader().setStretchLastSection(True)
+            detection_table.setAlternatingRowColors(True)
+            detection_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            export_csv_btn = QtWidgets.QPushButton("Export CSV...")
+            table_btn_row = QtWidgets.QHBoxLayout()
+            table_btn_row.addStretch(1)
+            table_btn_row.addWidget(export_csv_btn)
+            table_lay.addLayout(table_btn_row)
+            table_lay.addWidget(detection_table, 1)
+
+            tabs.addTab(plot_tab, "Plots")
+            tabs.addTab(table_tab, "Data Table")
+            lay.addWidget(tabs, 1)
+
+            def _sync_track_controls():
+                is_custom = (track_mode_combo.currentText() == "Custom-band track")
+                track_lo_hz_spin.setEnabled(is_custom)
+                track_hi_hz_spin.setEnabled(is_custom)
+
+            track_mode_combo.currentIndexChanged.connect(lambda *_: _sync_track_controls())
+            _sync_track_controls()
 
             fig = None
             canvas = None
@@ -1461,19 +1533,115 @@ class DifarToolsMixin:
             ax_polar = None
             cax_bearing = None
             bearing_cbar = {"obj": None}
+            hover_state = {"anno": None, "rows": []}
             try:
                 from matplotlib.figure import Figure
                 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
                 fig = Figure(facecolor=gui_panel_bg)
                 canvas = FigureCanvas(fig)
-                gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 2.8, 0.12], height_ratios=[2.2, 1.0], wspace=0.38, hspace=0.24)
-                ax_polar = fig.add_subplot(gs[:, 0], projection="polar")
+                gs = fig.add_gridspec(2, 3, width_ratios=[1.6, 2.5, 0.12], height_ratios=[1.9, 1.25], wspace=0.30, hspace=0.22)
+                ax_polar = fig.add_subplot(gs[0, 0], projection="polar")
                 ax_spec = fig.add_subplot(gs[0, 1])
-                ax_bear = fig.add_subplot(gs[1, 1], sharex=ax_spec)
+                ax_bear = fig.add_subplot(gs[1, :2])
                 cax_bearing = fig.add_subplot(gs[:, 2])
-                lay.addWidget(canvas, 1)
+                plot_lay.addWidget(canvas, 1)
             except Exception:
                 status_lbl.setText("DIFARGram display unavailable (matplotlib Qt backend not available).")
+
+            last_detection_rows = {"rows": []}
+
+            def _set_detection_table(rows):
+                rows = rows if isinstance(rows, list) else []
+                last_detection_rows["rows"] = rows
+                hover_state["rows"] = rows
+                detection_table.setRowCount(len(rows))
+                for r, row in enumerate(rows):
+                    vals = [
+                        f"{float(row.get('time_offset_s', 0.0)):.3f}",
+                        f"{float(row.get('bearing_deg', 0.0)):.2f}",
+                        ("" if row.get("detected_freq_hz") is None else f"{float(row.get('detected_freq_hz')):.2f}"),
+                        ("" if row.get("peak_amp_db") is None else f"{float(row.get('peak_amp_db')):.2f}"),
+                        ("" if row.get("omni_spl_db_re_1uPa") is None else f"{float(row.get('omni_spl_db_re_1uPa')):.2f}"),
+                        ("" if row.get("x_rms_mps") is None else f"{float(row.get('x_rms_mps')):.6g}"),
+                        ("" if row.get("x_rms_umps") is None else f"{float(row.get('x_rms_umps')):.3f}"),
+                        ("" if row.get("y_rms_mps") is None else f"{float(row.get('y_rms_mps')):.6g}"),
+                        ("" if row.get("y_rms_umps") is None else f"{float(row.get('y_rms_umps')):.3f}"),
+                        ("" if row.get("z_rms_mps") is None else f"{float(row.get('z_rms_mps')):.6g}"),
+                        ("" if row.get("z_rms_umps") is None else f"{float(row.get('z_rms_umps')):.3f}"),
+                        str(row.get("mode", "")),
+                    ]
+                    for c_idx, txt in enumerate(vals):
+                        detection_table.setItem(r, c_idx, QtWidgets.QTableWidgetItem(txt))
+                detection_table.resizeColumnsToContents()
+
+            def _on_bearing_hover(event):
+                if fig is None or canvas is None or ax_bear is None:
+                    return
+                if event is None or event.inaxes != ax_bear:
+                    anno = hover_state.get("anno")
+                    if anno is not None:
+                        anno.set_visible(False)
+                        canvas.draw_idle()
+                    return
+                rows = hover_state.get("rows") if isinstance(hover_state, dict) else []
+                if not isinstance(rows, list) or len(rows) <= 0:
+                    return
+                try:
+                    import numpy as np
+                    xvals = np.asarray([float(r.get("time_offset_s", 0.0)) for r in rows], dtype=float)
+                    yvals = np.asarray([float(r.get("bearing_deg", 0.0)) for r in rows], dtype=float)
+                    if xvals.size <= 0 or yvals.size <= 0:
+                        return
+                    if event.xdata is None or event.ydata is None:
+                        return
+                    x0 = float(event.xdata); y0 = float(event.ydata)
+                    dx = xvals - x0
+                    dy = yvals - y0
+                    d2 = dx * dx + dy * dy
+                    k = int(np.argmin(d2))
+                    xk = float(xvals[k]); yk = float(yvals[k])
+                    xspan = max(1e-6, abs(float(ax_bear.get_xlim()[1] - ax_bear.get_xlim()[0])))
+                    yspan = max(1e-6, abs(float(ax_bear.get_ylim()[1] - ax_bear.get_ylim()[0])))
+                    nd = ((xk - x0) / xspan) ** 2 + ((yk - y0) / yspan) ** 2
+                    if nd > 0.0025:
+                        anno = hover_state.get("anno")
+                        if anno is not None:
+                            anno.set_visible(False)
+                            canvas.draw_idle()
+                        return
+                    row = rows[k]
+                    spl = row.get("omni_spl_db_re_1uPa")
+                    xu = row.get("x_rms_umps")
+                    yu = row.get("y_rms_umps")
+                    zu = row.get("z_rms_umps")
+                    txt = (
+                        f"t={xk:.3f}s\n"
+                        f"bearing={yk:.2f}°\n"
+                        f"OMNI SPL={'' if spl is None else f'{float(spl):.2f}'} dB re 1µPa\n"
+                        f"X={'' if xu is None else f'{float(xu):.3f}'} µm/s\n"
+                        f"Y={'' if yu is None else f'{float(yu):.3f}'} µm/s\n"
+                        f"Z={'' if zu is None else f'{float(zu):.3f}'} µm/s"
+                    )
+                    anno = hover_state.get("anno")
+                    if anno is None:
+                        anno = ax_bear.annotate(
+                            txt,
+                            xy=(xk, yk),
+                            xytext=(10, 10),
+                            textcoords="offset points",
+                            bbox=dict(boxstyle="round,pad=0.25", fc="#111111", ec="#03DFE2", alpha=0.92),
+                            color="#E6F1FF",
+                            fontsize=8.5,
+                            zorder=20,
+                        )
+                        hover_state["anno"] = anno
+                    else:
+                        anno.xy = (xk, yk)
+                        anno.set_text(txt)
+                    anno.set_visible(True)
+                    canvas.draw_idle()
+                except Exception:
+                    return
 
             def _default_seconds_from_detection():
                 meta = getattr(self, "_difar_last_run_meta", None)
@@ -1490,6 +1658,17 @@ class DifarToolsMixin:
                 span = max(2.0, t1 - t0)
                 start_sec.setValue(max(0.0, t0))
                 win_sec.setValue(span)
+                try:
+                    bp = meta.get("bandpass_hz")
+                    if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                        lo = max(0.0, float(bp[0]))
+                        hi = max(lo + 0.1, float(bp[1]))
+                        spec_ymin_spin.setValue(lo)
+                        spec_ymax_spin.setValue(hi)
+                        track_lo_hz_spin.setValue(lo)
+                        track_hi_hz_spin.setValue(hi)
+                except Exception:
+                    pass
 
             def _style_ax(ax):
                 ax.set_facecolor(gui_bg)
@@ -1631,18 +1810,64 @@ class DifarToolsMixin:
                     nfft = int(nfft_combo.currentText())
                     nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
                     noverlap = max(0, int(nfft * 0.75))
-                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap="magma")
+                    spec_cmap = (spec_cmap_combo.currentText().strip() or "magma")
+                    pxx, freqs, bins, im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap=spec_cmap)
+                    im.remove()
                     spec_y0 = float(spec_ymin_spin.value())
                     spec_y1 = float(spec_ymax_spin.value())
                     if spec_y1 <= spec_y0:
                         spec_y0, spec_y1 = 0.0, float(max_freq.value())
-                    ax_spec.set_ylim(spec_y0, spec_y1)
-                    ax_spec.set_ylabel("Frequency (Hz)")
+                    spec_swapped = (spec_axes_combo.currentIndex() == 1)
+                    spec_note = ""
+                    try:
+                        import numpy as np
+                        pxx_db = 10.0 * np.log10(np.maximum(np.asarray(pxx, dtype=float), 1e-30))
+                    except Exception:
+                        pxx_db = None
+                    if pxx_db is not None:
+                        if spec_swapped:
+                            fmin = float(np.min(freqs)); fmax = float(np.max(freqs))
+                            x0 = max(fmin, spec_y0)
+                            x1 = min(fmax, spec_y1)
+                            if x1 <= x0:
+                                x0, x1 = fmin, fmax
+                            if spec_y1 > fmax + 1e-9:
+                                spec_note = f" (freq limited by Nyquist to {fmax:.1f} Hz)"
+                            ax_spec.imshow(
+                                pxx_db.T,
+                                origin="lower",
+                                aspect="auto",
+                                extent=[float(np.min(freqs)), float(np.max(freqs)), 0.0, float(win_sec.value())],
+                                cmap=spec_cmap,
+                            )
+                            ax_spec.set_xlim(x0, x1)
+                            ax_spec.set_ylim(0.0, float(win_sec.value()))
+                            ax_spec.set_xlabel("Frequency (Hz)")
+                            ax_spec.set_ylabel("Time within selected segment (s)")
+                        else:
+                            ax_spec.imshow(
+                                pxx_db,
+                                origin="lower",
+                                aspect="auto",
+                                extent=[0.0, float(win_sec.value()), float(np.min(freqs)), float(np.max(freqs))],
+                                cmap=spec_cmap,
+                            )
+                            ax_spec.set_xlim(0.0, float(win_sec.value()))
+                            ax_spec.set_ylim(spec_y0, spec_y1)
+                            ax_spec.set_xlabel("Time within selected segment (s)")
+                            ax_spec.set_ylabel("Frequency (Hz)")
+                    else:
+                        ax_spec.set_ylim(spec_y0, spec_y1)
+                        ax_spec.set_ylabel("Frequency (Hz)")
                     ax_spec.set_title(f"DIFARGram Spectrogram | {os.path.basename(wav_path)} | OMNI ch {ch_idx + 1}")
 
                     t_raw = [float(v) for v in _safe_seq(meta.get("time_s"))]
                     b_raw = [float(v) % 360.0 for v in _safe_seq(meta.get("bearing_true_deg"))]
                     c_raw = [float(v) for v in _safe_seq(meta.get("confidence"))]
+                    omni_spl_raw = [float(v) for v in _safe_seq(meta.get("omni_spl_db_re_1uPa"))]
+                    x_rms_raw = [float(v) for v in _safe_seq(meta.get("x_rms_mps"))]
+                    y_rms_raw = [float(v) for v in _safe_seq(meta.get("y_rms_mps"))]
+                    z_rms_raw = [float(v) for v in _safe_seq(meta.get("z_rms_mps"))]
                     n = min(len(t_raw), len(b_raw))
                     if n > 1:
                         t0 = float(start_sec.value())
@@ -1660,10 +1885,11 @@ class DifarToolsMixin:
                             b_plot = list(b)
                             if smooth_mode_combo.currentText() == "Moving average":
                                 b_plot = _smooth_bearing_series_deg(b_plot, int(smooth_win_spin.value())).tolist()
-
-                            # Bearing-colored overlays on spectrogram (0..360 cyclic hue).
-                            ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.3, alpha=0.9, label="Bearing")
-                            ax_bear.scatter(t, b_plot, color="#03DFE2", s=10, alpha=0.65)
+                            detected_t = list(t)
+                            detected_b = list(b_plot)
+                            detected_f = [None for _ in detected_t]
+                            detected_db = [None for _ in detected_t]
+                            detected_mode = "fallback_unfiltered"
 
                             try:
                                 from matplotlib import cm, colors
@@ -1677,9 +1903,26 @@ class DifarToolsMixin:
                                 freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
                                 pxx_arr = np.asarray(pxx, dtype=float)
                                 if pxx_arr.ndim == 2 and bins_arr.size > 0 and freqs_arr.size > 0:
+                                    track_lo = None
+                                    track_hi = None
+                                    mode = track_mode_combo.currentText()
+                                    if mode == "Processed-band track":
+                                        bp = meta.get("bandpass_hz")
+                                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                                            track_lo = float(bp[0])
+                                            track_hi = float(bp[1])
+                                    elif mode == "Custom-band track":
+                                        track_lo = float(track_lo_hz_spin.value())
+                                        track_hi = float(track_hi_hz_spin.value())
+                                    if track_lo is not None and track_hi is not None:
+                                        if track_hi <= track_lo:
+                                            track_lo, track_hi = None, None
+                                    amp_min_db = float(amp_min_db_spin.value())
+
                                     ridge_t = []
                                     ridge_f = []
                                     ridge_b = []
+                                    ridge_db = []
                                     for ti, bi in zip(t, b_plot):
                                         j = int(np.argmin(np.abs(bins_arr - float(ti))))
                                         if j < 0 or j >= pxx_arr.shape[1]:
@@ -1687,8 +1930,24 @@ class DifarToolsMixin:
                                         col_pow = pxx_arr[:, j]
                                         if col_pow.size == 0:
                                             continue
-                                        fi = int(np.nanargmax(col_pow))
+                                        if track_lo is not None and track_hi is not None:
+                                            band_mask = (freqs_arr >= float(track_lo)) & (freqs_arr <= float(track_hi))
+                                            idx = np.where(band_mask)[0]
+                                            if idx.size <= 0:
+                                                continue
+                                            band_pow = col_pow[idx]
+                                            if band_pow.size <= 0:
+                                                continue
+                                            fi = int(idx[int(np.nanargmax(band_pow))])
+                                        else:
+                                            fi = int(np.nanargmax(col_pow))
                                         if fi < 0 or fi >= freqs_arr.size:
+                                            continue
+                                        peak_pow = float(col_pow[fi])
+                                        if not np.isfinite(peak_pow):
+                                            continue
+                                        peak_db = float(10.0 * np.log10(max(peak_pow, 1e-30)))
+                                        if peak_db < amp_min_db:
                                             continue
                                         ff = float(freqs_arr[fi])
                                         if ff < spec_y0 or ff > spec_y1:
@@ -1696,8 +1955,14 @@ class DifarToolsMixin:
                                         ridge_t.append(float(ti))
                                         ridge_f.append(ff)
                                         ridge_b.append(float(bi) % 360.0)
+                                        ridge_db.append(float(peak_db))
 
                                     if len(ridge_t) > 1:
+                                        detected_t = [float(v) for v in ridge_t]
+                                        detected_b = [float(v) for v in ridge_b]
+                                        detected_f = [float(v) for v in ridge_f]
+                                        detected_db = [float(v) for v in ridge_db]
+                                        detected_mode = "ridge_filtered"
                                         half_hz = max(0.0, float(color_band_halfwidth_hz.value()))
                                         if freqs_arr.size > 1:
                                             f_step = float(np.median(np.diff(freqs_arr)))
@@ -1709,10 +1974,11 @@ class DifarToolsMixin:
                                         band_f = []
                                         band_rgba = []
 
-                                        for ti, ff, bb in zip(ridge_t, ridge_f, ridge_b):
+                                        for ti, ff, bb, p_db in zip(ridge_t, ridge_f, ridge_b, ridge_db):
                                             base_rgba = list(cmap(norm(float(bb) % 360.0)))
                                             if half_hz <= 1e-9:
-                                                rgba = tuple(base_rgba[:3] + [0.95])
+                                                alpha_peak = 0.35 + 0.60 * min(1.0, max(0.0, (float(p_db) - amp_min_db) / 24.0))
+                                                rgba = tuple(base_rgba[:3] + [alpha_peak])
                                                 band_t.append(float(ti)); band_f.append(float(ff)); band_rgba.append(rgba)
                                                 continue
 
@@ -1730,14 +1996,24 @@ class DifarToolsMixin:
                                                 band_rgba.append(rgba)
 
                                         if band_t:
-                                            ax_spec.scatter(
-                                                band_t,
-                                                band_f,
-                                                c=band_rgba,
-                                                s=14,
-                                                linewidths=0.0,
-                                                marker="s",
-                                            )
+                                            if spec_swapped:
+                                                ax_spec.scatter(
+                                                    band_f,
+                                                    band_t,
+                                                    c=band_rgba,
+                                                    s=14,
+                                                    linewidths=0.0,
+                                                    marker="s",
+                                                )
+                                            else:
+                                                ax_spec.scatter(
+                                                    band_t,
+                                                    band_f,
+                                                    c=band_rgba,
+                                                    s=14,
+                                                    linewidths=0.0,
+                                                    marker="s",
+                                                )
 
                                         sm = cm.ScalarMappable(norm=norm, cmap=cmap)
                                         sm.set_array([])
@@ -1749,25 +2025,70 @@ class DifarToolsMixin:
                                             tick.set_color(gui_fg)
                             except Exception:
                                 pass
+                            if len(detected_t) > 1:
+                                ax_bear.plot(detected_t, detected_b, color="#03DFE2", linewidth=1.5, alpha=0.95, label="Detected bearing")
+                                ax_bear.scatter(detected_t, detected_b, color="#03DFE2", s=12, alpha=0.8)
+                            else:
+                                ax_bear.plot(t, b_plot, color="#03DFE2", linewidth=1.2, alpha=0.7, label="Bearing (unfiltered fallback)")
+                                ax_bear.scatter(t, b_plot, color="#03DFE2", s=9, alpha=0.55)
                             ax_bear.legend(loc="upper right", framealpha=0.3)
+
+                            table_rows = []
+                            import numpy as np
+                            t_ref = np.asarray(t_raw, dtype=float)
+                            def _nearest_metric(tt, arr):
+                                try:
+                                    if t_ref.size <= 0 or len(arr) <= 0:
+                                        return None
+                                    k = int(np.argmin(np.abs(t_ref - float(t0 + tt))))
+                                    if k < 0 or k >= len(arr):
+                                        return None
+                                    return float(arr[k])
+                                except Exception:
+                                    return None
+                            for ti, bi, fi, di in zip(detected_t, detected_b, detected_f, detected_db):
+                                x_mps = _nearest_metric(float(ti), x_rms_raw)
+                                y_mps = _nearest_metric(float(ti), y_rms_raw)
+                                z_mps = _nearest_metric(float(ti), z_rms_raw)
+                                table_rows.append(
+                                    {
+                                        "time_offset_s": float(ti),
+                                        "bearing_deg": float(bi),
+                                        "detected_freq_hz": (None if fi is None else float(fi)),
+                                        "peak_amp_db": (None if di is None else float(di)),
+                                        "omni_spl_db_re_1uPa": _nearest_metric(float(ti), omni_spl_raw),
+                                        "x_rms_mps": x_mps,
+                                        "x_rms_umps": (None if x_mps is None else float(x_mps) * 1e6),
+                                        "y_rms_mps": y_mps,
+                                        "y_rms_umps": (None if y_mps is None else float(y_mps) * 1e6),
+                                        "z_rms_mps": z_mps,
+                                        "z_rms_umps": (None if z_mps is None else float(z_mps) * 1e6),
+                                        "mode": detected_mode,
+                                    }
+                                )
+                            _set_detection_table(table_rows)
 
                             # Third panel: polar plot of bearing detections (radius = relative time in window)
                             try:
                                 import numpy as np
-                                theta = np.deg2rad(np.asarray(b_plot, dtype=float) % 360.0)
-                                t_arr = np.asarray(t, dtype=float)
+                                theta = np.deg2rad(np.asarray(detected_b, dtype=float) % 360.0)
+                                t_arr = np.asarray(detected_t, dtype=float)
                                 if t_arr.size > 1:
                                     t0p = float(np.min(t_arr)); t1p = float(np.max(t_arr))
                                     denom = max(1e-9, (t1p - t0p))
                                     r = (t_arr - t0p) / denom
                                 else:
                                     r = np.ones_like(theta) * 0.5
-                                ax_polar.scatter(theta, r, c=np.asarray(b_plot, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
+                                ax_polar.scatter(theta, r, c=np.asarray(detected_b, dtype=float) % 360.0, cmap="hsv", vmin=0.0, vmax=360.0, s=14, alpha=0.9)
                                 ax_polar.set_ylim(0.0, 1.0)
                                 ax_polar.set_yticks([0.25, 0.5, 0.75, 1.0])
                                 ax_polar.set_yticklabels(["25%", "50%", "75%", "100%"], color=gui_fg)
                             except Exception:
                                 pass
+                        else:
+                            _set_detection_table([])
+                    else:
+                        _set_detection_table([])
                     ax_bear.set_xlim(0.0, float(win_sec.value()))
                     ax_bear.set_ylim(0.0, 360.0)
                     ax_bear.set_xlabel("Time within selected segment (s)")
@@ -1777,8 +2098,16 @@ class DifarToolsMixin:
                     _style_ax(ax_spec)
                     _style_ax(ax_bear)
                     canvas.draw_idle()
-                    status_lbl.setText("Rendered DIFARGram-style display from latest run.")
+                    mode_txt = track_mode_combo.currentText()
+                    if mode_txt == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            mode_txt = f"Processed-band track ({float(bp[0]):.1f}-{float(bp[1]):.1f} Hz)"
+                    elif mode_txt == "Custom-band track":
+                        mode_txt = f"Custom-band track ({float(track_lo_hz_spin.value()):.1f}-{float(track_hi_hz_spin.value()):.1f} Hz)"
+                    status_lbl.setText(f"Rendered DIFARGram-style display from latest run. Tracking mode: {mode_txt}.{spec_note}")
                 except Exception as e:
+                    _set_detection_table([])
                     status_lbl.setText(f"DIFARGram render failed: {e}")
 
             def _save_jpg():
@@ -1809,8 +2138,141 @@ class DifarToolsMixin:
                 except Exception as e:
                     status_lbl.setText(f"Failed saving JPG: {e}")
 
+            def _suggest_target_amplitude():
+                meta = getattr(self, "_difar_last_run_meta", None)
+                if not isinstance(meta, dict):
+                    status_lbl.setText("No recent DIFAR run context available for amplitude suggestion.")
+                    return
+                wav_path = str(meta.get("wav_path") or "")
+                if not wav_path or not os.path.isfile(wav_path):
+                    status_lbl.setText("Recent run WAV path is unavailable for amplitude suggestion.")
+                    return
+                try:
+                    import numpy as np
+                    ch_idx = int(meta.get("omni_channel", 0))
+                    samples, fs = _read_wav_segment(wav_path, ch_idx, float(start_sec.value()), float(win_sec.value()))
+                    if len(samples) <= 8:
+                        status_lbl.setText("Selected segment has no audio samples for amplitude suggestion.")
+                        return
+
+                    nfft = int(nfft_combo.currentText())
+                    nfft = max(64, min(nfft, max(64, int(len(samples) // 4))))
+                    noverlap = max(0, int(nfft * 0.75))
+                    spec_cmap = (spec_cmap_combo.currentText().strip() or "magma")
+                    pxx, freqs, bins, _im = ax_spec.specgram(samples, NFFT=nfft, Fs=fs, noverlap=noverlap, cmap=spec_cmap)
+                    pxx_arr = np.asarray(pxx, dtype=float)
+                    freqs_arr = np.asarray(freqs, dtype=float).reshape(-1)
+                    if pxx_arr.ndim != 2 or pxx_arr.size <= 0 or freqs_arr.size <= 0:
+                        status_lbl.setText("Could not compute amplitude suggestion from spectrogram.")
+                        return
+
+                    mode = track_mode_combo.currentText()
+                    track_lo = float(spec_ymin_spin.value())
+                    track_hi = float(spec_ymax_spin.value())
+                    if mode == "Processed-band track":
+                        bp = meta.get("bandpass_hz")
+                        if isinstance(bp, (list, tuple)) and len(bp) >= 2:
+                            track_lo = float(bp[0]); track_hi = float(bp[1])
+                    elif mode == "Custom-band track":
+                        track_lo = float(track_lo_hz_spin.value()); track_hi = float(track_hi_hz_spin.value())
+                    if track_hi <= track_lo:
+                        track_lo, track_hi = float(spec_ymin_spin.value()), float(spec_ymax_spin.value())
+                    mask = (freqs_arr >= track_lo) & (freqs_arr <= track_hi)
+                    idx = np.where(mask)[0]
+                    if idx.size <= 0:
+                        status_lbl.setText(f"No frequency bins in {track_lo:.1f}-{track_hi:.1f} Hz for amplitude suggestion.")
+                        return
+                    band = pxx_arr[idx, :]
+                    if band.size <= 0:
+                        status_lbl.setText("No band power data available for amplitude suggestion.")
+                        return
+                    peak_per_t = np.nanmax(band, axis=0)
+                    peak_db = 10.0 * np.log10(np.maximum(peak_per_t, 1e-30))
+                    peak_db = peak_db[np.isfinite(peak_db)]
+                    if peak_db.size <= 4:
+                        status_lbl.setText("Not enough valid amplitude samples to suggest a threshold.")
+                        return
+                    p50 = float(np.percentile(peak_db, 50.0))
+                    p75 = float(np.percentile(peak_db, 75.0))
+                    p90 = float(np.percentile(peak_db, 90.0))
+                    suggested = p75
+                    amp_min_db_spin.setValue(suggested)
+                    status_lbl.setText(
+                        f"Suggested amp min set to {suggested:.1f} dB (p50={p50:.1f}, p75={p75:.1f}, p90={p90:.1f}) in {track_lo:.1f}-{track_hi:.1f} Hz."
+                    )
+                except Exception as e:
+                    status_lbl.setText(f"Amplitude suggestion failed: {e}")
+
+            def _export_detection_csv():
+                rows = last_detection_rows.get("rows") if isinstance(last_detection_rows, dict) else None
+                rows = rows if isinstance(rows, list) else []
+                if len(rows) <= 0:
+                    status_lbl.setText("No detection rows to export. Render DIFARGram first.")
+                    return
+                meta = getattr(self, "_difar_last_run_meta", {}) or {}
+                wav_path = str(meta.get("wav_path") or "")
+                wav_name = os.path.splitext(os.path.basename(wav_path))[0] if wav_path else "unknown_wav"
+                if hasattr(self, "_project_subdir"):
+                    try:
+                        out_dir = self._project_subdir("difargram_tables")
+                    except Exception:
+                        out_dir = os.path.join(os.getcwd(), "difargram_tables")
+                else:
+                    out_dir = os.path.join(os.getcwd(), "difargram_tables")
+                os.makedirs(out_dir, exist_ok=True)
+                default_path = os.path.join(out_dir, f"{wav_name}_detections.csv")
+                path, _ = QtWidgets.QFileDialog.getSaveFileName(pop, "Export Detection Table CSV", default_path, "CSV Files (*.csv)")
+                if not path:
+                    return
+                if not path.lower().endswith(".csv"):
+                    path = f"{path}.csv"
+                try:
+                    import csv
+                    with open(path, "w", newline="", encoding="utf-8") as f:
+                        w = csv.writer(f)
+                        w.writerow([
+                            "time_offset_s",
+                            "bearing_deg",
+                            "detected_freq_hz",
+                            "peak_amp_db",
+                            "omni_spl_db_re_1uPa",
+                            "x_rms_mps",
+                            "x_rms_um_per_s",
+                            "y_rms_mps",
+                            "y_rms_um_per_s",
+                            "z_rms_mps",
+                            "z_rms_um_per_s",
+                            "mode",
+                        ])
+                        for row in rows:
+                            w.writerow([
+                                row.get("time_offset_s"),
+                                row.get("bearing_deg"),
+                                row.get("detected_freq_hz"),
+                                row.get("peak_amp_db"),
+                                row.get("omni_spl_db_re_1uPa"),
+                                row.get("x_rms_mps"),
+                                row.get("x_rms_umps"),
+                                row.get("y_rms_mps"),
+                                row.get("y_rms_umps"),
+                                row.get("z_rms_mps"),
+                                row.get("z_rms_umps"),
+                                row.get("mode"),
+                            ])
+                    status_lbl.setText(f"Exported detection table CSV: {path}")
+                except Exception as e:
+                    status_lbl.setText(f"Failed exporting detection table CSV: {e}")
+
+            if canvas is not None:
+                try:
+                    canvas.mpl_connect("motion_notify_event", _on_bearing_hover)
+                except Exception:
+                    pass
+
             render_btn.clicked.connect(_render_difargram)
             save_btn.clicked.connect(_save_jpg)
+            suggest_amp_btn.clicked.connect(_suggest_target_amplitude)
+            export_csv_btn.clicked.connect(_export_detection_csv)
             _default_seconds_from_detection()
             status_lbl.setText("Ready. Click Render to build DIFARGram for the selected segment.")
             pop.exec_()
@@ -2192,6 +2654,7 @@ class DifarToolsMixin:
                     bearing_smooth_frames=int(smooth_spin.value()),
                     resolve_180_ambiguity=bool(ambig_chk.isChecked()),
                     use_omni_for_ambiguity=bool(omni_ambig_chk.isChecked()),
+                    adc_full_scale_volts=float(adc_fs_spin.value()),
                 )
                 bands_text = (selected_target_bands_text or "").strip()
                 bands = _parse_target_bands(bands_text)
@@ -2255,6 +2718,7 @@ class DifarToolsMixin:
                     out.appendPlainText(
                         f"Convention: swap_xy={swap_xy_chk.isChecked()} invert_x={invert_x_chk.isChecked()} invert_y={invert_y_chk.isChecked()} offset={offs_spin.value():.2f}° gate={gate_spin.value():.1f}% smooth={smooth_spin.value()} resolve180={ambig_chk.isChecked()} omni_disambig={omni_ambig_chk.isChecked()}"
                     )
+                    out.appendPlainText(f"Amplitude scaling: DAQ full-scale={adc_fs_spin.value():.3f} V before calibration.")
                     out.appendPlainText(f"Output keys: {', '.join(result.keys())}")
                     if run_export_path:
                         out.appendPlainText(f"Saved CSV: {run_export_path}")
@@ -2269,9 +2733,15 @@ class DifarToolsMixin:
                         "wav_path": wav_path,
                         "label": heatmap_label,
                         "omni_channel": int(omni_spin.value()) - 1,
+                        "bandpass_hz": [float(bp_lo), float(bp_hi)],
+                        "adc_full_scale_volts": float(adc_fs_spin.value()),
                         "time_s": _safe_seq(result.get("time_s")),
                         "bearing_true_deg": _safe_seq(result.get("bearing_true_deg")),
                         "confidence": _safe_seq(result.get("confidence")),
+                        "omni_spl_db_re_1uPa": _safe_seq(result.get("omni_spl_db_re_1uPa")),
+                        "x_rms_mps": _safe_seq(result.get("x_rms_mps")),
+                        "y_rms_mps": _safe_seq(result.get("y_rms_mps")),
+                        "z_rms_mps": _safe_seq(result.get("z_rms_mps")),
                     }
 
                     run_id = None
