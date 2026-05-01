@@ -14890,7 +14890,8 @@ class MainWindow(
         sidebar.addWidget(self.gps_track_list, 1)
 
         row = QtWidgets.QHBoxLayout()
-        self.gps_import_btn = QtWidgets.QPushButton("Import Track")
+        self.gps_import_btn = QtWidgets.QPushButton("Import Track/Bathy")
+        self.gps_import_btn.setToolTip("Import GPX or CSV/TXT bathymetry/GPS points (Lat/Lon required, Elevation optional).")
         self.gps_import_btn.clicked.connect(self.import_gps_track)
         row.addWidget(self.gps_import_btn)
         self.gps_delete_btn = QtWidgets.QPushButton("Delete")
@@ -15045,14 +15046,22 @@ class MainWindow(
 
     @staticmethod
     def _parse_header_csv_points(lines):
-        reader = csv.DictReader(lines)
+        sample = "".join(lines[:10])
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(lines, dialect=dialect)
         if not reader.fieldnames:
             return []
-        field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
-        lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
-        lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
-        ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
-        t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
+        def _norm(name):
+            txt = (name or "").strip().lower()
+            return "".join(ch for ch in txt if ch.isalnum())
+        field_map = {_norm(f): f for f in reader.fieldnames if f}
+        lat_key = next((field_map[k] for k in ("lat", "latitude", "latdd", "y") if k in field_map), None)
+        lon_key = next((field_map[k] for k in ("lon", "long", "lng", "longitude", "longdd", "x") if k in field_map), None)
+        ele_key = next((field_map[k] for k in ("ele", "elevation", "elev", "alt", "altitude", "depth") if k in field_map), None)
+        t_key = next((field_map[k] for k in ("time", "timestamp", "utctime", "datetime", "dateutc") if k in field_map), None)
         if not lat_key or not lon_key:
             return []
         out = []
@@ -15176,9 +15185,9 @@ class MainWindow(
     def import_gps_track(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Import GPS Track",
+            "Import GPS/Bathymetry Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
+            "GPS/Bathy Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -15192,11 +15201,11 @@ class MainWindow(
             else:
                 raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
+            QtWidgets.QMessageBox.warning(self, "Import GPS/Bathymetry Track", f"Could not parse track\n{e}")
             return
 
         if not points:
-            QtWidgets.QMessageBox.information(self, "Import GPS Track", "No valid GPS points found.")
+            QtWidgets.QMessageBox.information(self, "Import GPS/Bathymetry Track", "No valid GPS points found.")
             return
 
         default_name = os.path.splitext(os.path.basename(path))[0]
