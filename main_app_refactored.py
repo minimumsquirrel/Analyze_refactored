@@ -14890,7 +14890,8 @@ class MainWindow(
         sidebar.addWidget(self.gps_track_list, 1)
 
         row = QtWidgets.QHBoxLayout()
-        self.gps_import_btn = QtWidgets.QPushButton("Import Track")
+        self.gps_import_btn = QtWidgets.QPushButton("Import Track/Bathy")
+        self.gps_import_btn.setToolTip("Import GPX or CSV/TXT bathymetry/GPS points (Lat/Lon required, Elevation optional).")
         self.gps_import_btn.clicked.connect(self.import_gps_track)
         row.addWidget(self.gps_import_btn)
         self.gps_delete_btn = QtWidgets.QPushButton("Delete")
@@ -15184,9 +15185,9 @@ class MainWindow(
     def import_gps_track(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Import GPS Track",
+            "Import GPS/Bathymetry Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
+            "GPS/Bathy Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -15200,11 +15201,11 @@ class MainWindow(
             else:
                 raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
+            QtWidgets.QMessageBox.warning(self, "Import GPS/Bathymetry Track", f"Could not parse track\n{e}")
             return
 
         if not points:
-            QtWidgets.QMessageBox.information(self, "Import GPS Track", "No valid GPS points found.")
+            QtWidgets.QMessageBox.information(self, "Import GPS/Bathymetry Track", "No valid GPS points found.")
             return
 
         default_name = os.path.splitext(os.path.basename(path))[0]
