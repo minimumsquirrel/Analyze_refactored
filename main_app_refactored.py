@@ -15045,14 +15045,22 @@ class MainWindow(
 
     @staticmethod
     def _parse_header_csv_points(lines):
-        reader = csv.DictReader(lines)
+        sample = "".join(lines[:10])
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(lines, dialect=dialect)
         if not reader.fieldnames:
             return []
-        field_map = {f.strip().lower(): f for f in reader.fieldnames if f}
-        lat_key = next((field_map[k] for k in ("lat", "latitude", "y") if k in field_map), None)
-        lon_key = next((field_map[k] for k in ("lon", "lng", "longitude", "x") if k in field_map), None)
-        ele_key = next((field_map[k] for k in ("ele", "elevation", "alt", "altitude") if k in field_map), None)
-        t_key = next((field_map[k] for k in ("time", "timestamp", "utc_time", "datetime") if k in field_map), None)
+        def _norm(name):
+            txt = (name or "").strip().lower()
+            return "".join(ch for ch in txt if ch.isalnum())
+        field_map = {_norm(f): f for f in reader.fieldnames if f}
+        lat_key = next((field_map[k] for k in ("lat", "latitude", "latdd", "y") if k in field_map), None)
+        lon_key = next((field_map[k] for k in ("lon", "long", "lng", "longitude", "longdd", "x") if k in field_map), None)
+        ele_key = next((field_map[k] for k in ("ele", "elevation", "elev", "alt", "altitude", "depth") if k in field_map), None)
+        t_key = next((field_map[k] for k in ("time", "timestamp", "utctime", "datetime", "dateutc") if k in field_map), None)
         if not lat_key or not lon_key:
             return []
         out = []
