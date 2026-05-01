@@ -14955,6 +14955,13 @@ class MainWindow(
         self.wp_delete_btn.clicked.connect(self.delete_selected_waypoints)
         wp_row.addWidget(self.wp_delete_btn)
         sidebar.addLayout(wp_row)
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        sidebar.addWidget(self.bathy_import_btn)
+        self.chart_show_bathy_cb = QtWidgets.QCheckBox("Show Bathy Layer")
+        self.chart_show_bathy_cb.setChecked(True)
+        self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_show_bathy_cb)
 
         layout.addLayout(sidebar, 1)
 
@@ -15265,8 +15272,84 @@ class MainWindow(
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_gps_tracks_project ON gps_tracks(project_id, created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_gps_track_points_track ON gps_track_points(track_id, point_index)")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bathy_surveys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER,
+                name TEXT,
+                source_file TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bathy_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                survey_id INTEGER NOT NULL,
+                point_index INTEGER,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                elevation_m REAL,
+                FOREIGN KEY(survey_id) REFERENCES bathy_surveys(id) ON DELETE CASCADE
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_bathy_surveys_project ON bathy_surveys(project_id, created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_bathy_points_survey ON bathy_points(survey_id, point_index)")
         conn.commit()
         conn.close()
+
+    def import_bathy_survey(self):
+        self._ensure_chart_track_tables()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import Bathymetry Survey", self._dialog_default_dir("originals"),
+            "Bathymetry (*.csv *.txt *.log);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            points = self._iter_csv_gps_points(path)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Import Bathymetry Survey", f"Could not parse survey\n{e}")
+            return
+        if not points:
+            QtWidgets.QMessageBox.information(self, "Import Bathymetry Survey", "No valid survey points found.")
+            return
+        default_name = os.path.splitext(os.path.basename(path))[0]
+        name, ok = QtWidgets.QInputDialog.getText(self, "Survey Name", "Survey name:", text=default_name)
+        if not ok:
+            return
+        name = (name or "").strip() or default_name
+        pid = getattr(self, "current_project_id", None)
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        cur.execute("INSERT INTO bathy_surveys (project_id, name, source_file) VALUES (?, ?, ?)", (pid, name, path))
+        sid = int(cur.lastrowid)
+        cur.executemany(
+            "INSERT INTO bathy_points (survey_id, point_index, latitude, longitude, elevation_m) VALUES (?, ?, ?, ?, ?)",
+            [(sid, i, lat, lon, ele) for i, _ts, lat, lon, ele in points],
+        )
+        conn.commit(); conn.close()
+        self._plot_selected_gps_tracks()
+
+    def _fetch_bathy_points_for_chart(self):
+        self._ensure_chart_track_tables()
+        pid = getattr(self, "current_project_id", None)
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT s.id, s.name, p.point_index, p.latitude, p.longitude, p.elevation_m
+            FROM bathy_surveys s
+            JOIN bathy_points p ON p.survey_id = s.id
+            WHERE ((s.project_id IS NULL AND ? IS NULL) OR s.project_id = ?)
+            ORDER BY s.created_at DESC, s.id DESC, p.point_index ASC
+            """,
+            (pid, pid),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return rows
 
     def refresh_chart_tracks(self, select_id=None):
         if not hasattr(self, 'gps_track_list'):
@@ -15471,11 +15554,30 @@ class MainWindow(
         menu = QtWidgets.QMenu(self)
         a_wp = menu.addAction(f"Create waypoint here ({lat:.5f}, {lon:.5f})")
         a_ctd = menu.addAction(f"Import CTD data at this location ({lat:.5f}, {lon:.5f})")
+        a_bathy = menu.addAction("Show nearest bathy point")
         chosen = menu.exec_(QtGui.QCursor.pos())
         if chosen is a_wp:
             self.add_chart_waypoint(default_lat=lat, default_lon=lon)
         elif chosen is a_ctd:
             self._open_ctd_import_at(lat, lon)
+        elif chosen is a_bathy:
+            rows = self._fetch_bathy_points_for_chart()
+            best = None
+            for sid, sname, pidx, blat, blon, elev in rows:
+                try:
+                    d2 = (float(blat) - lat) ** 2 + (float(blon) - lon) ** 2
+                except Exception:
+                    continue
+                if best is None or d2 < best[0]:
+                    best = (d2, sid, sname, pidx, float(blat), float(blon), elev)
+            if best is None:
+                QtWidgets.QMessageBox.information(self, "Bathy", "No bathymetry points available.")
+            else:
+                _d2, sid, sname, pidx, blat, blon, elev = best
+                msg = f"{sname}\nPoint: {pidx}\nLat: {blat:.6f}\nLon: {blon:.6f}"
+                if elev is not None:
+                    msg += f"\nElevation: {float(elev):.3f} m"
+                QtWidgets.QMessageBox.information(self, "Bathy Point", msg)
 
     def delete_selected_waypoints(self):
         if not hasattr(self, 'waypoint_list'):
@@ -15853,7 +15955,7 @@ class MainWindow(
             strips.append([a, b, c, d, a])
         return strips
 
-    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, difar_overlay=None, propagation_overlay=None):
+    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, bathy_rows=None, difar_overlay=None, propagation_overlay=None):
         if self.gps_map_view is None or folium is None:
             return
 
@@ -15890,7 +15992,8 @@ class MainWindow(
                 pass
 
         total_track_points = sum(len(tr.get("lat", [])) for tr in tracks)
-        folium_fast_mode = (total_track_points > 12000) or (len(tracks) > 3) or (len(ctd_rows) > 8)
+        bathy_rows = bathy_rows or []
+        folium_fast_mode = (total_track_points > 12000) or (len(tracks) > 3) or (len(ctd_rows) > 8) or (len(bathy_rows) > 3000)
 
         # Defensive guard against any partial-render state/regression where these vars
         # are missing at runtime (seen in field traces on startup chart tab open).
@@ -16412,6 +16515,18 @@ class MainWindow(
                 all_lon.append(float(lon)); all_lat.append(float(lat)); wp_count += 1
             except Exception:
                 pass
+        bathy_rows = []
+        bathy_count = 0
+        if not hasattr(self, 'chart_show_bathy_cb') or self.chart_show_bathy_cb.isChecked():
+            try:
+                bathy_rows = self._fetch_bathy_points_for_chart()
+            except Exception:
+                bathy_rows = []
+        for _sid, _sn, _idx, lat, lon, _elev in bathy_rows:
+            try:
+                all_lon.append(float(lon)); all_lat.append(float(lat)); bathy_count += 1
+            except Exception:
+                pass
 
         difar_overlays = []
         if not hasattr(self, 'chart_show_difar_cb') or self.chart_show_difar_cb.isChecked():
@@ -16473,7 +16588,7 @@ class MainWindow(
 
         if use_web_map:
             try:
-                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, difar_overlay=difar_overlays, propagation_overlay=prop_overlay)
+                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, bathy_rows=bathy_rows, difar_overlay=difar_overlays, propagation_overlay=prop_overlay)
                 if hasattr(self, 'gps_map_stack'):
                     self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 if hasattr(self, 'gps_cursor_label'):
@@ -16519,6 +16634,15 @@ class MainWindow(
                 self.gps_plot.plot([lonf], [latf], pen=None, symbol=self._waypoint_symbol_pg(symbol), symbolSize=12,
                                    symbolBrush=pg.mkBrush('#4DA3FF'), symbolPen=pg.mkPen('#1E3A5F', width=1),
                                    name=(f"Waypoint: {wp_name} ({scope})" if idx == 0 else None))
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                label = f"Bathy: {sname} (Point {point_idx})"
+                self.gps_plot.plot([lonf], [latf], pen=None, symbol='o', symbolSize=4,
+                                   symbolBrush=pg.mkBrush('#00B4D8'), symbolPen=pg.mkPen('#005F73', width=1),
+                                   name=(label if idx == 0 else None))
 
 
             for difar_overlay in difar_overlays:
@@ -16611,7 +16735,7 @@ class MainWindow(
                 self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
                 self.gps_plot.setYRange(min(all_lat), max(all_lat), padding=0.05)
 
-        if not tracks and ctd_count == 0 and wp_count == 0 and not isinstance(prop_overlay, dict):
+        if not tracks and ctd_count == 0 and wp_count == 0 and bathy_count == 0 and not isinstance(prop_overlay, dict):
             self.gps_info_label.setText('No tracks selected')
             return
 
@@ -16625,7 +16749,7 @@ class MainWindow(
         else:
             prop_txt = "Not modelled"
         self.gps_info_label.setText(
-            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
+            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   Bathy Points: {bathy_count}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
         )
 
 
@@ -17190,6 +17314,19 @@ class MainWindow(
                 ax.set_xlim(xmin, xmax)
             except Exception:
                 pass
+        if bathy_rows:
+            marker_cap = 600 if not folium_fast_mode else 250
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                if elev is not None:
+                    popup += f"<br>Elevation: {float(elev):.3f} m"
+                folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
+                                    popup=folium.Popup(popup, max_width=320),
+                                    tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
             try:
                 ymin, ymax = map(float, y_entry.text().split(","))
                 ax.set_ylim(ymin, ymax)
