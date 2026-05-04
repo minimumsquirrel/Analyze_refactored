@@ -16071,6 +16071,35 @@ class MainWindow(
                         fill_opacity=0.85, popup=folium.Popup(popup, max_width=320)
                     ).add_to(m)
 
+        if bathy_rows:
+            survey_lines = {}
+            for sid, sname, point_idx, lat, lon, elev in bathy_rows:
+                try:
+                    survey_lines.setdefault((int(sid), str(sname or f"Survey {sid}")), []).append(
+                        (int(point_idx) if point_idx is not None else 0, float(lat), float(lon), elev)
+                    )
+                except Exception:
+                    continue
+            for (_sid, sname), pts in survey_lines.items():
+                pts_sorted = sorted(pts, key=lambda x: x[0])
+                if len(pts_sorted) >= 2:
+                    folium.PolyLine([(p[1], p[2]) for p in pts_sorted], color="#00B4D8", weight=2, opacity=0.75,
+                                    tooltip=f"Bathy line: {sname}").add_to(m)
+            marker_cap = 600 if not folium_fast_mode else 250
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                if elev is not None:
+                    elevf = float(elev)
+                    popup += f"<br>Elevation: {elevf:.3f} m"
+                    popup += f"<br>Depth: {abs(elevf):.3f} m"
+                folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
+                                    popup=folium.Popup(popup, max_width=320),
+                                    tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
+
         if isinstance(propagation_overlay, dict):
             try:
                 tr_id = int(propagation_overlay.get('track_id')) if propagation_overlay.get('track_id') is not None else None
@@ -16297,7 +16326,7 @@ class MainWindow(
             }})();
             </script>
             """
-            m.get_root().html.add_child(folium.Element(click_js))
+            m.get_root().script.add_child(folium.Element(click_js))
         except Exception:
             pass
 
