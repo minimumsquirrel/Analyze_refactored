@@ -16283,7 +16283,7 @@ class MainWindow(
         # Map click popup (restore coordinate click behavior + nearest bathy depth).
         try:
             bathy_click_rows = []
-            for _sid, sname, pidx, blat, blon, elev in (bathy_rows or [])[:5000]:
+            for _sid, sname, pidx, blat, blon, elev in (bathy_rows or []):
                 try:
                     bathy_click_rows.append({
                         "survey": str(sname or "Bathy Survey"),
