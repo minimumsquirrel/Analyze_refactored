@@ -16072,20 +16072,29 @@ class MainWindow(
                     ).add_to(m)
 
         if bathy_rows:
-            # Show all imported bathy datapoints (no hard cap).
-            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
-                try:
-                    latf = float(lat); lonf = float(lon)
-                except Exception:
-                    continue
-                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
-                if elev is not None:
-                    elevf = float(elev)
-                    popup += f"<br>Elevation: {elevf:.3f} m"
-                    popup += f"<br>Depth: {abs(elevf):.3f} m"
-                folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
-                                    popup=folium.Popup(popup, max_width=320),
-                                    tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
+            if len(bathy_rows) > 2500:
+                cluster_pts = []
+                for _sid, _sname, _point_idx, lat, lon, _elev in bathy_rows:
+                    try:
+                        cluster_pts.append([float(lat), float(lon)])
+                    except Exception:
+                        continue
+                if cluster_pts:
+                    folium.plugins.FastMarkerCluster(cluster_pts, name="Bathy Points").add_to(m)
+            else:
+                for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
+                    try:
+                        latf = float(lat); lonf = float(lon)
+                    except Exception:
+                        continue
+                    popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                    if elev is not None:
+                        elevf = float(elev)
+                        popup += f"<br>Elevation: {elevf:.3f} m"
+                        popup += f"<br>Depth: {abs(elevf):.3f} m"
+                    folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
+                                        popup=folium.Popup(popup, max_width=320),
+                                        tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
 
         if isinstance(propagation_overlay, dict):
             try:
@@ -16723,15 +16732,23 @@ class MainWindow(
                 self.gps_plot.plot([lonf], [latf], pen=None, symbol=self._waypoint_symbol_pg(symbol), symbolSize=12,
                                    symbolBrush=pg.mkBrush('#4DA3FF'), symbolPen=pg.mkPen('#1E3A5F', width=1),
                                    name=(f"Waypoint: {wp_name} ({scope})" if idx == 0 else None))
-            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
-                try:
-                    latf = float(lat); lonf = float(lon)
-                except Exception:
-                    continue
-                label = f"Bathy: {sname} (Point {point_idx})"
-                self.gps_plot.plot([lonf], [latf], pen=None, symbol='o', symbolSize=4,
-                                   symbolBrush=pg.mkBrush('#00B4D8'), symbolPen=pg.mkPen('#005F73', width=1),
-                                   name=(label if idx == 0 else None))
+            if bathy_rows:
+                xs, ys = [], []
+                max_draw = 12000
+                step = max(1, len(bathy_rows) // max_draw)
+                for _sid, _sname, _point_idx, lat, lon, _elev in bathy_rows[::step]:
+                    try:
+                        ys.append(float(lat)); xs.append(float(lon))
+                    except Exception:
+                        continue
+                if xs and ys:
+                    bathy_scatter = pg.ScatterPlotItem(
+                        x=xs, y=ys, size=4,
+                        brush=pg.mkBrush('#00B4D8'),
+                        pen=pg.mkPen('#005F73', width=1),
+                        name='Bathy points'
+                    )
+                    self.gps_plot.addItem(bathy_scatter)
 
 
             for difar_overlay in difar_overlays:
