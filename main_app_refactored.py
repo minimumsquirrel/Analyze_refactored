@@ -16021,7 +16021,7 @@ class MainWindow(
             center = [0.0, 0.0]
             zoom = 2
 
-        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True)
+        m = folium.Map(location=center, zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
         folium.TileLayer(tiles='OpenStreetMap', name='Street Map', overlay=False, control=True).add_to(m)
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -16073,21 +16073,12 @@ class MainWindow(
 
         if bathy_rows:
             if len(bathy_rows) > 2500:
-                cluster_pts = []
                 for _sid, _sname, _point_idx, lat, lon, _elev in bathy_rows:
                     try:
-                        cluster_pts.append([float(lat), float(lon)])
+                        latf = float(lat); lonf = float(lon)
                     except Exception:
                         continue
-                if cluster_pts:
-                    try:
-                        from folium.plugins import FastMarkerCluster
-                        FastMarkerCluster(cluster_pts, name="Bathy Points").add_to(m)
-                    except Exception:
-                        # Fallback: still render on folium map with light sampling.
-                        step = max(1, len(cluster_pts) // 6000)
-                        for latf, lonf in cluster_pts[::step]:
-                            folium.CircleMarker([latf, lonf], radius=2, color="#00B4D8", fill=True, fill_opacity=0.55).add_to(m)
+                    folium.CircleMarker([latf, lonf], radius=2, color="#00B4D8", fill=True, fill_opacity=0.45).add_to(m)
             else:
                 for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
                     try:
