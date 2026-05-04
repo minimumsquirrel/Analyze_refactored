@@ -14890,8 +14890,8 @@ class MainWindow(
         sidebar.addWidget(self.gps_track_list, 1)
 
         row = QtWidgets.QHBoxLayout()
-        self.gps_import_btn = QtWidgets.QPushButton("Import Track/Bathy")
-        self.gps_import_btn.setToolTip("Import GPX or CSV/TXT bathymetry/GPS points (Lat/Lon required, Elevation optional).")
+        self.gps_import_btn = QtWidgets.QPushButton("Import Track")
+        self.gps_import_btn.setToolTip("Import GPS track lines (GPX/CSV/TXT). For depth points use 'Import Bathy Survey'.")
         self.gps_import_btn.clicked.connect(self.import_gps_track)
         row.addWidget(self.gps_import_btn)
         self.gps_delete_btn = QtWidgets.QPushButton("Delete")
@@ -15317,6 +15317,13 @@ class MainWindow(
         if not points:
             QtWidgets.QMessageBox.information(self, "Import Bathymetry Survey", "No valid survey points found.")
             return
+        if all((p[4] is None) for p in points):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Import Bathymetry Survey",
+                "No depth/elevation column was found. Bathymetry import expects Lat, Lon, and Elevation/Depth.",
+            )
+            return
         default_name = os.path.splitext(os.path.basename(path))[0]
         name, ok = QtWidgets.QInputDialog.getText(self, "Survey Name", "Survey name:", text=default_name)
         if not ok:
@@ -15576,7 +15583,9 @@ class MainWindow(
                 _d2, sid, sname, pidx, blat, blon, elev = best
                 msg = f"{sname}\nPoint: {pidx}\nLat: {blat:.6f}\nLon: {blon:.6f}"
                 if elev is not None:
-                    msg += f"\nElevation: {float(elev):.3f} m"
+                    elevf = float(elev)
+                    msg += f"\nElevation: {elevf:.3f} m"
+                    msg += f"\nDepth: {abs(elevf):.3f} m"
                 QtWidgets.QMessageBox.information(self, "Bathy Point", msg)
 
     def delete_selected_waypoints(self):
@@ -17323,7 +17332,9 @@ class MainWindow(
                     continue
                 popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
                 if elev is not None:
-                    popup += f"<br>Elevation: {float(elev):.3f} m"
+                    elevf = float(elev)
+                    popup += f"<br>Elevation: {elevf:.3f} m"
+                    popup += f"<br>Depth: {abs(elevf):.3f} m"
                 folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
                                     popup=folium.Popup(popup, max_width=320),
                                     tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
