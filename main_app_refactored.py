@@ -15982,6 +15982,11 @@ class MainWindow(
                 all_lat.append(float(lat)); all_lon.append(float(lon))
             except Exception:
                 pass
+        for _, _, _, lat, lon, _ in (bathy_rows or []):
+            try:
+                all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
 
         if isinstance(propagation_overlay, dict):
             try:
