@@ -16072,19 +16072,6 @@ class MainWindow(
                     ).add_to(m)
 
         if bathy_rows:
-            survey_lines = {}
-            for sid, sname, point_idx, lat, lon, elev in bathy_rows:
-                try:
-                    survey_lines.setdefault((int(sid), str(sname or f"Survey {sid}")), []).append(
-                        (int(point_idx) if point_idx is not None else 0, float(lat), float(lon), elev)
-                    )
-                except Exception:
-                    continue
-            for (_sid, sname), pts in survey_lines.items():
-                pts_sorted = sorted(pts, key=lambda x: x[0])
-                if len(pts_sorted) >= 2:
-                    folium.PolyLine([(p[1], p[2]) for p in pts_sorted], color="#00B4D8", weight=2, opacity=0.75,
-                                    tooltip=f"Bathy line: {sname}").add_to(m)
             marker_cap = 600 if not folium_fast_mode else 250
             for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
                 try:
