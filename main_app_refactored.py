@@ -16294,7 +16294,7 @@ class MainWindow(
             click_js = f"""
             <script>
             (function() {{
-                var _map = {m.get_name()};
+                var _mapName = "{m.get_name()}";
                 var _bathy = {json.dumps(bathy_click_rows)};
                 function _nearestBathy(lat, lon) {{
                     if (!_bathy || !_bathy.length) return null;
@@ -16306,23 +16306,31 @@ class MainWindow(
                     }}
                     return best ? best.b : null;
                 }}
-                _map.on('click', function(e) {{
-                    var lat = e.latlng.lat, lon = e.latlng.lng;
-                    var html = 'Lat: ' + lat.toFixed(6) + '<br>Lon: ' + lon.toFixed(6);
-                    var n = _nearestBathy(lat, lon);
-                    if (n) {{
-                        html += '<hr style="margin:4px 0;">'
-                             + '<b>' + n.survey + '</b><br>'
-                             + 'Point: ' + (n.point === null ? '-' : n.point) + '<br>'
-                             + 'Lat: ' + n.lat.toFixed(6) + '<br>'
-                             + 'Lon: ' + n.lon.toFixed(6);
-                        if (n.elev !== null) {{
-                            html += '<br>Elevation: ' + n.elev.toFixed(3) + ' m'
-                                 + '<br>Depth: ' + Math.abs(n.elev).toFixed(3) + ' m';
-                        }}
+                function _bindClickPopup() {{
+                    var _map = window[_mapName];
+                    if (!_map) {{
+                        setTimeout(_bindClickPopup, 60);
+                        return;
                     }}
-                    L.popup().setLatLng(e.latlng).setContent(html).openOn(_map);
-                }});
+                    _map.on('click', function(e) {{
+                        var lat = e.latlng.lat, lon = e.latlng.lng;
+                        var html = 'Lat: ' + lat.toFixed(6) + '<br>Lon: ' + lon.toFixed(6);
+                        var n = _nearestBathy(lat, lon);
+                        if (n) {{
+                            html += '<hr style="margin:4px 0;">'
+                                 + '<b>' + n.survey + '</b><br>'
+                                 + 'Point: ' + (n.point === null ? '-' : n.point) + '<br>'
+                                 + 'Lat: ' + n.lat.toFixed(6) + '<br>'
+                                 + 'Lon: ' + n.lon.toFixed(6);
+                            if (n.elev !== null) {{
+                                html += '<br>Elevation: ' + n.elev.toFixed(3) + ' m'
+                                     + '<br>Depth: ' + Math.abs(n.elev).toFixed(3) + ' m';
+                            }}
+                        }}
+                        L.popup().setLatLng(e.latlng).setContent(html).openOn(_map);
+                    }});
+                }}
+                _bindClickPopup();
             }})();
             </script>
             """
