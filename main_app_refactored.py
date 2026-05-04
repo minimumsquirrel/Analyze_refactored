@@ -16072,8 +16072,8 @@ class MainWindow(
                     ).add_to(m)
 
         if bathy_rows:
-            marker_cap = 600 if not folium_fast_mode else 250
-            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
+            # Show all imported bathy datapoints (no hard cap).
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
                 try:
                     latf = float(lat); lonf = float(lon)
                 except Exception:
