@@ -16292,7 +16292,6 @@ class MainWindow(
                 except Exception:
                     continue
             click_js = f"""
-            <script>
             (function() {{
                 var _mapName = "{m.get_name()}";
                 var _bathy = {json.dumps(bathy_click_rows)};
@@ -16332,7 +16331,6 @@ class MainWindow(
                 }}
                 _bindClickPopup();
             }})();
-            </script>
             """
             m.get_root().script.add_child(folium.Element(click_js))
         except Exception:
