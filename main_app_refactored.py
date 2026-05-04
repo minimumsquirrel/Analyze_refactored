@@ -16332,7 +16332,7 @@ class MainWindow(
                 _bindClickPopup();
             }})();
             """
-            m.get_root().script.add_child(folium.Element(click_js))
+            m.get_root().html.add_child(folium.Element(f"<script>{click_js}</script>"))
         except Exception:
             pass
 
