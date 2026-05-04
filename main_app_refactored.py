@@ -16248,6 +16248,59 @@ class MainWindow(
             except Exception:
                 pass
 
+        # Map click popup (restore coordinate click behavior + nearest bathy depth).
+        try:
+            bathy_click_rows = []
+            for _sid, sname, pidx, blat, blon, elev in (bathy_rows or [])[:5000]:
+                try:
+                    bathy_click_rows.append({
+                        "survey": str(sname or "Bathy Survey"),
+                        "point": int(pidx) if pidx is not None else None,
+                        "lat": float(blat),
+                        "lon": float(blon),
+                        "elev": (None if elev is None else float(elev)),
+                    })
+                except Exception:
+                    continue
+            click_js = f"""
+            <script>
+            (function() {{
+                var _map = {m.get_name()};
+                var _bathy = {json.dumps(bathy_click_rows)};
+                function _nearestBathy(lat, lon) {{
+                    if (!_bathy || !_bathy.length) return null;
+                    var best = null;
+                    for (var i = 0; i < _bathy.length; i++) {{
+                        var b = _bathy[i];
+                        var d2 = (b.lat - lat)*(b.lat - lat) + (b.lon - lon)*(b.lon - lon);
+                        if (!best || d2 < best.d2) best = {{d2:d2, b:b}};
+                    }}
+                    return best ? best.b : null;
+                }}
+                _map.on('click', function(e) {{
+                    var lat = e.latlng.lat, lon = e.latlng.lng;
+                    var html = 'Lat: ' + lat.toFixed(6) + '<br>Lon: ' + lon.toFixed(6);
+                    var n = _nearestBathy(lat, lon);
+                    if (n) {{
+                        html += '<hr style="margin:4px 0;">'
+                             + '<b>' + n.survey + '</b><br>'
+                             + 'Point: ' + (n.point === null ? '-' : n.point) + '<br>'
+                             + 'Lat: ' + n.lat.toFixed(6) + '<br>'
+                             + 'Lon: ' + n.lon.toFixed(6);
+                        if (n.elev !== null) {{
+                            html += '<br>Elevation: ' + n.elev.toFixed(3) + ' m'
+                                 + '<br>Depth: ' + Math.abs(n.elev).toFixed(3) + ' m';
+                        }}
+                    }}
+                    L.popup().setLatLng(e.latlng).setContent(html).openOn(_map);
+                }});
+            }})();
+            </script>
+            """
+            m.get_root().html.add_child(folium.Element(click_js))
+        except Exception:
+            pass
+
         folium.LayerControl(collapsed=False).add_to(m)
         out = tempfile.NamedTemporaryFile(prefix='chart_map_', suffix='.html', delete=False)
         out.close()
