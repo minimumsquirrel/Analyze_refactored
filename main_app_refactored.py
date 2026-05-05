@@ -15340,7 +15340,7 @@ class MainWindow(
         conn.commit(); conn.close()
         self._plot_selected_gps_tracks()
 
-    def _fetch_bathy_points_for_chart(self):
+    def _fetch_bathy_points_for_chart(self, max_points=8000):
         self._ensure_chart_track_tables()
         pid = getattr(self, "current_project_id", None)
         conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
@@ -15356,7 +15356,27 @@ class MainWindow(
         )
         rows = cur.fetchall()
         conn.close()
+        if max_points is not None and max_points > 0 and len(rows) > int(max_points):
+            step = max(1, len(rows) // int(max_points))
+            rows = rows[::step]
         return rows
+
+    def _fetch_bathy_point_count(self):
+        self._ensure_chart_track_tables()
+        pid = getattr(self, "current_project_id", None)
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM bathy_surveys s
+            JOIN bathy_points p ON p.survey_id = s.id
+            WHERE ((s.project_id IS NULL AND ? IS NULL) OR s.project_id = ?)
+            """,
+            (pid, pid),
+        )
+        row = cur.fetchone()
+        conn.close()
+        return int(row[0]) if row and row[0] is not None else 0
 
     def refresh_chart_tracks(self, select_id=None):
         if not hasattr(self, 'gps_track_list'):
@@ -16072,27 +16092,55 @@ class MainWindow(
                     ).add_to(m)
 
         if bathy_rows:
-            if len(bathy_rows) > 2500:
-                for _sid, _sname, _point_idx, lat, lon, _elev in bathy_rows:
+            raw_layer = folium.FeatureGroup(name="Bathy points (high zoom)", show=True)
+            agg_layer = folium.FeatureGroup(name="Bathy avg bubbles (low zoom)", show=True)
+            bins = {}
+            cell_deg = 0.01  # ~1.1 km latitude bins (visual aggregate)
+            for _sid, sname, point_idx, lat, lon, elev in bathy_rows:
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                if elev is not None:
                     try:
-                        latf = float(lat); lonf = float(lon)
+                        depth = abs(float(elev))
                     except Exception:
-                        continue
-                    folium.CircleMarker([latf, lonf], radius=2, color="#00B4D8", fill=True, fill_opacity=0.45).add_to(m)
-            else:
-                for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows):
-                    try:
-                        latf = float(lat); lonf = float(lon)
-                    except Exception:
-                        continue
-                    popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
-                    if elev is not None:
-                        elevf = float(elev)
-                        popup += f"<br>Elevation: {elevf:.3f} m"
-                        popup += f"<br>Depth: {abs(elevf):.3f} m"
-                    folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
-                                        popup=folium.Popup(popup, max_width=320),
-                                        tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
+                        depth = None
+                else:
+                    depth = None
+                if depth is not None:
+                    key = (round(latf / cell_deg), round(lonf / cell_deg))
+                    acc = bins.setdefault(key, {"sum_depth": 0.0, "count": 0, "lat_sum": 0.0, "lon_sum": 0.0})
+                    acc["sum_depth"] += depth
+                    acc["count"] += 1
+                    acc["lat_sum"] += latf
+                    acc["lon_sum"] += lonf
+                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                if depth is not None:
+                    popup += f"<br>Depth: {depth:.3f} m"
+                folium.CircleMarker([latf, lonf], radius=2, color="#00B4D8", fill=True, fill_opacity=0.55,
+                                    popup=folium.Popup(popup, max_width=300)).add_to(raw_layer)
+
+            for (_ilat, _ilon), acc in bins.items():
+                if acc["count"] <= 0:
+                    continue
+                clat = acc["lat_sum"] / acc["count"]
+                clon = acc["lon_sum"] / acc["count"]
+                avg_d = acc["sum_depth"] / acc["count"]
+                rad = max(5, min(18, int(4 + math.log10(acc["count"] + 1) * 5)))
+                folium.CircleMarker(
+                    [clat, clon],
+                    radius=rad,
+                    color="#1D3557",
+                    fill=True,
+                    fill_color="#4CC9F0",
+                    fill_opacity=0.65,
+                    popup=folium.Popup(f"Avg depth: {avg_d:.2f} m<br>Points: {acc['count']}", max_width=260),
+                    tooltip=f"Avg depth {avg_d:.1f} m ({acc['count']} pts)"
+                ).add_to(agg_layer)
+
+            raw_layer.add_to(m)
+            agg_layer.add_to(m)
 
         if isinstance(propagation_overlay, dict):
             try:
@@ -16327,6 +16375,43 @@ class MainWindow(
             }})();
             """
             m.get_root().html.add_child(folium.Element(f"<script>{click_js}</script>"))
+            zoom_js = f"""
+            <script>
+            (function() {{
+              var _mapName = "{m.get_name()}";
+              var rawName = "Bathy points (high zoom)";
+              var aggName = "Bathy avg bubbles (low zoom)";
+              function _toggle() {{
+                var map = window[_mapName];
+                if (!map || !map._layers) {{ setTimeout(_toggle, 80); return; }}
+                function _findLayerByName(name) {{
+                  var out = null;
+                  map.eachLayer(function(layer) {{
+                    if (layer && layer.options && layer.options.name === name) out = layer;
+                  }});
+                  return out;
+                }}
+                var raw = _findLayerByName(rawName), agg = _findLayerByName(aggName);
+                function apply() {{
+                  var z = map.getZoom();
+                  if (raw && agg) {{
+                    if (z >= 13) {{
+                      if (!map.hasLayer(raw)) map.addLayer(raw);
+                      if (map.hasLayer(agg)) map.removeLayer(agg);
+                    }} else {{
+                      if (!map.hasLayer(agg)) map.addLayer(agg);
+                      if (map.hasLayer(raw)) map.removeLayer(raw);
+                    }}
+                  }}
+                }}
+                map.on('zoomend', apply);
+                apply();
+              }}
+              _toggle();
+            }})();
+            </script>
+            """
+            m.get_root().html.add_child(folium.Element(zoom_js))
         except Exception:
             pass
 
@@ -16615,12 +16700,14 @@ class MainWindow(
         bathy_count = 0
         if not hasattr(self, 'chart_show_bathy_cb') or self.chart_show_bathy_cb.isChecked():
             try:
-                bathy_rows = self._fetch_bathy_points_for_chart()
+                bathy_count = self._fetch_bathy_point_count()
+                bathy_rows = self._fetch_bathy_points_for_chart(max_points=8000)
             except Exception:
                 bathy_rows = []
+        plotted_bathy_count = 0
         for _sid, _sn, _idx, lat, lon, _elev in bathy_rows:
             try:
-                all_lon.append(float(lon)); all_lat.append(float(lat)); bathy_count += 1
+                all_lon.append(float(lon)); all_lat.append(float(lat)); plotted_bathy_count += 1
             except Exception:
                 pass
 
@@ -16853,7 +16940,7 @@ class MainWindow(
         else:
             prop_txt = "Not modelled"
         self.gps_info_label.setText(
-            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   Bathy Points: {bathy_count}   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
+            f"Map: {backend}   Tracks: {len(tracks)}   Track Points: {total_points}   Bathy Points: {bathy_count} (plotted {plotted_bathy_count})   CTD Casts: {ctd_count}   Waypoints: {wp_count}   DIFAR Rays: {difar_n}   Propagation: {prop_txt}"
         )
 
 
