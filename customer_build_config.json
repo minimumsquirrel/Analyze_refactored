@@ -1,0 +1,79 @@
+{
+    "enabled_tabs": [
+        "Analysis",
+        "SPL",
+        "Spectrogram",
+        "Chart",
+        "Logs",
+        "Projects"
+    ],
+    "enabled_tools": {
+        "WAV File Tools": [
+            "Trim File",
+            "Denoise File",
+            "High/Low Pass Filter",
+            "Anti-Aliasing Filter",
+            "Recommend Sample Rate",
+            "Remove DC Offset",
+            "Normalize File",
+            "Downsample Bit Depth",
+            "Wav File Combine",
+            "Stack WAV Channels",
+            "Scale WAV Amplitude",
+            "Create WAV Playlist",
+            "Secure WAV Bundle (Pack/Unpack)",
+            "Channel Sync Tool"
+        ],
+        "Measurement Tools": [
+            "Ambient Noise",
+            "Electrical Noise",
+            "Peak Prominences Analysis",
+            "Interval Analysis",
+            "Depth Sounder Analysis",
+            "Slope De-Clipper",
+            "Find Peaks",
+            "Short-Time RMS",
+            "Crest Factor",
+            "Octave-Band Analysis",
+            "SNR Estimator",
+            "LFM Analysis",
+            "LFM Batch Analysis",
+            "HFM Analysis",
+            "Multi Frequency Analysis",
+            "SPL Transmit Analysis",
+            "Hydrophone Calibration",
+            "Duty Cycle Analysis",
+            "Exceedance Curves Lx",
+            "LTSA + PSD Percentiles",
+            "SEL",
+            "Recurrence Periodicity",
+            "Dominant Frequencies Over Time"
+        ],
+        "Modelling & Plotting Tools": [
+            "Wenz Curves",
+            "Propagation Modelling",
+            "Cable Loss & Hydro Sensitivity",
+            "Simulated GPS Track Generator"
+        ],
+        "Detection & Classification Tools": [
+            "Active Sonar",
+            "Cepstrum Analysis",
+            "Event Clustering",
+            "DIFAR Processing"
+        ],
+        "Database Tools": [
+            "Export Logs to Excel",
+            "Filter Measurements",
+            "Filter Logs by Date/Time",
+            "Database Maintenance",
+            "Clean Measurement Data",
+            "Annotate Measurements",
+            "Annotate SPL",
+            "Calibration Curve Manager",
+            "TVR Curve Manager",
+            "Measurement Voltage Correction",
+            "CTD Import"
+        ]
+    },
+    "build_output_dir": "dist"
+}
