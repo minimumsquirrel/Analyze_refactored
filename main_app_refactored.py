@@ -14871,6 +14871,8 @@ class MainWindow(
         self.request_logs_refresh(immediate=True, refresh_filters=False)
 
     def setup_chart_tab(self):
+        if getattr(self, "_chart_tab_initialized", False):
+            return
         root_layout = QtWidgets.QVBoxLayout(self.chart_tab)
 
         # Restore a dedicated map tab inside Charting
@@ -15038,6 +15040,19 @@ class MainWindow(
         bathy_row.addWidget(self.bathy_delete_btn)
         sidebar.addLayout(bathy_row)
 
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -15099,6 +15114,7 @@ class MainWindow(
         self.gps_plot.scene().sigMouseClicked.connect(self._on_chart_map_mouse_clicked)
         self.refresh_chart_theme()
         self.refresh_chart_tracks()
+        self._chart_tab_initialized = True
 
     def refresh_chart_theme(self):
         if not hasattr(self, 'gps_plot') or self.gps_plot is None:
