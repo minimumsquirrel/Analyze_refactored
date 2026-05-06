@@ -14959,6 +14959,22 @@ class MainWindow(
         self.wp_delete_btn.clicked.connect(self.delete_selected_waypoints)
         wp_row.addWidget(self.wp_delete_btn)
         sidebar.addLayout(wp_row)
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        sidebar.addWidget(self.bathy_import_btn)
+        self.chart_show_bathy_cb = QtWidgets.QCheckBox("Show Bathy Layer")
+        self.chart_show_bathy_cb.setChecked(True)
+        self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_show_bathy_cb)
+        self.path_waypoint_btn = QtWidgets.QPushButton("Path from Waypoints")
+        self.path_waypoint_btn.clicked.connect(self.build_path_from_waypoints)
+        sidebar.addWidget(self.path_waypoint_btn)
+        self.path_min_depth_btn = QtWidgets.QPushButton("Path from Min Depth")
+        self.path_min_depth_btn.clicked.connect(self.build_path_from_min_depth)
+        sidebar.addWidget(self.path_min_depth_btn)
+        self.path_clear_btn = QtWidgets.QPushButton("Clear Path")
+        self.path_clear_btn.clicked.connect(self.clear_planned_path)
+        sidebar.addWidget(self.path_clear_btn)
 
         sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
         self.bathy_survey_list = QtWidgets.QListWidget()
@@ -15215,9 +15231,9 @@ class MainWindow(
     def import_gps_track(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Import GPS Track",
+            "Import GPS/Bathymetry Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
+            "GPS/Bathy Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -15231,11 +15247,11 @@ class MainWindow(
             else:
                 raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
+            QtWidgets.QMessageBox.warning(self, "Import GPS/Bathymetry Track", f"Could not parse track\n{e}")
             return
 
         if not points:
-            QtWidgets.QMessageBox.information(self, "Import GPS Track", "No valid GPS points found.")
+            QtWidgets.QMessageBox.information(self, "Import GPS/Bathymetry Track", "No valid GPS points found.")
             return
 
         default_name = os.path.splitext(os.path.basename(path))[0]
@@ -17706,6 +17722,21 @@ class MainWindow(
                 ax.set_xlim(xmin, xmax)
             except Exception:
                 pass
+        if bathy_rows:
+            marker_cap = 600 if not folium_fast_mode else 250
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                if elev is not None:
+                    elevf = float(elev)
+                    popup += f"<br>Elevation: {elevf:.3f} m"
+                    popup += f"<br>Depth: {abs(elevf):.3f} m"
+                folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
+                                    popup=folium.Popup(popup, max_width=320),
+                                    tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
             try:
                 ymin, ymax = map(float, y_entry.text().split(","))
                 ax.set_ylim(ymin, ymax)
