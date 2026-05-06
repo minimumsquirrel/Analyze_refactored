@@ -14962,6 +14962,15 @@ class MainWindow(
         self.chart_show_bathy_cb.setChecked(True)
         self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
         sidebar.addWidget(self.chart_show_bathy_cb)
+        self.path_waypoint_btn = QtWidgets.QPushButton("Path from Waypoints")
+        self.path_waypoint_btn.clicked.connect(self.build_path_from_waypoints)
+        sidebar.addWidget(self.path_waypoint_btn)
+        self.path_min_depth_btn = QtWidgets.QPushButton("Path from Min Depth")
+        self.path_min_depth_btn.clicked.connect(self.build_path_from_min_depth)
+        sidebar.addWidget(self.path_min_depth_btn)
+        self.path_clear_btn = QtWidgets.QPushButton("Clear Path")
+        self.path_clear_btn.clicked.connect(self.clear_planned_path)
+        sidebar.addWidget(self.path_clear_btn)
 
         layout.addLayout(sidebar, 1)
 
@@ -15018,6 +15027,8 @@ class MainWindow(
         self._gps_ctd_markers = []
         self._gps_folium_html_path = None
         self._chart_map_click_pos = None
+        self._planned_path_points = []
+        self._planned_path_label = ""
         self.gps_plot.scene().sigMouseMoved.connect(self._on_chart_map_mouse_moved)
         self.gps_plot.scene().sigMouseClicked.connect(self._on_chart_map_mouse_clicked)
         self.refresh_chart_theme()
@@ -15595,12 +15606,17 @@ class MainWindow(
         menu = QtWidgets.QMenu(self)
         a_wp = menu.addAction(f"Create waypoint here ({lat:.5f}, {lon:.5f})")
         a_ctd = menu.addAction(f"Import CTD data at this location ({lat:.5f}, {lon:.5f})")
+        a_path_add = menu.addAction("Add point to planned path")
         a_bathy = menu.addAction("Show nearest bathy point")
         chosen = menu.exec_(QtGui.QCursor.pos())
         if chosen is a_wp:
             self.add_chart_waypoint(default_lat=lat, default_lon=lon)
         elif chosen is a_ctd:
             self._open_ctd_import_at(lat, lon)
+        elif chosen is a_path_add:
+            self._planned_path_points.append((lat, lon))
+            self._planned_path_label = "Manual path"
+            self._plot_selected_gps_tracks()
         elif chosen is a_bathy:
             rows = self._fetch_bathy_points_for_chart()
             best = None
@@ -15621,6 +15637,56 @@ class MainWindow(
                     msg += f"\nElevation: {elevf:.3f} m"
                     msg += f"\nDepth: {abs(elevf):.3f} m"
                 QtWidgets.QMessageBox.information(self, "Bathy Point", msg)
+
+    def clear_planned_path(self):
+        self._planned_path_points = []
+        self._planned_path_label = ""
+        self._plot_selected_gps_tracks()
+
+    def build_path_from_waypoints(self):
+        rows = self._fetch_waypoints_for_chart()
+        if not rows:
+            QtWidgets.QMessageBox.information(self, "Path", "No waypoints available.")
+            return
+        pts = []
+        for _wid, _name, lat, lon, _proj, _sym in rows:
+            try:
+                pts.append((float(lat), float(lon)))
+            except Exception:
+                continue
+        if len(pts) < 2:
+            QtWidgets.QMessageBox.information(self, "Path", "Need at least 2 valid waypoints.")
+            return
+        self._planned_path_points = pts
+        self._planned_path_label = "Waypoint path"
+        self._plot_selected_gps_tracks()
+
+    def build_path_from_min_depth(self):
+        rows = self._fetch_bathy_points_for_chart(max_points=12000)
+        depth_pts = []
+        for _sid, _sn, _idx, lat, lon, elev in rows:
+            try:
+                if elev is None:
+                    continue
+                depth = abs(float(elev))
+                depth_pts.append((depth, float(lat), float(lon)))
+            except Exception:
+                continue
+        if len(depth_pts) < 2:
+            QtWidgets.QMessageBox.information(self, "Path", "Not enough bathy depth points.")
+            return
+        depth_pts.sort(key=lambda x: x[0])  # shallowest first
+        keep = depth_pts[: min(200, len(depth_pts))]
+        # Greedy nearest-neighbor chain from shallowest point
+        unused = [(la, lo) for _d, la, lo in keep]
+        path = [unused.pop(0)]
+        while unused and len(path) < 120:
+            la0, lo0 = path[-1]
+            j = min(range(len(unused)), key=lambda i: (unused[i][0] - la0) ** 2 + (unused[i][1] - lo0) ** 2)
+            path.append(unused.pop(j))
+        self._planned_path_points = path
+        self._planned_path_label = "Min-depth path"
+        self._plot_selected_gps_tracks()
 
     def delete_selected_waypoints(self):
         if not hasattr(self, 'waypoint_list'):
@@ -15998,7 +16064,7 @@ class MainWindow(
             strips.append([a, b, c, d, a])
         return strips
 
-    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, bathy_rows=None, difar_overlay=None, propagation_overlay=None):
+    def _render_folium_chart_map(self, tracks, ctd_rows, waypoint_rows, bathy_rows=None, difar_overlay=None, propagation_overlay=None, planned_path=None, planned_path_label="Planned path"):
         if self.gps_map_view is None or folium is None:
             return
 
@@ -16211,6 +16277,15 @@ class MainWindow(
                                             tooltip='Echo receive threshold (-)').add_to(m)
                 except Exception:
                     pass
+        if planned_path and len(planned_path) >= 2:
+            try:
+                folium.PolyLine([(float(a), float(b)) for a, b in planned_path], color="#FF9F1C", weight=4, opacity=0.95,
+                                tooltip=(planned_path_label or "Planned path")).add_to(m)
+                p0 = planned_path[0]
+                folium.CircleMarker([float(p0[0]), float(p0[1])], radius=5, color="#FF9F1C", fill=True, fill_opacity=1.0,
+                                    tooltip="Path start").add_to(m)
+            except Exception:
+                pass
 
         # Always provide CTD preview graph popups (user-facing requirement).
         enable_ctd_popup_graphs = True
@@ -16785,7 +16860,12 @@ class MainWindow(
 
         if use_web_map:
             try:
-                self._render_folium_chart_map(tracks, ctd_rows, waypoint_rows, bathy_rows=bathy_rows, difar_overlay=difar_overlays, propagation_overlay=prop_overlay)
+                self._render_folium_chart_map(
+                    tracks, ctd_rows, waypoint_rows, bathy_rows=bathy_rows,
+                    difar_overlay=difar_overlays, propagation_overlay=prop_overlay,
+                    planned_path=getattr(self, "_planned_path_points", []),
+                    planned_path_label=getattr(self, "_planned_path_label", "Planned path"),
+                )
                 if hasattr(self, 'gps_map_stack'):
                     self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 if hasattr(self, 'gps_cursor_label'):
@@ -16935,6 +17015,13 @@ class MainWindow(
                                            name='Propagation ref track')
                 except Exception:
                     pass
+
+            ppath = getattr(self, "_planned_path_points", []) or []
+            if len(ppath) >= 2:
+                self.gps_plot.plot([p[1] for p in ppath], [p[0] for p in ppath], pen=pg.mkPen('#FF9F1C', width=3),
+                                   name=(getattr(self, "_planned_path_label", "Planned path") or "Planned path"))
+                self.gps_plot.plot([ppath[0][1]], [ppath[0][0]], pen=None, symbol='star', symbolSize=10,
+                                   symbolBrush=pg.mkBrush('#FF9F1C'))
 
             if all_lon and all_lat:
                 self.gps_plot.setXRange(min(all_lon), max(all_lon), padding=0.05)
