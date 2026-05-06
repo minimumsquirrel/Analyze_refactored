@@ -15025,6 +15025,19 @@ class MainWindow(
         self.path_actions_btn.setMenu(path_menu)
         sidebar.addWidget(self.path_actions_btn)
 
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -15705,17 +15718,12 @@ class MainWindow(
         menu = QtWidgets.QMenu(self)
         a_wp = menu.addAction(f"Create waypoint here ({lat:.5f}, {lon:.5f})")
         a_ctd = menu.addAction(f"Import CTD data at this location ({lat:.5f}, {lon:.5f})")
-        a_path_add = menu.addAction("Add point to planned path")
         a_bathy = menu.addAction("Show nearest bathy point")
         chosen = menu.exec_(QtGui.QCursor.pos())
         if chosen is a_wp:
             self.add_chart_waypoint(default_lat=lat, default_lon=lon)
         elif chosen is a_ctd:
             self._open_ctd_import_at(lat, lon)
-        elif chosen is a_path_add:
-            self._planned_path_points.append((lat, lon))
-            self._planned_path_label = "Manual path"
-            self._plot_selected_gps_tracks()
         elif chosen is a_bathy:
             rows = self._fetch_bathy_points_for_chart()
             best = None
