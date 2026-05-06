@@ -14873,6 +14873,21 @@ class MainWindow(
     def setup_chart_tab(self):
         if getattr(self, "_chart_tab_initialized", False):
             return
+        self._chart_tab_initialized = True
+        old_layout = self.chart_tab.layout()
+        if old_layout is not None:
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+                lay = item.layout()
+                if lay is not None:
+                    while lay.count():
+                        sub = lay.takeAt(0)
+                        sw = sub.widget()
+                        if sw is not None:
+                            sw.deleteLater()
         root_layout = QtWidgets.QVBoxLayout(self.chart_tab)
 
         # Restore a dedicated map tab inside Charting
@@ -15026,6 +15041,19 @@ class MainWindow(
         path_menu.addAction("Clear Path", self.clear_planned_path)
         self.path_actions_btn.setMenu(path_menu)
         sidebar.addWidget(self.path_actions_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
 
         sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
         self.bathy_survey_list = QtWidgets.QListWidget()
