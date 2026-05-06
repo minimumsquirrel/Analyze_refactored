@@ -15344,21 +15344,35 @@ class MainWindow(
         self._ensure_chart_track_tables()
         pid = getattr(self, "current_project_id", None)
         conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        # Count first so we can sample in SQL (avoid loading millions of rows into memory).
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM bathy_surveys s
+            JOIN bathy_points p ON p.survey_id = s.id
+            WHERE ((s.project_id IS NULL AND ? IS NULL) OR s.project_id = ?)
+            """,
+            (pid, pid),
+        )
+        total = int((cur.fetchone() or [0])[0] or 0)
+        step = 1
+        if max_points is not None and max_points > 0 and total > int(max_points):
+            step = max(1, int(math.ceil(float(total) / float(max_points))))
         cur.execute(
             """
             SELECT s.id, s.name, p.point_index, p.latitude, p.longitude, p.elevation_m
             FROM bathy_surveys s
             JOIN bathy_points p ON p.survey_id = s.id
             WHERE ((s.project_id IS NULL AND ? IS NULL) OR s.project_id = ?)
+              AND (? <= 1 OR (p.id % ?) = 0)
             ORDER BY s.created_at DESC, s.id DESC, p.point_index ASC
             """,
-            (pid, pid),
+            (pid, pid, step, step),
         )
         rows = cur.fetchall()
         conn.close()
         if max_points is not None and max_points > 0 and len(rows) > int(max_points):
-            step = max(1, len(rows) // int(max_points))
-            rows = rows[::step]
+            rows = rows[:int(max_points)]
         return rows
 
     def _fetch_bathy_point_count(self):
