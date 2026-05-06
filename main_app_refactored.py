@@ -14874,6 +14874,10 @@ class MainWindow(
         if getattr(self, "_chart_tab_initialized", False):
             return
         self._chart_tab_initialized = True
+        # Remove any pre-existing designer/runtime children to avoid tiled duplicates.
+        for child in self.chart_tab.findChildren(QtWidgets.QWidget):
+            if child is not self.chart_tab:
+                child.deleteLater()
         old_layout = self.chart_tab.layout()
         if old_layout is not None:
             while old_layout.count():
@@ -15041,6 +15045,19 @@ class MainWindow(
         path_menu.addAction("Clear Path", self.clear_planned_path)
         self.path_actions_btn.setMenu(path_menu)
         sidebar.addWidget(self.path_actions_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
 
         sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
         self.bathy_survey_list = QtWidgets.QListWidget()
