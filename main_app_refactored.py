@@ -14933,6 +14933,10 @@ class MainWindow(
         self.chart_show_propagation_cb.setChecked(True)
         self.chart_show_propagation_cb.toggled.connect(self._plot_selected_gps_tracks)
         overlay_row.addWidget(self.chart_show_propagation_cb)
+        self.chart_show_bathy_cb = QtWidgets.QCheckBox("Show Bathy Layer")
+        self.chart_show_bathy_cb.setChecked(True)
+        self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
+        overlay_row.addWidget(self.chart_show_bathy_cb)
         sidebar.addLayout(overlay_row)
 
         sidebar.addWidget(QtWidgets.QLabel("DIFAR Bearing Events"))
@@ -14971,6 +14975,30 @@ class MainWindow(
         self.path_clear_btn = QtWidgets.QPushButton("Clear Path")
         self.path_clear_btn.clicked.connect(self.clear_planned_path)
         sidebar.addWidget(self.path_clear_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
 
         layout.addLayout(sidebar, 1)
 
@@ -15349,6 +15377,7 @@ class MainWindow(
             [(sid, i, lat, lon, ele) for i, _ts, lat, lon, ele in points],
         )
         conn.commit(); conn.close()
+        self.refresh_bathy_surveys()
         self._plot_selected_gps_tracks()
 
     def _fetch_bathy_points_for_chart(self, max_points=8000):
@@ -15448,6 +15477,7 @@ class MainWindow(
         if target_item is not None:
             target_item.setSelected(True)
         self.refresh_chart_waypoints()
+        self.refresh_bathy_surveys()
         self._refresh_difar_event_list()
         self._plot_selected_gps_tracks()
 
@@ -15535,6 +15565,50 @@ class MainWindow(
         rows = cur.fetchall()
         conn.close()
         return rows
+
+    def refresh_bathy_surveys(self):
+        if not hasattr(self, 'bathy_survey_list'):
+            return
+        self._ensure_chart_track_tables()
+        pid = getattr(self, "current_project_id", None)
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT s.id, s.name, s.source_file, COUNT(p.id) AS npts
+            FROM bathy_surveys s
+            LEFT JOIN bathy_points p ON p.survey_id = s.id
+            WHERE ((s.project_id IS NULL AND ? IS NULL) OR s.project_id = ?)
+            GROUP BY s.id, s.name, s.source_file
+            ORDER BY s.created_at DESC, s.id DESC
+            """,
+            (pid, pid),
+        )
+        rows = cur.fetchall()
+        conn.close()
+        self.bathy_survey_list.clear()
+        for sid, name, src, npts in rows:
+            label = f"{name or f'Survey {sid}'} ({int(npts or 0)} pts)"
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, int(sid))
+            item.setToolTip(str(src or ""))
+            self.bathy_survey_list.addItem(item)
+
+    def delete_selected_bathy_surveys(self):
+        if not hasattr(self, 'bathy_survey_list'):
+            return
+        ids = [it.data(QtCore.Qt.UserRole) for it in self.bathy_survey_list.selectedItems()]
+        if not ids:
+            return
+        if QtWidgets.QMessageBox.question(self, "Delete Bathy Surveys", f"Delete {len(ids)} selected bathy survey(s)?") != QtWidgets.QMessageBox.Yes:
+            return
+        self._ensure_chart_track_tables()
+        conn = sqlite3.connect(DB_FILENAME); cur = conn.cursor()
+        for sid in ids:
+            cur.execute("DELETE FROM bathy_points WHERE survey_id=?", (int(sid),))
+            cur.execute("DELETE FROM bathy_surveys WHERE id=?", (int(sid),))
+        conn.commit(); conn.close()
+        self.refresh_bathy_surveys()
+        self._plot_selected_gps_tracks()
 
     def add_chart_waypoint(self, default_lat=None, default_lon=None):
         self._ensure_waypoints_table()
