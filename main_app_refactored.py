@@ -15662,6 +15662,17 @@ class MainWindow(
         self._plot_selected_gps_tracks()
 
     def build_path_from_min_depth(self):
+        min_depth_m, ok = QtWidgets.QInputDialog.getDouble(
+            self,
+            "Min Depth Path",
+            "Minimum required depth (m):",
+            value=10.0,
+            min=0.0,
+            max=10000.0,
+            decimals=2,
+        )
+        if not ok:
+            return
         rows = self._fetch_bathy_points_for_chart(max_points=12000)
         depth_pts = []
         for _sid, _sn, _idx, lat, lon, elev in rows:
@@ -15669,23 +15680,54 @@ class MainWindow(
                 if elev is None:
                     continue
                 depth = abs(float(elev))
-                depth_pts.append((depth, float(lat), float(lon)))
+                if depth >= float(min_depth_m):
+                    depth_pts.append((depth, float(lat), float(lon)))
             except Exception:
                 continue
         if len(depth_pts) < 2:
-            QtWidgets.QMessageBox.information(self, "Path", "Not enough bathy depth points.")
+            QtWidgets.QMessageBox.information(self, "Path", "Not enough points meeting that minimum depth.")
             return
-        depth_pts.sort(key=lambda x: x[0])  # shallowest first
-        keep = depth_pts[: min(200, len(depth_pts))]
-        # Greedy nearest-neighbor chain from shallowest point
-        unused = [(la, lo) for _d, la, lo in keep]
-        path = [unused.pop(0)]
-        while unused and len(path) < 120:
-            la0, lo0 = path[-1]
-            j = min(range(len(unused)), key=lambda i: (unused[i][0] - la0) ** 2 + (unused[i][1] - lo0) ** 2)
-            path.append(unused.pop(j))
+
+        # Choose endpoints from waypoints when available; otherwise span map extents.
+        wps = self._fetch_waypoints_for_chart()
+        wp_pts = []
+        for _wid, _name, lat, lon, _proj, _sym in wps:
+            try:
+                wp_pts.append((float(lat), float(lon)))
+            except Exception:
+                continue
+        if len(wp_pts) >= 2:
+            start = wp_pts[0]; end = wp_pts[-1]
+        else:
+            pts = [(la, lo) for _d, la, lo in depth_pts]
+            start = min(pts, key=lambda p: p[1])  # west-most
+            end = max(pts, key=lambda p: p[1])    # east-most
+
+        # Build a near-straight path by snapping interpolated line samples to nearest valid depth points.
+        candidates = [(la, lo) for _d, la, lo in depth_pts]
+        unused = set(range(len(candidates)))
+        n_steps = 100
+        path = []
+        for i in range(n_steps + 1):
+            t = float(i) / float(n_steps)
+            la_t = start[0] + t * (end[0] - start[0])
+            lo_t = start[1] + t * (end[1] - start[1])
+            best_idx = None
+            best_d2 = None
+            for j in list(unused):
+                la, lo = candidates[j]
+                d2 = (la - la_t) ** 2 + (lo - lo_t) ** 2
+                if best_d2 is None or d2 < best_d2:
+                    best_d2 = d2; best_idx = j
+            if best_idx is not None:
+                path.append(candidates[best_idx])
+                if len(unused) > 300:
+                    unused.discard(best_idx)
+        if len(path) < 2:
+            path = [start, end]
+
         self._planned_path_points = path
-        self._planned_path_label = "Min-depth path"
+        self._planned_path_label = f"Min-depth path ({min_depth_m:.1f}m+)"
         self._plot_selected_gps_tracks()
 
     def delete_selected_waypoints(self):
