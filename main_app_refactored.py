@@ -16384,8 +16384,10 @@ class MainWindow(
         if bathy_rows:
             raw_layer = folium.FeatureGroup(name="Bathy points (high zoom)", show=True)
             agg_layer = folium.FeatureGroup(name="Bathy avg bubbles (low zoom)", show=True)
+            depth_layer = folium.FeatureGroup(name="Bathy depth colors", show=False)
             bins = {}
             cell_deg = 0.01  # ~1.1 km latitude bins (visual aggregate)
+            depth_vals = []
             for _sid, sname, point_idx, lat, lon, elev in bathy_rows:
                 try:
                     latf = float(lat); lonf = float(lon)
@@ -16399,6 +16401,7 @@ class MainWindow(
                 else:
                     depth = None
                 if depth is not None:
+                    depth_vals.append(depth)
                     key = (round(latf / cell_deg), round(lonf / cell_deg))
                     acc = bins.setdefault(key, {"sum_depth": 0.0, "count": 0, "lat_sum": 0.0, "lon_sum": 0.0})
                     acc["sum_depth"] += depth
@@ -16410,6 +16413,20 @@ class MainWindow(
                     popup += f"<br>Depth: {depth:.3f} m"
                 folium.CircleMarker([latf, lonf], radius=2, color="#00B4D8", fill=True, fill_opacity=0.55,
                                     popup=folium.Popup(popup, max_width=300)).add_to(raw_layer)
+            colormap = None
+            if depth_vals:
+                try:
+                    import branca.colormap as bcm
+                    dmin = float(min(depth_vals)); dmax = float(max(depth_vals))
+                    if dmax <= dmin:
+                        dmax = dmin + 1.0
+                    colormap = bcm.LinearColormap(
+                        colors=["#2C7BB6", "#00A6CA", "#00CCBC", "#90EB9D", "#FFFF8C", "#F9D057", "#F29E2E", "#E76818", "#D7191C"],
+                        vmin=dmin, vmax=dmax
+                    )
+                    colormap.caption = "Bathymetry depth (m)"
+                except Exception:
+                    colormap = None
 
             for (_ilat, _ilon), acc in bins.items():
                 if acc["count"] <= 0:
@@ -16428,9 +16445,23 @@ class MainWindow(
                     popup=folium.Popup(f"Avg depth: {avg_d:.2f} m<br>Points: {acc['count']}", max_width=260),
                     tooltip=f"Avg depth {avg_d:.1f} m ({acc['count']} pts)"
                 ).add_to(agg_layer)
+            if colormap is not None:
+                for _sid, _sname, _pidx, lat, lon, elev in bathy_rows:
+                    try:
+                        if elev is None:
+                            continue
+                        latf = float(lat); lonf = float(lon); depth = abs(float(elev))
+                    except Exception:
+                        continue
+                    c = colormap(depth)
+                    folium.CircleMarker(
+                        [latf, lonf], radius=3, color=c, fill=True, fill_color=c, fill_opacity=0.7, weight=0
+                    ).add_to(depth_layer)
+                colormap.add_to(m)
 
             raw_layer.add_to(m)
             agg_layer.add_to(m)
+            depth_layer.add_to(m)
 
         if isinstance(propagation_overlay, dict):
             try:
