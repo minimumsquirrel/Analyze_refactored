@@ -15098,6 +15098,30 @@ class MainWindow(
         bathy_row.addWidget(self.bathy_delete_btn)
         sidebar.addLayout(bathy_row)
 
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
+
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -16109,17 +16133,28 @@ class MainWindow(
                 return
             scheme = (qurl.scheme() or '').lower()
             host = (qurl.host() or '').lower()
-            if not (scheme in ('https', 'http') and host == 'ctdgraph.local'):
+            if not (scheme in ('https', 'http') and host in ('ctdgraph.local', 'mapaction.local')):
                 return
-            token = (qurl.path() or '').strip('/')
-            ctd_id = int(token)
         except Exception:
             return
 
-        try:
-            self._show_ctd_graph_popup(ctd_id)
-        except Exception:
-            pass
+        if host == 'ctdgraph.local':
+            try:
+                token = (qurl.path() or '').strip('/')
+                ctd_id = int(token)
+                self._show_ctd_graph_popup(ctd_id)
+            except Exception:
+                pass
+        elif host == 'mapaction.local':
+            try:
+                action = (qurl.path() or '').strip('/').lower()
+                if action == 'add_waypoint':
+                    q = QtCore.QUrlQuery(qurl)
+                    lat = float(q.queryItemValue('lat'))
+                    lon = float(q.queryItemValue('lon'))
+                    self.add_chart_waypoint(default_lat=lat, default_lon=lon)
+            except Exception:
+                pass
 
         # restore map after handling custom action URL
         try:
@@ -16693,14 +16728,15 @@ class MainWindow(
                                  + 'Point: ' + (n.point === null ? '-' : n.point) + '<br>'
                                  + 'Lat: ' + n.lat.toFixed(6) + '<br>'
                                  + 'Lon: ' + n.lon.toFixed(6);
-                            if (n.elev !== null) {{
-                                html += '<br>Elevation: ' + n.elev.toFixed(3) + ' m'
-                                     + '<br>Depth: ' + Math.abs(n.elev).toFixed(3) + ' m';
-                            }}
+                        if (n.elev !== null) {{
+                            html += '<br>Elevation: ' + n.elev.toFixed(3) + ' m'
+                                 + '<br>Depth: ' + Math.abs(n.elev).toFixed(3) + ' m';
                         }}
-                        L.popup().setLatLng(e.latlng).setContent(html).openOn(_map);
-                    }});
-                }}
+                    }}
+                    html += "<br><button onclick=\\\"window.location.href='https://mapaction.local/add_waypoint?lat=" + lat.toFixed(6) + "&lon=" + lon.toFixed(6) + "';return false;\\\" style='margin-top:6px;padding:4px 8px;border:0;border-radius:4px;background:#1f4e79;color:#fff;cursor:pointer;'>Add waypoint here</button>";
+                    L.popup().setLatLng(e.latlng).setContent(html).openOn(_map);
+                }});
+            }}
                 _bindClickPopup();
             }})();
             """
