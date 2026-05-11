@@ -14955,6 +14955,10 @@ class MainWindow(
         self.chart_show_propagation_cb.setChecked(True)
         self.chart_show_propagation_cb.toggled.connect(self._plot_selected_gps_tracks)
         overlay_row.addWidget(self.chart_show_propagation_cb)
+        self.chart_show_bathy_cb = QtWidgets.QCheckBox("Show Bathy Layer")
+        self.chart_show_bathy_cb.setChecked(True)
+        self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
+        overlay_row.addWidget(self.chart_show_bathy_cb)
         sidebar.addLayout(overlay_row)
 
         sidebar.addWidget(QtWidgets.QLabel("DIFAR Bearing Events"))
@@ -14977,6 +14981,122 @@ class MainWindow(
         self.wp_delete_btn.clicked.connect(self.delete_selected_waypoints)
         wp_row.addWidget(self.wp_delete_btn)
         sidebar.addLayout(wp_row)
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        sidebar.addWidget(self.bathy_import_btn)
+        self.chart_show_bathy_cb = QtWidgets.QCheckBox("Show Bathy Layer")
+        self.chart_show_bathy_cb.setChecked(True)
+        self.chart_show_bathy_cb.toggled.connect(self._plot_selected_gps_tracks)
+        sidebar.addWidget(self.chart_show_bathy_cb)
+        self.path_waypoint_btn = QtWidgets.QPushButton("Path from Waypoints")
+        self.path_waypoint_btn.clicked.connect(self.build_path_from_waypoints)
+        sidebar.addWidget(self.path_waypoint_btn)
+        self.path_min_depth_btn = QtWidgets.QPushButton("Path from Min Depth")
+        self.path_min_depth_btn.clicked.connect(self.build_path_from_min_depth)
+        sidebar.addWidget(self.path_min_depth_btn)
+        self.path_clear_btn = QtWidgets.QPushButton("Clear Path")
+        self.path_clear_btn.clicked.connect(self.clear_planned_path)
+        sidebar.addWidget(self.path_clear_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
 
         sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
         self.bathy_survey_list = QtWidgets.QListWidget()
@@ -15063,6 +15183,7 @@ class MainWindow(
         self.gps_plot.scene().sigMouseClicked.connect(self._on_chart_map_mouse_clicked)
         self.refresh_chart_theme()
         self.refresh_chart_tracks()
+        self._chart_tab_initialized = True
 
     def refresh_chart_theme(self):
         if not hasattr(self, 'gps_plot') or self.gps_plot is None:
@@ -15233,9 +15354,9 @@ class MainWindow(
     def import_gps_track(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Import GPS Track",
+            "Import GPS/Bathymetry Track",
             self._dialog_default_dir("originals"),
-            "GPS Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
+            "GPS/Bathy Track (*.gpx *.csv *.txt *.log *.nmea);;All Files (*)",
         )
         if not path:
             return
@@ -15249,11 +15370,11 @@ class MainWindow(
             else:
                 raise ValueError("Unsupported track format. Use GPX, CSV, TXT, LOG, or NMEA.")
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Import GPS Track", f"Could not parse track\n{e}")
+            QtWidgets.QMessageBox.warning(self, "Import GPS/Bathymetry Track", f"Could not parse track\n{e}")
             return
 
         if not points:
-            QtWidgets.QMessageBox.information(self, "Import GPS Track", "No valid GPS points found.")
+            QtWidgets.QMessageBox.information(self, "Import GPS/Bathymetry Track", "No valid GPS points found.")
             return
 
         default_name = os.path.splitext(os.path.basename(path))[0]
@@ -17762,6 +17883,21 @@ class MainWindow(
                 ax.set_xlim(xmin, xmax)
             except Exception:
                 pass
+        if bathy_rows:
+            marker_cap = 600 if not folium_fast_mode else 250
+            for idx, (_sid, sname, point_idx, lat, lon, elev) in enumerate(bathy_rows[:marker_cap]):
+                try:
+                    latf = float(lat); lonf = float(lon)
+                except Exception:
+                    continue
+                popup = f"{sname}<br>Point: {point_idx}<br>Lat: {latf:.6f}<br>Lon: {lonf:.6f}"
+                if elev is not None:
+                    elevf = float(elev)
+                    popup += f"<br>Elevation: {elevf:.3f} m"
+                    popup += f"<br>Depth: {abs(elevf):.3f} m"
+                folium.CircleMarker([latf, lonf], radius=3, color="#00B4D8", fill=True, fill_opacity=0.7,
+                                    popup=folium.Popup(popup, max_width=320),
+                                    tooltip=(f"Bathy: {sname}" if idx == 0 else None)).add_to(m)
             try:
                 ymin, ymax = map(float, y_entry.text().split(","))
                 ax.set_ylim(ymin, ymax)
