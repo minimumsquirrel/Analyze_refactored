@@ -15170,6 +15170,30 @@ class MainWindow(
         self.path_actions_btn.setMenu(path_menu)
         sidebar.addWidget(self.path_actions_btn)
 
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
+
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -15211,7 +15235,10 @@ class MainWindow(
         self.gps_plot.getViewBox().setAspectLocked(False)
         self.gps_map_stack.addWidget(self.gps_plot)
 
-        self.gps_map_stack.setCurrentWidget(self.gps_plot)
+        if self.gps_map_view is not None:
+            self.gps_map_stack.setCurrentWidget(self.gps_map_view)
+        else:
+            self.gps_map_stack.setCurrentWidget(self.gps_plot)
 
         right.addWidget(self.gps_map_stack, 1)
 
