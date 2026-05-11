@@ -15194,6 +15194,30 @@ class MainWindow(
         self.path_actions_btn.setMenu(path_menu)
         sidebar.addWidget(self.path_actions_btn)
 
+        sidebar.addWidget(QtWidgets.QLabel("Bathy Surveys"))
+        self.bathy_survey_list = QtWidgets.QListWidget()
+        self.bathy_survey_list.setMinimumHeight(100)
+        sidebar.addWidget(self.bathy_survey_list)
+        bathy_row = QtWidgets.QHBoxLayout()
+        self.bathy_import_btn = QtWidgets.QPushButton("Import Bathy Survey")
+        self.bathy_import_btn.clicked.connect(self.import_bathy_survey)
+        bathy_row.addWidget(self.bathy_import_btn)
+        self.bathy_delete_btn = QtWidgets.QPushButton("Delete")
+        self.bathy_delete_btn.clicked.connect(self.delete_selected_bathy_surveys)
+        bathy_row.addWidget(self.bathy_delete_btn)
+        sidebar.addLayout(bathy_row)
+
+        self.path_actions_btn = QtWidgets.QToolButton()
+        self.path_actions_btn.setText("Path Options")
+        self.path_actions_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        path_menu = QtWidgets.QMenu(self.path_actions_btn)
+        path_menu.addAction("Path from Waypoints", self.build_path_from_waypoints)
+        path_menu.addAction("Path from Min Depth", self.build_path_from_min_depth)
+        path_menu.addSeparator()
+        path_menu.addAction("Clear Path", self.clear_planned_path)
+        self.path_actions_btn.setMenu(path_menu)
+        sidebar.addWidget(self.path_actions_btn)
+
         layout.addLayout(sidebar, 1)
 
         right = QtWidgets.QVBoxLayout()
@@ -16886,6 +16910,35 @@ class MainWindow(
         self._gps_folium_html_path = out.name
         self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
 
+    def _render_folium_basic_map(self, tracks, waypoint_rows):
+        if self.gps_map_view is None or folium is None:
+            return
+        all_lat, all_lon = [], []
+        for tr in tracks:
+            all_lat.extend(tr.get("lat", [])); all_lon.extend(tr.get("lon", []))
+        for _wid, _nm, lat, lon, _pid, _sym in waypoint_rows:
+            try:
+                all_lat.append(float(lat)); all_lon.append(float(lon))
+            except Exception:
+                pass
+        center = [0.0, 0.0] if not all_lat else [float(sum(all_lat) / len(all_lat)), float(sum(all_lon) / len(all_lon))]
+        zoom = 11 if all_lat else 2
+        m = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", control_scale=True, prefer_canvas=True)
+        for tr in tracks:
+            pts = list(zip(tr.get("lat", []), tr.get("lon", [])))
+            if pts:
+                folium.PolyLine(pts, color=tr.get("color", "#03DFE2"), weight=3, opacity=0.9).add_to(m)
+        for _wid, nm, lat, lon, proj_id, symbol in waypoint_rows:
+            try:
+                folium.Marker([float(lat), float(lon)], tooltip=(nm or "Waypoint"), icon=self._waypoint_icon_folium(symbol)).add_to(m)
+            except Exception:
+                pass
+        out = tempfile.NamedTemporaryFile(prefix='chart_map_basic_', suffix='.html', delete=False)
+        out.close()
+        m.save(out.name)
+        self._gps_folium_html_path = out.name
+        self.gps_map_view.setUrl(QUrl.fromLocalFile(out.name))
+
 
     def _chart_track_line_color(self, default_color, idx):
         mode = self.chart_track_color_mode.currentText() if hasattr(self, 'chart_track_color_mode') else 'Palette'
@@ -17246,13 +17299,18 @@ class MainWindow(
                 if hasattr(self, 'gps_cursor_label'):
                     self.gps_cursor_label.setText('Cursor: hover coordinates available in PyQtGraph mode')
             except Exception as e:
-                # Never crash startup/chart tab on folium rendering errors; fall back to PyQtGraph.
-                use_web_map = False
+                # Try a minimal Folium render before falling back to PyQtGraph.
                 try:
-                    if hasattr(self, 'gps_info_label'):
-                        self.gps_info_label.setText(f'Map: PyQtGraph fallback (web map error: {e})')
+                    self._render_folium_basic_map(tracks, waypoint_rows)
+                    if hasattr(self, 'gps_map_stack'):
+                        self.gps_map_stack.setCurrentWidget(self.gps_map_view)
                 except Exception:
-                    pass
+                    use_web_map = False
+                    try:
+                        if hasattr(self, 'gps_info_label'):
+                            self.gps_info_label.setText(f'Map: PyQtGraph fallback (web map error: {e})')
+                    except Exception:
+                        pass
         if not use_web_map:
             if not hasattr(self, 'gps_plot'):
                 return
